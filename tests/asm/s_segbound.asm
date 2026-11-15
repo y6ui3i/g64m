@@ -2,6 +2,8 @@
 ; to follow the segment register: after DS has held a flat segment, loading one with a limit of
 ; FFh must make an access at 200h fault, and loading a null selector into FS must make any
 ; access through it fault. A bound left over from the segment before would let both through.
+; The instructions that read an operand and write it back (ADD to memory, INC of memory) find
+; their place in memory by a path of their own, so they are tried against the small segment too.
 ; Four passes, so that the accesses are made by the general path and then by their executors.
 ; Prints "OK".
 %define CPU386
@@ -35,12 +37,19 @@ pass:
     mov  ax, 0x18                       ; a data segment with a limit of FFh
     mov  ds, ax
     mov  eax, [0x80]                    ; inside it: no fault
+    mov  [0x80], eax                    ; and a write, so that the write TLB has the page
     mov  ebx, .r1
     mov  eax, [0x200]                   ; beyond it: #GP
 .r1:
     mov  ebx, .r2
     mov  [0x200], eax                   ; and a write: #GP
 .r2:
+    mov  ebx, .r2a
+    add  [0x200], eax                   ; an instruction that reads and writes it: #GP
+.r2a:
+    mov  ebx, .r2b
+    inc  dword [0x200]                  ; #GP
+.r2b:
     xor  eax, eax
     mov  fs, ax                         ; a null selector
     mov  ebx, .r3
@@ -67,7 +76,7 @@ real:
     mov  ds, ax
     mov  ss, ax
     lidt [ridtr]
-    cmp  edx, 12                        ; three faults a pass
+    cmp  edx, 20                        ; five faults a pass
     jne  .no
     mov  ax, 0x0E4F                     ; 'O'
     int  0x10

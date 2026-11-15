@@ -1229,6 +1229,60 @@ inline fn short_write(mm: u32, v: u32) {
     else { seg_write(ea_seg, ea_off, 32, v); }
 }
 
+// Where in RAM the 32-bit memory operand of the instruction is, if writing it can take
+// seg_write's short path: the same tests, and the write TLB, which for a page it holds says
+// that the page may be read as well. FFFFFFFFh when it cannot (and then nothing is known).
+// An instruction that reads the operand, changes it and writes it back asks once instead of
+// going through seg_read and then seg_write (E038). short_ea must have run first.
+inline fn rmw_place() -> u32 {
+    let s = ea_seg;
+    let a = cpu.base[s] + ea_off;
+    if ea_off < seg_top[s] && (a & 0xFFF) + 4 <= 0x1000 {
+        let page = a >> 12;
+        let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+        if tlb_wtag[i] == page { return tlb_wphys[i] | a & 0xFFF; }
+    }
+    return 0xFFFFFFFF;
+}
+
+// op the 32-bit operand with b, in a register or in memory, and store the result. The flags
+// are set before the store only on the path where the store cannot fault.
+inline fn short_alu_rm(mm: u32, aop: u8, b: u32) {
+    if mm & 0x0C == 0x0C {
+        let k = mm >> 7 & 7;
+        cpu.regs[k] = alu(aop, cpu.regs[k], b, 32);
+        return;
+    }
+    let q: i64 = rmw_place();
+    if q < RAM_SIZE - 3 {
+        let b0: u32 = ram[q]; let b1: u32 = ram[q + 1]; let b2: u32 = ram[q + 2]; let b3: u32 = ram[q + 3];
+        let r = alu(aop, b0 | b1 << 8 | b2 << 16 | b3 << 24, b, 32);
+        ram[q] = r as! u8; ram[q + 1] = (r >> 8) as! u8; ram[q + 2] = (r >> 16) as! u8; ram[q + 3] = (r >> 24) as! u8;
+    } else {
+        let r = alu(aop, seg_read(ea_seg, ea_off, 32), b, 32);
+        seg_write(ea_seg, ea_off, 32, r);
+    }
+}
+
+// INC (up) or DEC of the 32-bit operand, the same way.
+inline fn short_step_rm(mm: u32, up: bool) {
+    if mm & 0x0C == 0x0C {
+        let k = mm >> 7 & 7;
+        cpu.regs[k] = if up { inc(cpu.regs[k], 32) } else { dec(cpu.regs[k], 32) };
+        return;
+    }
+    let q: i64 = rmw_place();
+    if q < RAM_SIZE - 3 {
+        let b0: u32 = ram[q]; let b1: u32 = ram[q + 1]; let b2: u32 = ram[q + 2]; let b3: u32 = ram[q + 3];
+        let v = b0 | b1 << 8 | b2 << 16 | b3 << 24;
+        let r = if up { inc(v, 32) } else { dec(v, 32) };
+        ram[q] = r as! u8; ram[q + 1] = (r >> 8) as! u8; ram[q + 2] = (r >> 16) as! u8; ram[q + 3] = (r >> 24) as! u8;
+    } else {
+        let v = seg_read(ea_seg, ea_off, 32);
+        seg_write(ea_seg, ea_off, 32, if up { inc(v, 32) } else { dec(v, 32) });
+    }
+}
+
 inline fn short_read8(mm: u32) -> u32 {
     if mm & 0x0C == 0x0C { return r8((mm >> 7 & 7) as! u8); }
     return seg_read(ea_seg, ea_off, 8);
@@ -1353,11 +1407,11 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         // The numbers with no executor are named, so that the kinds are one unbroken range and
         // the compiler makes one jump table of them, not two with a test between.
         38, 39, 42, 43, 50, 51, 58, 59 => {},
-        40 => { short_ea(mm, slot); let r = alu(0, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
-        41 => { short_ea(mm, slot); let r = alu(1, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
-        44 => { short_ea(mm, slot); let r = alu(4, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
-        45 => { short_ea(mm, slot); let r = alu(5, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
-        46 => { short_ea(mm, slot); let r = alu(6, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
+        40 => { short_ea(mm, slot); short_alu_rm(mm, 0, cpu.regs[reg]); },
+        41 => { short_ea(mm, slot); short_alu_rm(mm, 1, cpu.regs[reg]); },
+        44 => { short_ea(mm, slot); short_alu_rm(mm, 4, cpu.regs[reg]); },
+        45 => { short_ea(mm, slot); short_alu_rm(mm, 5, cpu.regs[reg]); },
+        46 => { short_ea(mm, slot); short_alu_rm(mm, 6, cpu.regs[reg]); },
         47 => { short_ea(mm, slot); let r = alu(7, short_read(mm), cpu.regs[reg], 32); },
         48 => { short_ea(mm, slot); let r = alu(0, cpu.regs[reg], short_read(mm), 32); cpu.regs[reg] = r; },
         49 => { short_ea(mm, slot); let r = alu(1, cpu.regs[reg], short_read(mm), 32); cpu.regs[reg] = r; },
@@ -1365,14 +1419,14 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         53 => { short_ea(mm, slot); let r = alu(5, cpu.regs[reg], short_read(mm), 32); cpu.regs[reg] = r; },
         54 => { short_ea(mm, slot); let r = alu(6, cpu.regs[reg], short_read(mm), 32); cpu.regs[reg] = r; },
         55 => { short_ea(mm, slot); let r = alu(7, cpu.regs[reg], short_read(mm), 32); },
-        56 => { short_ea(mm, slot); let r = alu(0, short_read(mm), imm, 32); short_write(mm, r); },
-        57 => { short_ea(mm, slot); let r = alu(1, short_read(mm), imm, 32); short_write(mm, r); },
-        60 => { short_ea(mm, slot); let r = alu(4, short_read(mm), imm, 32); short_write(mm, r); },
-        61 => { short_ea(mm, slot); let r = alu(5, short_read(mm), imm, 32); short_write(mm, r); },
-        62 => { short_ea(mm, slot); let r = alu(6, short_read(mm), imm, 32); short_write(mm, r); },
+        56 => { short_ea(mm, slot); short_alu_rm(mm, 0, imm); },
+        57 => { short_ea(mm, slot); short_alu_rm(mm, 1, imm); },
+        60 => { short_ea(mm, slot); short_alu_rm(mm, 4, imm); },
+        61 => { short_ea(mm, slot); short_alu_rm(mm, 5, imm); },
+        62 => { short_ea(mm, slot); short_alu_rm(mm, 6, imm); },
         63 => { short_ea(mm, slot); let r = alu(7, short_read(mm), imm, 32); },
-        64 => { short_ea(mm, slot); short_write(mm, inc(short_read(mm), 32)); },
-        65 => { short_ea(mm, slot); short_write(mm, dec(short_read(mm), 32)); },
+        64 => { short_ea(mm, slot); short_step_rm(mm, true); },
+        65 => { short_ea(mm, slot); short_step_rm(mm, false); },
         66 => { short_ea(mm, slot); short_write(mm, ~short_read(mm)); },
         67 => { short_ea(mm, slot); short_write(mm, alu(5, 0, short_read(mm), 32)); },
         68 => { short_ea(mm, slot); short_write(mm, imm); },
