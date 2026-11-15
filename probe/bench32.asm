@@ -4,7 +4,9 @@
 ; and run it under /usr/bin/time -l, which reports the host instructions retired. The loop is
 ; ITER times: BODY, DEC ECX, JNZ. An empty BODY gives the cost of the loop itself. BODY2 and BODY3
 ; are two more lines for the body, for when it takes more than one instruction. INIT and INIT2
-; are lines run once before the loop (the registers it starts with are set just above the loop).
+; are lines run before the loop; with OUTER the whole thing, INIT and INIT2 included, is done
+; OUTER times, for a body that moves a pointer and has to stay inside the first megabyte (this
+; machine's addresses wrap there). They are lines run once before the loop (the registers it starts with are set just above the loop).
 %ifndef ITER
 %define ITER 20000000
 %endif
@@ -28,6 +30,10 @@ start32:
     mov  ebx, 0x8000
     mov  esi, 0x9000
     mov  edi, 0xA000
+%ifdef OUTER
+    mov  edx, OUTER
+.outer:
+%endif
     mov  ecx, ITER
 %ifdef INIT
     INIT
@@ -48,6 +54,10 @@ start32:
 %endif
     dec  ecx
     jnz  .loop
+%ifdef OUTER
+    dec  edx
+    jnz  near .outer
+%endif
     hlt
 fn:
     ret

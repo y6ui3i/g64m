@@ -14,6 +14,11 @@
 // completed, so hits pile up on the instruction that was being waited for: a load whose
 // address came late or that missed the cache, or the first instruction after a mispredicted
 // jump. That is what makes it more use here than a count of instructions.
+//
+// What it cannot say is which guest instruction the time belongs to, wherever the compiler has
+// merged code from several executors: "the 16-bit store into guest RAM" is one instruction for
+// all of them, and its samples are theirs together (E036 divided them by one executor's count
+// and drew a wrong conclusion).
 
 #include <mach-o/dyld.h>
 #include <stdio.h>
