@@ -2908,3 +2908,33 @@ indicated (nothing measured since has pointed at the flags), the rest done. The 
 is at 32.9 billion cycles and 185.8 billion host instructions, from 47.7 and 247.3 this
 morning: 20 cycles and 113 host instructions for each guest instruction. By the first branch
 of the card, what follows is a new survey and not another item.
+
+## E040: A second survey: where the other ten cycles are (2026-11-16)
+
+Like E024, a survey to find the next experiments, not one hypothesis about one change. Nothing
+in `src/` changes on this card.
+
+- **Hypothesis**: A NOP in a row costs 10 cycles and the boot averages 20 for each guest
+  instruction. The other ten are in one or more of three places, and which one decides what
+  to try next: (a) a stretch of the boot that costs far more than the rest for each
+  instruction (paging just turned on, user mode, a driver's loop); (b) what happens between
+  runs and around them (entering a run, the general path, interrupts, faults, misses of the
+  data TLB), which no executor's cost contains; (c) the dispatch jump being mispredicted,
+  which E032's profile put at about 12% of samples and nothing since has addressed.
+- **What changed since last time**: E024 compared designs and counted what took the general
+  path; E032 profiled once, before E033 to E039 moved a fifth of the cost. This one measures
+  three things not measured before: cycles for each stretch of the boot (the same boot stopped
+  at a series of instruction counts), how long runs are and what ends them, and the profile
+  by address again on today's code.
+- **Next move for each result**:
+  - One stretch costs more than 1.5 times the average for each instruction → profile that
+    stretch by itself and find what it does that the others do not
+  - Runs are short (under about 20 instructions) and one cause ends most of them → measure
+    what one entry into a run costs, and remove that cause
+  - Samples on an executor's first instruction are still 10% or more → an experiment on the
+    dispatch itself (a second place to jump from, for the pairs that follow each other most)
+  - None of the three, and no single site above about 3% that is not the guest's own memory →
+    say so plainly: at this design the interpreter is near its floor, and what is left is a
+    change of design (generated code), which is the owner's decision and not an item
+- **Cut-off**: The same day. Three measurements, each one build at most; if a measurement
+  needs more than a counting build and a profile build, it is dropped and named as not done.
