@@ -1017,6 +1017,19 @@ let K_SAR_I = 37;        // C1 /7
 let K_ALU_RM_R_OP = 40;  // 40 to 47: K_ALU_RM_R for one operation (ADC and SBB stay general)
 let K_ALU_R_RM_OP = 48;  // 48 to 55
 let K_ALU_RM_I_OP = 56;  // 56 to 63
+let K_INC_RM = 64;       // FF /0
+let K_DEC_RM = 65;       // FF /1
+let K_NOT = 66;          // F7 /2
+let K_NEG = 67;          // F7 /3
+let K_MOV_RM_I = 68;     // C7 /0
+let K_MOV8_RM_I = 69;    // C6 /0
+let K_MOV16_R_RM = 70;   // 66 8B
+let K_MOV16_RM_R = 71;   // 66 89
+let K_ALU_A_I = 72;      // 05 0D 15 1D 25 2D 35 3D: eAX with a 32-bit immediate
+let K_ALU8_A_I = 73;     // 04 0C 14 1C 24 2C 34 3C: AL with an 8-bit immediate
+let K_TEST_A_I = 74;     // A9
+let K_TEST8_A_I = 75;    // A8
+let K_RDTSC = 76;        // 0F 31
 
 // Byte k of the instruction, from its first eight.
 inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32; }
@@ -1065,69 +1078,101 @@ fn classify(slot: i64, raw: u64) {
     let op = ins.op;
     let mm = dc[slot].m;
     let has_m = mm & 3 == 1;
-    let after_m = 1 + (mm >> 10 & 15);       // where the operand's bytes end, for a one-byte opcode
-    if ins.plen == 1 && ins.osz == 32 && ins.asz32 {
-        if has_m {
-            len = after_m;
-            if op == 0x8B { kind = K_MOV_R_RM; }
-            else if op == 0x89 { kind = K_MOV_RM_R; }
-            else if op < 0x40 && op & 7 == 1 { kind = if carries(op >> 3) { K_ALU_RM_R } else { K_ALU_RM_R_OP + (op >> 3) }; }
-            else if op < 0x40 && op & 7 == 3 { kind = if carries(op >> 3) { K_ALU_R_RM } else { K_ALU_R_RM_OP + (op >> 3) }; }
-            else if op == 0x83 { kind = imm_kind(mm); imm = sext8(raw8(raw, after_m)); len = after_m + 1; }
-            else if op == 0x81 && after_m <= 4 { kind = imm_kind(mm); imm = raw32(raw, after_m); len = after_m + 4; }
-            else if op == 0x8D && mm & 0x0C != 0x0C { kind = K_LEA; }
-            else if op == 0x85 { kind = K_TEST; }
-            else if op == 0xC1 {
-                kind = K_SHIFT_I;
-                imm = raw8(raw, after_m);
-                len = after_m + 1;
-                let which = mm >> 4 & 7;
-                if which >= 4 && imm & 0x1F != 0 {
-                    // A shift by a count that does something: its own executor, with the count.
-                    imm = imm & 0x1F;
-                    kind = if which == 5 { K_SHR_I } else if which == 7 { K_SAR_I } else { K_SHL_I };
-                }
-            }
-            else if op == 0xD3 { kind = K_SHIFT_CL; }
-            else if op == 0x8A { kind = K_MOV8_R_RM; }
-            else if op == 0x88 { kind = K_MOV8_RM_R; }
-            else if op < 0x40 && op & 7 == 0 { kind = K_ALU8_RM_R; }
-            else if op < 0x40 && op & 7 == 2 { kind = K_ALU8_R_RM; }
-            else if op == 0x80 { kind = K_ALU8_RM_I; imm = raw8(raw, after_m); len = after_m + 1; }
-            else if op == 0x84 { kind = K_TEST8; }
-            else if op == 0xF6 && mm >> 4 & 7 < 2 { kind = K_TEST8_I; imm = raw8(raw, after_m); len = after_m + 1; }
-            else if op == 0xF7 && mm >> 4 & 7 < 2 && after_m <= 4 { kind = K_TEST_I; imm = raw32(raw, after_m); len = after_m + 4; }
-            else if op == 0x0F {
-                // A two-byte opcode: the operand's bytes start one later, and its recorded length
-                // was counted from after the second opcode byte.
-                let op2 = raw8(raw, 1);
-                len = after_m + 1;
-                if op2 == 0xB6 { kind = K_MOVZX8; } else if op2 == 0xB7 { kind = K_MOVZX16; }
-                else if op2 == 0xAF { kind = K_IMUL; }
-                else if op2 >= 0x90 && op2 <= 0x9F { kind = K_SETCC; imm = op2 & 15; }
-            }
-        } else if mm == 0 {
-            if op >= 0x70 && op <= 0x7F { kind = jcc_kind(op & 15); cc = jcc_data(op & 15); imm = sext8(raw8(raw, 1)); len = 2; }
-            else if op == 0xEB { kind = K_JMP; imm = sext8(raw8(raw, 1)); len = 2; }
-            else if op == 0xE9 { kind = K_JMP; imm = raw32(raw, 1); len = 5; }
-            else if op == 0xE8 { kind = K_CALL; imm = raw32(raw, 1); len = 5; }
-            else if op == 0xC3 { kind = K_RET; len = 1; }
-            else if op == 0x90 { kind = K_NOP; len = 1; }
-            else if op >= 0x50 && op <= 0x57 { kind = K_PUSH; len = 1; }
-            else if op >= 0x58 && op <= 0x5F { kind = K_POP; len = 1; }
-            else if op >= 0x40 && op <= 0x47 { kind = K_INC; len = 1; }
-            else if op >= 0x48 && op <= 0x4F { kind = K_DEC; len = 1; }
-            else if op >= 0xB8 && op <= 0xBF { kind = K_MOV_R_I; imm = raw32(raw, 1); len = 5; }
-            else if op == 0x0F {
-                let op2 = raw8(raw, 1);
-                if op2 >= 0x80 && op2 <= 0x8F { kind = jcc_kind((op2 & 15) as! u8); cc = jcc_data((op2 & 15) as! u8); imm = raw32(raw, 2); len = 6; }
+    let pl: u32 = ins.plen;                  // the prefixes and the opcode byte
+    let after_m = pl + (mm >> 10 & 15);      // where the operand's bytes end, for a one-byte opcode
+    // A short executor works with 32-bit operands and addresses. The prefixes it can do without:
+    // a segment override, which is resolved here into the entry; 66 on the two MOVs, which have
+    // 16-bit executors; and F3 on RET and on NOP, where it changes nothing ("rep ret", PAUSE).
+    let plain = !ins.lock && ins.rep == 0 && ins.asz32;
+    let p32 = plain && ins.osz == 32 && (pl == 1 || (pl == 2 && ins.seg >= 0));
+    let p16 = plain && ins.osz == 16 && pl == 2 && ins.seg < 0;
+    let prep = !ins.lock && ins.rep == 2 && ins.asz32 && ins.osz == 32 && ins.seg < 0 && pl == 2;
+    if p32 && has_m {
+        len = after_m;
+        if op == 0x8B { kind = K_MOV_R_RM; }
+        else if op == 0x89 { kind = K_MOV_RM_R; }
+        else if op < 0x40 && op & 7 == 1 { kind = if carries(op >> 3) { K_ALU_RM_R } else { K_ALU_RM_R_OP + (op >> 3) }; }
+        else if op < 0x40 && op & 7 == 3 { kind = if carries(op >> 3) { K_ALU_R_RM } else { K_ALU_R_RM_OP + (op >> 3) }; }
+        else if op == 0x83 { kind = imm_kind(mm); imm = sext8(raw8(raw, after_m)); len = after_m + 1; }
+        else if op == 0x81 && after_m <= 4 { kind = imm_kind(mm); imm = raw32(raw, after_m); len = after_m + 4; }
+        else if op == 0x8D && mm & 0x0C != 0x0C { kind = K_LEA; }
+        else if op == 0x85 { kind = K_TEST; }
+        else if op == 0xC1 || op == 0xD1 {
+            kind = K_SHIFT_I;
+            if op == 0xC1 { imm = raw8(raw, after_m); len = after_m + 1; } else { imm = 1; }
+            let which = mm >> 4 & 7;
+            if which >= 4 && imm & 0x1F != 0 {
+                // A shift by a count that does something: its own executor, with the count.
+                imm = imm & 0x1F;
+                kind = if which == 5 { K_SHR_I } else if which == 7 { K_SAR_I } else { K_SHL_I };
+            } else if op == 0xD1 {
+                kind = K_NONE;                   // a rotate by one: the general path
             }
         }
+        else if op == 0xD3 { kind = K_SHIFT_CL; }
+        else if op == 0x8A { kind = K_MOV8_R_RM; }
+        else if op == 0x88 { kind = K_MOV8_RM_R; }
+        else if op < 0x40 && op & 7 == 0 { kind = K_ALU8_RM_R; }
+        else if op < 0x40 && op & 7 == 2 { kind = K_ALU8_R_RM; }
+        else if op == 0x80 { kind = K_ALU8_RM_I; imm = raw8(raw, after_m); len = after_m + 1; }
+        else if op == 0x84 { kind = K_TEST8; }
+        else if op == 0xF6 && mm >> 4 & 7 < 2 { kind = K_TEST8_I; imm = raw8(raw, after_m); len = after_m + 1; }
+        else if op == 0xF7 && mm >> 4 & 7 < 2 && after_m <= 4 { kind = K_TEST_I; imm = raw32(raw, after_m); len = after_m + 4; }
+        else if op == 0xF7 && mm >> 4 & 7 == 2 { kind = K_NOT; }
+        else if op == 0xF7 && mm >> 4 & 7 == 3 { kind = K_NEG; }
+        else if op == 0xFF && mm >> 4 & 7 == 0 { kind = K_INC_RM; }
+        else if op == 0xFF && mm >> 4 & 7 == 1 { kind = K_DEC_RM; }
+        else if op == 0xC7 && mm >> 4 & 7 == 0 && after_m <= 4 { kind = K_MOV_RM_I; imm = raw32(raw, after_m); len = after_m + 4; }
+        else if op == 0xC6 && mm >> 4 & 7 == 0 { kind = K_MOV8_RM_I; imm = raw8(raw, after_m); len = after_m + 1; }
+        else if op == 0x0F {
+            // A two-byte opcode: the operand's bytes start one later, and its recorded length
+            // was counted from after the second opcode byte.
+            let op2 = raw8(raw, pl);
+            len = after_m + 1;
+            if op2 == 0xB6 { kind = K_MOVZX8; } else if op2 == 0xB7 { kind = K_MOVZX16; }
+            else if op2 == 0xAF { kind = K_IMUL; }
+            else if op2 >= 0x90 && op2 <= 0x9F { kind = K_SETCC; imm = op2 & 15; }
+        }
+    } else if p16 && has_m {
+        len = after_m;
+        if op == 0x8B { kind = K_MOV16_R_RM; }
+        else if op == 0x89 { kind = K_MOV16_RM_R; }
+    } else if p32 && mm == 0 {
+        if op >= 0x70 && op <= 0x7F { kind = jcc_kind(op & 15); cc = jcc_data(op & 15); imm = sext8(raw8(raw, pl)); len = pl + 1; }
+        else if op == 0xEB { kind = K_JMP; imm = sext8(raw8(raw, pl)); len = pl + 1; }
+        else if op == 0xE9 { kind = K_JMP; imm = raw32(raw, pl); len = pl + 4; }
+        else if op == 0xE8 { kind = K_CALL; imm = raw32(raw, pl); len = pl + 4; }
+        else if op == 0xC3 { kind = K_RET; len = pl; }
+        else if op == 0x90 { kind = K_NOP; len = pl; }
+        else if op >= 0x50 && op <= 0x57 { kind = K_PUSH; len = pl; }
+        else if op >= 0x58 && op <= 0x5F { kind = K_POP; len = pl; }
+        else if op >= 0x40 && op <= 0x47 { kind = K_INC; len = pl; }
+        else if op >= 0x48 && op <= 0x4F { kind = K_DEC; len = pl; }
+        else if op >= 0xB8 && op <= 0xBF { kind = K_MOV_R_I; imm = raw32(raw, pl); len = pl + 4; }
+        else if op < 0x40 && op & 7 == 5 { kind = K_ALU_A_I; imm = raw32(raw, pl); len = pl + 4; }
+        else if op < 0x40 && op & 7 == 4 { kind = K_ALU8_A_I; imm = raw8(raw, pl); len = pl + 1; }
+        else if op == 0xA9 { kind = K_TEST_A_I; imm = raw32(raw, pl); len = pl + 4; }
+        else if op == 0xA8 { kind = K_TEST8_A_I; imm = raw8(raw, pl); len = pl + 1; }
+        else if op == 0x0F {
+            let op2 = raw8(raw, pl);
+            if op2 >= 0x80 && op2 <= 0x8F { kind = jcc_kind((op2 & 15) as! u8); cc = jcc_data((op2 & 15) as! u8); imm = raw32(raw, pl + 1); len = pl + 5; }
+            else if op2 == 0x31 && i686 { kind = K_RDTSC; len = pl + 1; }
+        }
+    } else if prep && mm == 0 {
+        if op == 0xC3 { kind = K_RET; len = pl; }
+        else if op == 0x90 { kind = K_NOP; len = pl; }
     }
-    if kind != K_NONE && len <= 8 {
+    if kind != K_NONE && len >= 1 && len <= 8 {
+        // The segment of the memory operand, resolved now: an override if there is one, else
+        // SS for an address based on ESP or EBP, else DS.
+        var sg: u32 = DS;
+        if ins.seg >= 0 { sg = ins.seg as! u32; } else if mm & M_SS != 0 { sg = SS; }
+        // The bytes this entry depends on now run to the end of the instruction, immediate
+        // included; record them as they are now, which is where imm was read from.
+        dc[slot].bytes = raw;
         dc[slot].imm = imm;
         if kind == K_JCC || (kind >= K_JCC_MASK && kind <= K_JCC_LE) { dc[slot].disp = cc; }
-        dc[slot].m = mm | len << 26;
+        dc[slot].m = mm | (len - 1) << 26 | sg << 29;
         dc[slot].mask = byte_mask(len);
         dc[slot].pre.kind = kind;
     } else {
@@ -1147,7 +1192,8 @@ inline fn ea_short(mm: u32, disp: u32) {
     let index = mm >> 18 & 15;
     if index != 0 { off += cpu.regs[index - 1] << (mm >> 22 & 3); }
     ea_off = off;
-    ea_seg = if mm & M_SS != 0 { SS } else { DS };
+    let sg: i64 = mm >> 29;               // resolved by classify
+    ea_seg = sg;
 }
 
 inline fn short_ea(mm: u32, slot: i64) {
@@ -1175,11 +1221,21 @@ inline fn short_write8(mm: u32, v: u32) {
 }
 
 // ip0 is the instruction pointer at the instruction's first byte.
+inline fn short_read16(mm: u32) -> u32 {
+    if mm & 0x0C == 0x0C { return cpu.regs[mm >> 7 & 7] & 0xFFFF; }
+    return seg_read(ea_seg, ea_off, 16);
+}
+
+inline fn short_write16(mm: u32, v: u32) {
+    if mm & 0x0C == 0x0C { let k = mm >> 7 & 7; cpu.regs[k] = cpu.regs[k] & 0xFFFF0000 | v & 0xFFFF; }
+    else { seg_write(ea_seg, ea_off, 16, v); }
+}
+
 inline fn run_short(kind: u8, slot: i64, ip0: u32) {
     let mm = dc[slot].m;
     let imm = dc[slot].imm;
     let reg = mm >> 4 & 7;
-    cpu.ip = ip0 + (mm >> 26 & 15);
+    cpu.ip = ip0 + (mm >> 26 & 7) + 1;
     match kind {
         1 => { short_ea(mm, slot); cpu.regs[reg] = short_read(mm); },
         2 => { short_ea(mm, slot); short_write(mm, cpu.regs[reg]); },
@@ -1278,6 +1334,19 @@ inline fn run_short(kind: u8, slot: i64, ip0: u32) {
         61 => { short_ea(mm, slot); let r = alu(5, short_read(mm), imm, 32); short_write(mm, r); },
         62 => { short_ea(mm, slot); let r = alu(6, short_read(mm), imm, 32); short_write(mm, r); },
         63 => { short_ea(mm, slot); let r = alu(7, short_read(mm), imm, 32); },
+        64 => { short_ea(mm, slot); short_write(mm, inc(short_read(mm), 32)); },
+        65 => { short_ea(mm, slot); short_write(mm, dec(short_read(mm), 32)); },
+        66 => { short_ea(mm, slot); short_write(mm, ~short_read(mm)); },
+        67 => { short_ea(mm, slot); short_write(mm, alu(5, 0, short_read(mm), 32)); },
+        68 => { short_ea(mm, slot); short_write(mm, imm); },
+        69 => { short_ea(mm, slot); short_write8(mm, imm); },
+        70 => { short_ea(mm, slot); cpu.regs[reg] = cpu.regs[reg] & 0xFFFF0000 | short_read16(mm); },
+        71 => { short_ea(mm, slot); short_write16(mm, cpu.regs[reg]); },
+        72 => { let aop = dc[slot].pre.op >> 3; let r = alu(aop, cpu.regs[0], imm, 32); if aop != 7 { cpu.regs[0] = r; } },
+        73 => { let aop = dc[slot].pre.op >> 3; let a: u32 = r8(0); let r = alu(aop, a, imm, 8); if aop != 7 { set_r8(0, r as! u8); } },
+        74 => { alu(4, cpu.regs[0], imm, 32); },
+        75 => { let a: u32 = r8(0); alu(4, a, imm, 8); },
+        76 => { cpu.regs[0] = vtime as! u32; cpu.regs[2] = (vtime >> 32) as! u32; },
         _ => {},
     }
 }
@@ -1367,10 +1436,18 @@ fn exec_short() -> bool {
         let a = base + ip0;
         if a >> 12 != code_page || !code_ok || a & 0xFFF > 0xFF0 || ip0 > ip_max { break; }
         let slot: i64 = a & (DC_HALF - 1) | DC_HALF;
-        let kind = dc[slot].pre.kind;
-        if dc[slot].tag != a || kind == 0 || kind == K_NONE { break; }
+        var kind = dc[slot].pre.kind;
+        if dc[slot].tag != a || kind == K_NONE { break; }
         let raw = code64(code_phys | a & 0xFFF);
         if (raw ^ dc[slot].bytes) & dc[slot].mask != 0 { break; }
+        if kind == 0 {
+            // Met for the second time: the first, general, execution recorded the operand.
+            // Classify it now and, if it has an executor, run it with that this time already.
+            ins = dc[slot].pre;
+            classify(slot, raw);
+            kind = dc[slot].pre.kind;
+            if kind == K_NONE { break; }
+        }
         shadow = false;
         run_short(kind, slot, ip0);
         // If interrupts were being held off for that instruction, one may be due straight
