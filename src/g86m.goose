@@ -114,6 +114,7 @@ var step_started = false;        // the current type step has queued its keys
 var type_index = 0;              // next character of the current type step
 var serial = false;              // the guest's console is its serial port: the script waits on and types to that
 var serial_seen = 0;             // how much of the serial output earlier wait steps have consumed
+var serial_searched = 0;         // how much of it the current wait step has searched without finding its text
 
 // Advances the script as far as it can go right now. True once every step is done.
 fn script_poll() -> bool {
@@ -124,9 +125,14 @@ fn script_poll() -> bool {
             if step_kind[step_pos] == STEP_WAIT {
                 // Each wait looks only at what came after the last one matched, so that waiting
                 // for the prompt a second time waits for a second prompt.
-                let at = find(com_out[serial_seen..], text);
-                if at < 0 { return false; }
-                serial_seen += at + text.len;
+                // And only at what is new since the last poll: what was there then has been
+                // searched, all but a match that was not yet whole.
+                var from = serial_seen;
+                if serial_searched - text.len + 1 > from { from = serial_searched - text.len + 1; }
+                let at = find(com_out[from..], text);
+                if at < 0 { serial_searched = com_out.len; return false; }
+                serial_seen = from + at + text.len;
+                serial_searched = serial_seen;
             } else {
                 // One byte per poll, once the guest has read the last one.
                 if type_index < text.len && !com_has_input() {
