@@ -2863,3 +2863,48 @@ written is read, then ADD, INC and SUB on it must each take a page fault. For th
 `s_segbound` now tries ADD and INC against the small segment. It still passed the wrong build
 the first time: nothing had written to that page, so the write TLB did not hold it and the
 wrong path was never taken. It writes inside the segment first now, and the wrong build fails.
+
+## E039: REPNE SCASB a page at a time (2026-11-15)
+
+- **Hypothesis**: After E035 the elements that still go one at a time through `string_op` on a
+  boot are SCASB under REPNE, 5.3 million (a `strlen`), and CMPSB under REPE, 0.55 million.
+  Each costs the loop's bookkeeping: the count, the registers saved for a fault, the segment
+  and the translation. Scanning the bytes of one page with one translation, as REP MOVS copies
+  them (E020), and setting the flags once from the last byte compared, leaves a few host
+  instructions a byte. `string_op` is about 2% of a profile, part of it the copies; expected
+  about 0.5% of the boot's host instructions and cycles. Small, and the last item on the list.
+- **What changed since last time**: E035 took the string instructions without REP; this is the
+  one repeated form left that the boot uses in numbers.
+- **Next move for each result**:
+  - It gives its 0.5% → keep; the list from E024 and the profile is then done, and what
+    follows is a new survey, not another item
+  - It gives nothing measurable → keep it if the instruction count falls at all; same
+    conclusion
+  - A test fails or the guest instruction count changes → where the scan stops, what ECX and
+    EDI are then, or the flags of the last comparison
+- **Cut-off**: The same day; a trace test against rustx86 with a match in the first page, in
+  the next page, at the last byte allowed and not at all, for REPNE and REPE, and with a
+  count of zero; deliberately wrong builds must fail it.
+
+### Result
+
+2026-11-15. **Kept: 0.3% of the boot's host instructions and about 0.4% of its cycles**, a
+little under the 0.5% expected. Linux boot, three alternating runs: 33.01, 32.95, 33.10
+billion cycles before; 32.87, 32.91, 32.85 after; host instructions 186.4 to 185.8 billion.
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 66 of 66 with
+the new trace test `u_scas`; test386 is byte for byte the reference and unchanged in cost.
+CMPSB under REPE was left as it is (a tenth of the elements).
+
+Seven deliberately wrong builds. Five failed `u_scas` at once; one of them (the scan stopping
+one byte early) by never finishing, since a scan that makes no progress repeats for ever
+inside one instruction, where the step limit cannot reach it. One passed: a scan that does
+not stop at the end of a page. With paging off the next page in linear addresses is the next
+page in memory and the answer is the same. The test now ends with paging on and the page after
+8000h mapped elsewhere, and that build fails.
+
+**Where the list stands.** Everything named in E024's survey and in E032's profile has now
+been tried or ruled out: blocks ruled out by measurement (E032), lazy flags not tried and not
+indicated (nothing measured since has pointed at the flags), the rest done. The scripted boot
+is at 32.9 billion cycles and 185.8 billion host instructions, from 47.7 and 247.3 this
+morning: 20 cycles and 113 host instructions for each guest instruction. By the first branch
+of the card, what follows is a new survey and not another item.

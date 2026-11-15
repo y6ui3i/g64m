@@ -414,6 +414,45 @@ fn string_bulk(movs: bool, src: i64, w: u8) {
     }
 }
 
+// REPNE SCASB and REPE SCASB going upward through a flat ES, the bytes of one page at a time
+// with one translation, stopping where the instruction stops: after the first byte that is
+// (REPNE) or is not (REPE) AL, or when ECX runs out. The flags are those of the last byte
+// compared, set once. True when a byte ended it; false when ECX ran out, or at anything this
+// does not handle, and then the caller's loop goes on as before. A page fault leaves the
+// registers at the last whole page.
+fn scas_bulk() -> bool {
+    if !flat_data(ES) { return false; }
+    let al = r8(0);
+    let until_equal = ins.rep == 1;
+    loop {
+        var n = cpu.regs[CX];
+        if n == 0 { return false; }
+        let dl = cpu.base[ES] + cpu.regs[DI];
+        let room = 0x1000 - (dl & 0xFFF);
+        if room < n { n = room; }
+        let dpage = page_read(dl);
+        if dpage >= RAM_SIZE - 4096 || dpage > phys_mask - 0xFFF { return false; }
+        let dp: i64 = dpage | dl & 0xFFF;
+        var done: u32 = 0;
+        var last: u8 = 0;
+        var ended = false;
+        for k in n {
+            last = ram[dp + k];
+            done = k + 1;
+            if (last == al) == until_equal { ended = true; break; }
+        }
+        cpu.regs[DI] += done;
+        cpu.regs[CX] -= done;
+        let a: u32 = al;
+        let b: u32 = last;
+        alu(7, a, b, 8);
+        // A repeated instruction that faults part-way resumes from where it got to.
+        saved.regs = cpu.regs;
+        saved.flags = cpu.flags;
+        if ended { return true; }
+    }
+}
+
 fn string_op(op: u8) {
     let w = width(op);
     let n: u32 = ((w as u32) >> 3);
@@ -421,8 +460,10 @@ fn string_op(op: u8) {
     let kind = op & 0xFE;
     let src = seg_of(DS);
     let bulk = ins.rep == 2 && ins.asz32 && !flag(DF) && (kind == 0xA4 || kind == 0xAA);
+    let scan = ins.rep != 0 && ins.asz32 && !flag(DF) && op == 0xAE;
     loop {
         if bulk { string_bulk(kind == 0xA4, src, w); }
+        if scan && scas_bulk() { break; }
         if ins.rep != 0 && addr_reg(CX) == 0 { break; }
         match kind {
             0xA4 => {
