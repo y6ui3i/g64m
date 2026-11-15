@@ -1323,6 +1323,9 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         35 => { short_ea(mm, slot); short_write(mm, shl32(short_read(mm), imm)); },
         36 => { short_ea(mm, slot); short_write(mm, shr32(short_read(mm), imm)); },
         37 => { short_ea(mm, slot); short_write(mm, sar32(short_read(mm), imm)); },
+        // The numbers with no executor are named, so that the kinds are one unbroken range and
+        // the compiler makes one jump table of them, not two with a test between.
+        38, 39, 42, 43, 50, 51, 58, 59 => {},
         40 => { short_ea(mm, slot); let r = alu(0, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
         41 => { short_ea(mm, slot); let r = alu(1, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
         44 => { short_ea(mm, slot); let r = alu(4, short_read(mm), cpu.regs[reg], 32); short_write(mm, r); },
@@ -1437,18 +1440,32 @@ fn exec_short() -> bool {
     let lim = cpu.limit[CS];
     if lim < 15 { return false; }
     let ip_max = lim - 15;
-    var held = shadow;
+    // The page of code last translated, and where it is in RAM: no short executor translates
+    // code or changes the paging, so these stand for the whole run too (E029). A run stays on
+    // that page, and off its last 15 bytes, which is one comparison of the offset from its
+    // start; a page number that is not one (nothing translated yet) never matches.
+    if code_page > 0xFFFFF || !code_ok { return false; }
+    let page_at = code_page << 12;
+    let phys_at = code_phys;
+    // If interrupts are being held off for the first instruction, one may be due straight
+    // after it: that is a run with time for one instruction.
     var left = chain_until - vtime;
+    if shadow { left = 1; }
     var a = base + cpu.ip;
     // The virtual time is counted in a local too, and the global only stored (E027).
     var vt = vtime;
+    // From here until this function returns, `saved` is good for the instruction pointer and
+    // the flags only; that is all a short executor needs put back, the first one included,
+    // for which `saved` is still whole.
+    light_save = 1;
     loop {
         let ip0 = a - base;
-        if a >> 12 != code_page || !code_ok || a & 0xFFF > 0xFF0 || ip0 > ip_max { break; }
+        let off = a - page_at;
+        if off > 0xFF0 || ip0 > ip_max { break; }
         let slot: i64 = a & (DC_HALF - 1) | DC_HALF;
         var kind = dc[slot].pre.kind;
         if dc[slot].tag != a || kind == K_NONE { break; }
-        let raw = code64(code_phys | a & 0xFFF);
+        let raw = code64(phys_at | off);
         if (raw ^ dc[slot].bytes) & dc[slot].mask != 0 { break; }
         if kind == 0 {
             // Met for the second time: the first, general, execution recorded the operand.
@@ -1460,20 +1477,17 @@ fn exec_short() -> bool {
         }
         shadow = false;
         a = run_short(kind, slot, base);
-        // If interrupts were being held off for that instruction, one may be due straight
-        // after it: no run then.
-        if held || left <= 1 { light_save = 0; return true; }
-        held = false;
+        if left <= 1 { light_save = 0; return true; }
         left -= 1;
         vt += 1;
         vtime = vt;
         saved.ip = a - base;
         saved.flags = cpu.flags;
-        light_save = 1;
         ran = true;
     }
     // The instruction at hand is for the general path, which wants the whole CPU saved.
-    if ran { saved = cpu; light_save = 0; }
+    light_save = 0;
+    if ran { saved = cpu; }
     return false;
 }
 

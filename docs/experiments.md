@@ -2226,3 +2226,57 @@ written for it passed the wrong build too, because tracing stops after every ins
 then nothing is carried from one to the next. The check is now a self-check, `s_csbase`,
 which runs untraced: a RET in the based segment to an offset whose linear address, without the
 base, holds an instruction the cache already knows. The wrong build fails it.
+
+## E029: The run loop's own host instructions (2026-11-15)
+
+- **Hypothesis**: After E028 every line of the micro-benchmark runs at seven to eight host
+  instructions a cycle, the host's width, so cycles now follow host instructions. A NOP costs
+  82 of them, all of it the loop: at 1.65 billion guest instructions that is about 130 of the
+  boot's 247 billion, more than the instructions' own work. Read off the generated code, the
+  loop does these for every instruction and need not: (1) reloads the code page's number, its
+  "in RAM" flag and its physical address, and tests page, flag and offset separately, though
+  no short executor can change them; (2) tests "interrupts were held off" and "no time left"
+  separately; (3) stores `light_save` every time; (4) dispatches through two jump tables with
+  a range test each, because the kind numbers have gaps. Removing these takes about 12 of the
+  82, and the boot's host instructions and cycles down by about 5%.
+- **What changed since last time**: E026 to E028 shortened what an instruction waits for and
+  left the instruction count alone. This is the first step on the other side, and it tests
+  the claim that cycles now follow instructions.
+- **Next move for each result**:
+  - Instructions and cycles both fall by about the same share → keep; the claim holds, and the
+    next cards go after the largest counts: validating an entry (tag, kind, eight code bytes:
+    about 20 a time), then the memory path and the flags
+  - Instructions fall and cycles do not → the loop is still waiting on something; back to
+    reading chains (the code bytes' load and compare are the first suspect)
+  - The guest instruction count changes → one of the hoisted values does change within a run
+- **Cut-off**: The same day; the checks of E026, 58 of 58.
+
+### Result
+
+2026-11-15. **Kept: 7% fewer host instructions and 5% fewer cycles on the boot.** The first
+branch of the card, near enough: cycles follow instructions now, at about three quarters of
+the share.
+
+| Benchmark | Before | Now |
+|---|---:|---:|
+| Linux boot to the shell prompt, three alternating runs | 246.6 billion host instructions; 39.59, 39.53, 39.48 billion cycles | 229.6 billion; 37.42, 37.47, 37.39 |
+| test386 | 20.44 billion; 3.08 billion cycles | 19.76 billion; 2.99 billion |
+| bench.bin (real mode) | 97.16 billion; 14.13 billion cycles | 96.79 billion; 14.10 billion |
+
+`probe/bench32.asm`, per instruction of BODY: a NOP 82 host instructions to 71, 10.7 cycles to
+9.9; `mov eax, [ebx+8]` 150 to 141, 18.6 to 16.0; `add [ebx+8], eax` 228 to 215, 31.8 to 28.2;
+`call fn` with its RET 275 to 255, 41.7 to 39.3. The boot still takes 1,651,240,001 guest
+instructions; `tools/difftest.sh` is at 58 of 58; test386 is byte for byte the reference.
+
+What went in, all in `exec_short`: the code page's number, flag and physical address are read
+once before the loop, and "same page, not in its last 15 bytes" is one comparison of the
+offset from the page's start; "interrupts held off for the first instruction" is folded into
+the time left (a run of one); `light_save` is set once on entry and cleared on the two ways
+out; and the unused kind numbers are named in the `match`, which makes the dispatch one jump
+table.
+
+A NOP is still 71 host instructions. What they are now, from the generated code: finding and
+validating the entry (slot, tag, kind, the eight code bytes fetched with a range test and
+compared under the mask) about 25; loading the entry's fields, storing `cpu.ip`, and the
+dispatch about 15; the tail (time left, virtual time, the saved instruction pointer and
+flags, the next offset and limit tests) about 20.
