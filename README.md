@@ -24,12 +24,14 @@ instruction boundary. The history and the numbers are in
 [docs/experiments.md](docs/experiments.md); what Goose did that cost time is in
 [docs/goose-notes.md](docs/goose-notes.md).
 
-Three blog posts (in Japanese) tell how it went: the first day, to ELKS and FreeDOS, in
+Four blog posts (in Japanese) tell how it went: the first day, to ELKS and FreeDOS, in
 [Goose で x86 エミュレータを書き直す](https://pocraft.net/?p=957); the two days after, from
 test386 to Linux, in
-[Goose の x86 エミュレータで Linux を起動する](https://pocraft.net/?p=962); and a day of making
+[Goose の x86 エミュレータで Linux を起動する](https://pocraft.net/?p=962); a day of making
 the Linux boot twice as fast, in
-[Goose の x86 エミュレータを 2 倍速くする](https://pocraft.net/?p=965).
+[Goose の x86 エミュレータを 2 倍速くする](https://pocraft.net/?p=965); and another day and
+another third, by measuring what the host waits for and not how many instructions it runs, in
+[Goose の x86 エミュレータをさらに 3 割速くする](https://pocraft.net/?p=970).
 
 | Stage | Goal | State |
 |---|---|---|
@@ -95,7 +97,7 @@ each `--type` types at the keyboard. A scripted run is not paced and skips idle 
 ```
 
 A Linux kernel image is loaded and entered directly, and the terminal becomes its serial console:
-the boot log scrolls by, and after about 15 seconds there is a shell. **Ctrl-]** leaves.
+the boot log scrolls by, and after about 11 seconds there is a shell. **Ctrl-]** leaves.
 
 ```bash
 ./build/g86m --initrd images/initramfs-mini images/vmlinuz-lts
