@@ -2,7 +2,9 @@
 ; spends on it. Assemble with the body given on the command line:
 ;   nasm -f bin -DBODY="mov eax, [ebx+8]" -o build/bench32.bin probe/bench32.asm
 ; and run it under /usr/bin/time -l, which reports the host instructions retired. The loop is
-; ITER times: BODY, DEC ECX, JNZ. An empty BODY gives the cost of the loop itself.
+; ITER times: BODY, DEC ECX, JNZ. An empty BODY gives the cost of the loop itself. BODY2 and BODY3
+; are two more lines for the body, for when it takes more than one instruction. INIT and INIT2
+; are lines run once before the loop (the registers it starts with are set just above the loop).
 %ifndef ITER
 %define ITER 20000000
 %endif
@@ -27,10 +29,22 @@ start32:
     mov  esi, 0x9000
     mov  edi, 0xA000
     mov  ecx, ITER
+%ifdef INIT
+    INIT
+%endif
+%ifdef INIT2
+    INIT2
+%endif
     align 16
 .loop:
 %ifdef BODY
     BODY
+%endif
+%ifdef BODY2
+    BODY2
+%endif
+%ifdef BODY3
+    BODY3
 %endif
     dec  ecx
     jnz  .loop

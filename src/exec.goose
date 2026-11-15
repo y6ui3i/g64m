@@ -1030,7 +1030,14 @@ let K_ALU8_A_I = 73;     // 04 0C 14 1C 24 2C 34 3C: AL with an 8-bit immediate
 let K_TEST_A_I = 74;     // A9
 let K_TEST8_A_I = 75;    // A8
 let K_RDTSC = 76;        // 0F 31
-let K_LAST = 76;         // the largest kind with an executor
+let K_MOVS = 77;         // A5: MOVSD without REP
+let K_MOVSW = 78;        // 66 A5
+let K_MOVSB = 79;        // A4
+let K_LODSB = 80;        // AC
+let K_SCASB = 81;        // AE
+let K_STOSB = 82;        // AA
+let K_STOS = 83;         // AB: STOSD
+let K_LAST = 83;         // the largest kind with an executor
 
 // Byte k of the instruction, from its first eight.
 inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32; }
@@ -1154,11 +1161,21 @@ fn classify(slot: i64, raw: u64) {
         else if op < 0x40 && op & 7 == 4 { kind = K_ALU8_A_I; imm = raw8(raw, pl); len = pl + 1; }
         else if op == 0xA9 { kind = K_TEST_A_I; imm = raw32(raw, pl); len = pl + 4; }
         else if op == 0xA8 { kind = K_TEST8_A_I; imm = raw8(raw, pl); len = pl + 1; }
+        // The string instructions without REP: loops are written with them (E035). A segment
+        // override, resolved below as for a memory operand, is the source's segment.
+        else if op == 0xA5 { kind = K_MOVS; len = pl; }
+        else if op == 0xA4 { kind = K_MOVSB; len = pl; }
+        else if op == 0xAC { kind = K_LODSB; len = pl; }
+        else if op == 0xAE { kind = K_SCASB; len = pl; }
+        else if op == 0xAA { kind = K_STOSB; len = pl; }
+        else if op == 0xAB { kind = K_STOS; len = pl; }
         else if op == 0x0F {
             let op2 = raw8(raw, pl);
             if op2 >= 0x80 && op2 <= 0x8F { kind = jcc_kind((op2 & 15) as! u8); cc = jcc_data((op2 & 15) as! u8); imm = raw32(raw, pl + 1); len = pl + 5; }
             else if op2 == 0x31 && i686 { kind = K_RDTSC; len = pl + 1; }
         }
+    } else if p16 && mm == 0 {
+        if op == 0xA5 { kind = K_MOVSW; len = pl; }
     } else if prep && mm == 0 {
         if op == 0xC3 { kind = K_RET; len = pl; }
         else if op == 0x90 { kind = K_NOP; len = pl; }
@@ -1367,6 +1384,47 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         74 => { alu(4, cpu.regs[0], imm, 32); },
         75 => { let a: u32 = r8(0); alu(4, a, imm, 8); },
         76 => { cpu.regs[0] = vtime as! u32; cpu.regs[2] = (vtime >> 32) as! u32; },
+        // The string instructions without REP. Each reads before it writes memory and moves
+        // ESI and EDI last, so a fault leaves the registers as they were. The source's segment
+        // is the entry's (DS, or an override); the destination's is always ES.
+        77 => {
+            let v = seg_read(mm >> 29, cpu.regs[SI], 32);
+            seg_write(ES, cpu.regs[DI], 32, v);
+            let d: u32 = if flag(DF) { 0xFFFFFFFC } else { 4 };
+            cpu.regs[SI] += d; cpu.regs[DI] += d;
+        },
+        78 => {
+            let v = seg_read(mm >> 29, cpu.regs[SI], 16);
+            seg_write(ES, cpu.regs[DI], 16, v);
+            let d: u32 = if flag(DF) { 0xFFFFFFFE } else { 2 };
+            cpu.regs[SI] += d; cpu.regs[DI] += d;
+        },
+        79 => {
+            let v = seg_read(mm >> 29, cpu.regs[SI], 8);
+            seg_write(ES, cpu.regs[DI], 8, v);
+            let d: u32 = if flag(DF) { 0xFFFFFFFF } else { 1 };
+            cpu.regs[SI] += d; cpu.regs[DI] += d;
+        },
+        80 => {
+            let v = seg_read(mm >> 29, cpu.regs[SI], 8);
+            set_r8(0, v as! u8);
+            cpu.regs[SI] += if flag(DF) { 0xFFFFFFFF } else { 1 };
+        },
+        81 => {
+            let b = seg_read(ES, cpu.regs[DI], 8);
+            let a: u32 = r8(0);
+            alu(7, a, b, 8);
+            cpu.regs[DI] += if flag(DF) { 0xFFFFFFFF } else { 1 };
+        },
+        82 => {
+            let v: u32 = r8(0);
+            seg_write(ES, cpu.regs[DI], 8, v);
+            cpu.regs[DI] += if flag(DF) { 0xFFFFFFFF } else { 1 };
+        },
+        83 => {
+            seg_write(ES, cpu.regs[DI], 32, cpu.regs[0]);
+            cpu.regs[DI] += if flag(DF) { 0xFFFFFFFC } else { 4 };
+        },
         _ => {},
     }
     return nx;
@@ -1561,6 +1619,17 @@ fn exec_general() -> bool {
     let c32 = code32();
     let a = cpu.base[CS] + cpu.ip;
     let lim = cpu.limit[CS];
+    // On a page of code other than the one last translated, translate it now, as the fetch of
+    // the first byte would in a moment (and with the same page fault, if there is to be one):
+    // otherwise the cache counts as unusable for the first instruction on every new page, and
+    // an instruction it holds is decoded from its bytes all over again (E034).
+    // Only for 32-bit code, where runs are: 16-bit code would pay for the test on every
+    // instruction, and its first fetch does the same thing.
+    if c32 && a >> 12 != code_page && dc_on && cpu.ip <= lim {
+        code_phys = page_read(a);
+        code_page = a >> 12;
+        code_ok = code_phys < RAM_SIZE - 4096 && code_phys + 0xFFF <= phys_mask;
+    }
     let usable = dc_on && a >> 12 == code_page && code_ok && a & 0xFFF <= 0xFF0 && lim >= 15 && cpu.ip <= lim - 15
         && (c32 || cpu.ip <= 0xFFF0);
     let slot: i64 = a & (DC_HALF - 1) | (if c32 { DC_HALF } else { 0 });
