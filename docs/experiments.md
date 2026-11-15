@@ -2809,3 +2809,57 @@ four passes), and both wrong builds fail it. The third is not caught by any test
 an instruction that changes a segment register and then faults, and none of the tests has
 one. The refresh after a restore is there because the restore can change the segments, not
 because a test demands it.
+
+## E038: One translation for an instruction that reads and writes its operand (2026-11-15)
+
+- **Hypothesis**: `add [mem], reg` and its like read the operand through `seg_read` and write
+  it back through `seg_write`: the address, the bound, the page test, a TLB lookup and the
+  test that the page is in RAM are done twice, once with the read TLB and once with the write
+  TLB. A page with a write entry at this privilege level can be read as well, so one lookup in
+  the write TLB gives the place in RAM for both, and when it misses the old way still does
+  everything. `probe/bench32.asm` has `add [ebx+8], eax` at about 200 host instructions where
+  a load is about 130. For the executors of ADD, OR, AND, SUB, XOR with a register or an
+  immediate, INC and DEC on a 32-bit memory operand: about 35 host instructions off each, and
+  on a boot, where a few percent of instructions are of this kind, about 1% of the host
+  instructions and somewhat less of the cycles.
+- **What changed since last time**: E024's third candidate, after E037 made the access path
+  itself shorter. The gain expected is small; it is taken because it is cheap and because
+  the instruction count has been followed by the cycles at about half since E033.
+- **Next move for each result**:
+  - Instructions and cycles fall → keep
+  - Instructions fall by less than 0.5% on the boot → these instructions are rarer than
+    thought; keep the change, and stop shaving the access path: what is left of the list is
+    REPNE SCASB a page at a time
+  - A test fails or the guest instruction count changes → the write TLB was trusted for a
+    page it does not cover (the lookup has to be the one `seg_write` makes, privilege level
+    included), or a flag is set before a fault can still happen
+- **Cut-off**: The same day; deliberately wrong builds (the read TLB used for the lookup; a
+  byte of the result not stored) must fail a test.
+
+### Result
+
+2026-11-15. **Kept: about 1% of the boot, instructions and cycles alike.**
+
+| | main | With one translation |
+|---|---:|---:|
+| Linux boot, host instructions | 188.5 billion | 186.4 billion (1.1% fewer) |
+| Linux boot, cycles, three alternating runs | 33.54, 33.42, 33.37 billion | 33.11, 33.15, 33.15 (1.0% fewer) |
+| `add [ebx+8], eax` in `probe/bench32.asm`, per iteration with DEC and JNZ | 357.7 instructions, 56.6 cycles | 332.6, 54.1 |
+| `inc dword [ebx+8]` | 350.7, 55.0 | 327.6, 52.7 |
+| test386 | 18.44 billion instructions, 2.98 billion cycles | 18.36 billion, 2.87 billion |
+| bench.bin (real mode) | 96.11 billion, 14.08 billion cycles | 95.68 billion, 14.09 billion |
+
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 65 of 65;
+test386 is byte for byte the reference. The executors for ADD, OR, AND, SUB and XOR with a
+register or an immediate, and INC and DEC, on a 32-bit operand: 25 host instructions off each
+with a memory operand, not the 35 expected (the compiler had already shared part of the two
+accesses).
+
+**Four wrong builds; two were caught by nothing at first.** The top byte of a result not
+stored, and DEC done as INC: caught by the trace tests and test386. The read TLB used for the
+look-up, and the segment bound not tested: both passed every test. For the first there is now
+`s_rmwro`: with paging on and write protection in ring 0, a page that may be read and not
+written is read, then ADD, INC and SUB on it must each take a page fault. For the second,
+`s_segbound` now tries ADD and INC against the small segment. It still passed the wrong build
+the first time: nothing had written to that page, so the write TLB did not hold it and the
+wrong path was never taken. It writes inside the segment first now, and the wrong build fails.
