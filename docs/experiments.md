@@ -1974,3 +1974,75 @@ machine, so a change under that needs several alternating runs or an idle machin
 5. **Lazy flags**: v86's form is four stores per arithmetic instruction. By rustx86's rules the
    flags of an instruction are mostly work nothing waits for, except by the jump that follows
    a compare; expected to show less in cycles than in instructions
+
+## E025: Short executors for what still takes the general path (2026-11-15)
+
+- **Hypothesis**: With the larger cache, 8.35% of a Linux boot's instructions still take the
+  general path, which costs about 250 host instructions where a short executor costs about 100,
+  and which ends a run. Counted (share of all instructions): accesses through a segment override,
+  which the short executors refuse, about 1.7% (the kernel's per-CPU data through FS:
+  `inc`/`dec [fs:..]`, `mov r32, [fs:..]`); instructions with no executor: `not` 0.46%, `rdtsc`
+  0.42%, `pause` 0.41%, 16-bit `mov` with an operand-size prefix 0.63%, shifts by one (`D1`)
+  0.25%, the AL/EAX-with-immediate forms about 0.4%, `mov r/m, imm` 0.29%, `rep ret` 0.20%; and
+  every cached instruction's first two executions, of which the second is avoidable (about 1%).
+  Covering these takes about 5% of instructions off the general path, and should take the boot's
+  cycles down by more than 5% (49.2 billion now).
+- **What changed since last time**: E024 adopted the cycle count as the measure. This is the
+  first change judged by it: each step is kept only if the boot's cycles fall over alternating
+  runs against the build before it, with the instruction count as the check that the guest saw
+  nothing different. The design change that admits segment overrides: the segment an operand
+  uses is resolved when the instruction is classified and kept in the entry, as rustx86 does.
+- **Next move for each result**:
+  - Cycles fall by 5% or more → keep; count the general path again; what is left decides
+    whether blocks (E024's second item) are next
+  - They fall by less, or not at all, while the instruction count falls → the general path's
+    cost is work the host overlaps (rustx86's first rule); stop adding executors and go to blocks
+  - A test fails, or the guest instruction count changes → a segment resolved wrongly, or an
+    executor that differs from the general code; the new trace test names the instruction
+- **Cut-off**: The same day. `tools/difftest.sh` all passing, test386 byte for byte, the boot at
+  1,651,240,001 instructions; a trace test that runs each new executor four times, with a
+  segment whose base is not zero, and fails against a deliberately wrong build.
+
+### Result
+
+2026-11-15. **Kept, at 3% where the card said 5%.** Boot cycles, three alternating runs each:
+48.89, 49.02, 49.18 billion before; 47.50, 47.55, 48.02 after. Host instructions 250.4 to 247.3
+billion. The general path now takes 3.79% of the boot's instructions, from 8.35%.
+
+| Benchmark | Before | After |
+|---|---:|---:|
+| Linux boot to the shell prompt | 250.4 billion host instructions, 49.0 billion cycles | 247.3 billion, 47.7 billion |
+| test386 | 22.4 billion, 3.62 billion cycles | 20.5 billion, 3.30 billion |
+| bench.bin (real mode) | 96.8 billion, 14.15 billion cycles | 96.7 billion, 14.14 billion |
+
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 56 of 56;
+test386 is byte for byte the reference.
+
+What went in:
+
+- **Segment overrides.** The segment an operand uses is resolved when the instruction is
+  classified and kept in the top bits of the entry, so the executors look it up the same way
+  for an override as without one. The instruction's length is now kept as length minus one in
+  three bits to make room
+- **Thirteen executors**: INC and DEC on memory, NOT, NEG, MOV of an immediate to memory (32 and
+  8 bits), MOV with an operand-size prefix (both directions), the eAX and AL forms with an
+  immediate, TEST of eAX and AL with an immediate, RDTSC; and shifts by one (`D1`) through the
+  executors the shifts by a count already had; REP on RET and NOP is accepted
+- **The second meeting runs short.** An instruction met for the second time is classified
+  inside the run and run by its executor at once, instead of a second time by the general path
+
+The cycles fell by more than the instruction count (3% against 1.2%): a general-path
+instruction also ends a run, and that is where its cost is, rustx86's observation as well. But
+the card asked for 5%, and its branch for less says to stop adding executors and go to blocks.
+What remains on the general path is mostly the first meeting of each instruction (`8D`, `89`,
+`8B`, `E8`, `C3`, `55`: about 1%), REP MOVSD (0.48%, already a page at a time inside), LODSB and
+SCASB without REP (0.33%), and a RET and a JMP with a prefix that is not a segment override or
+F3 (0.30% together; not identified).
+
+**The tests, again, needed a deliberately wrong build to be right.** The trace test for the new
+executors (`u_short3`, with FS based at 1000h so that an ignored override shows) matched rustx86
+at once and caught three of four wrong builds. The fourth, a 16-bit store that wrote 32 bits,
+passed: nothing read the two bytes after the store. The test now fills the word first and reads
+it back. The self-check for RDTSC (`s_rdtsc`) at first compared two readings within a pass,
+which a counter off by one in the executor leaves unchanged; it now also compares the distance
+between passes, the first of which is the general path, and the wrong build fails it.
