@@ -2207,7 +2207,7 @@ two cache lines.
 | test386 | 3.14 billion cycles | 3.08 billion |
 | bench.bin (real mode) | 14.07 billion cycles | 14.08 billion |
 
-The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 57 of 57;
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 58 of 58;
 test386 is byte for byte the reference. Since the morning's main (E025) the boot has gone from
 47.7 to 39.8 billion cycles, 17%, on a host instruction count that moved by 0.3%.
 
