@@ -91,6 +91,7 @@ fn linux_boot(img: u8[:], initrd: u8[:], cmdline: const u8[:]) -> const u8[:] {
         cpu.limit[s] = 0xFFFFFFFF;
         cpu.attr[s] = if s == CS { 0x1C09B } else { 0x1C093 };
     }
+    seg_bounds();
     set_r32(SI, ZERO_PAGE);                      // the protocol: ESI points at the zero page
     cpu.ip = entry;
     cpu.flags = 2;                               // interrupts off until the kernel turns them on

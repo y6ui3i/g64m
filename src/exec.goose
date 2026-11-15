@@ -2074,6 +2074,7 @@ fn step() {
             light_save = 0;
         } else {
             cpu = saved;
+            seg_bounds();                // the segments may have gone back with the rest
         }
         forget_last();                   // the privilege level may have gone back with the rest
         if log_faults { note_fault(vec, has_err, err); }

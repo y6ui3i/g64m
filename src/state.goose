@@ -63,6 +63,22 @@ var cpu: Cpu = Cpu { regs: [0; 8], segs: [0; 6], base: [0; 6], limit: [0xFFFF; 6
 // The state the current instruction started from, to go back to when it faults.
 var saved: Cpu = cpu;
 
+// For each segment register, the first offset at which an access may not take the short path
+// of seg_read and seg_write: the limit less 2 for a valid, writable data segment that grows
+// upward and is at least four bytes long, zero for any other. An access of any width at an
+// offset below it lies wholly inside such a segment. It follows from the limit and the
+// attributes, so whatever changes those calls seg_bound (E037).
+var seg_top: u32[6] = [0; 6];
+
+fn seg_bound(s: i64) {
+    let ok = (cpu.attr[s] & (A_VALID | A_CODE | A_DOWN_CONF | A_RW)) == (A_VALID | A_RW) && cpu.limit[s] >= 3;
+    seg_top[s] = if ok { cpu.limit[s] - 2 } else { 0 };
+}
+
+fn seg_bounds() {
+    for s in 6 { seg_bound(s); }
+}
+
 var tty: u8[>..];
 var stop_message: u8[>..];   // why the machine stopped, kept so it can be shown again later
 
@@ -439,17 +455,16 @@ fn seg_read_general(s: i64, off: u32, w: u8) -> u32 { return data_read(seg_check
 fn seg_write_general(s: i64, off: u32, w: u8, v: u32) { data_write(seg_check(s, off, w, true), w, v); }
 
 // An access through a segment register. The short path is for what nearly every access is: a
-// valid, writable data segment that grows upward, an access that ends at or below its limit (a
-// 64 KB real-mode segment qualifies as well as a flat 4 GB one) and lies inside one page,
+// valid, writable data segment that grows upward, an access below seg_top (so that it ends at
+// or below the limit; a 64 KB real-mode segment qualifies as well as a flat 4 GB one, all but
+// its last three bytes) and inside one page,
 // and a page with a TLB entry for this kind of access at this privilege level, which also means
 // the page is in RAM. Then the bytes are simply loaded or stored. Anything else goes the general
 // way, which is also what makes the TLB entry the next access will find.
 inline fn seg_read(s: i64, off: u32, w: u8) -> u32 {
     let nb: u32 = ((w as u32) >> 3);
     let a = cpu.base[s] + off;
-    let lim = cpu.limit[s];
-    if (cpu.attr[s] & (A_VALID | A_CODE | A_DOWN_CONF | A_RW)) == (A_VALID | A_RW)
-        && lim >= nb - 1 && off <= lim - (nb - 1) && (a & 0xFFF) + nb <= 0x1000 {
+    if off < seg_top[s] && (a & 0xFFF) + nb <= 0x1000 {
         let page = a >> 12;
         let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
         if tlb_rtag[i] == page {
@@ -473,9 +488,7 @@ inline fn seg_read(s: i64, off: u32, w: u8) -> u32 {
 inline fn seg_write(s: i64, off: u32, w: u8, v: u32) {
     let nb: u32 = ((w as u32) >> 3);
     let a = cpu.base[s] + off;
-    let lim = cpu.limit[s];
-    if (cpu.attr[s] & (A_VALID | A_CODE | A_DOWN_CONF | A_RW)) == (A_VALID | A_RW)
-        && lim >= nb - 1 && off <= lim - (nb - 1) && (a & 0xFFF) + nb <= 0x1000 {
+    if off < seg_top[s] && (a & 0xFFF) + nb <= 0x1000 {
         let page = a >> 12;
         let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
         if tlb_wtag[i] == page {

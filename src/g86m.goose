@@ -293,6 +293,7 @@ fn run_serial(max: i64) -> i64 {
 
 fn main() {
     let a = args();
+    seg_bounds();
     var show_screen = false;
     var show_ports = false;
     var headless = false;
