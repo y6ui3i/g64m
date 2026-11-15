@@ -1268,7 +1268,16 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         6 => { ea_short(mm, dc[slot].disp); cpu.regs[reg] = ea_off; },
         7 => { short_ea(mm, slot); alu(4, short_read(mm), cpu.regs[reg], 32); },
         8 => { short_ea(mm, slot); short_write(mm, shift(reg as! u8, short_read(mm), imm as! u8, 32)); },
-        9 => { short_ea(mm, slot); short_write(mm, shift(reg as! u8, short_read(mm), r8(1), 32)); },
+        9 => {
+            // By CL. The three shifts by a count from 1 to 31 in one step, as for a constant
+            // count; a count of zero (which changes nothing) and the rotates as before.
+            short_ea(mm, slot);
+            let n: u32 = r8(1) & 31;
+            if n == 0 || reg < 4 { short_write(mm, shift(reg as! u8, short_read(mm), r8(1), 32)); }
+            else if reg == 5 { short_write(mm, shr32(short_read(mm), n)); }
+            else if reg == 7 { short_write(mm, sar32(short_read(mm), n)); }
+            else { short_write(mm, shl32(short_read(mm), n)); }
+        },
         10 => { if cond(dc[slot].disp as! u8) { nx += imm; cpu.ip = nx - base; } },
         11 => { nx += imm; cpu.ip = nx - base; },
         12 => { push_w(nx - base, 32); nx += imm; cpu.ip = nx - base; },

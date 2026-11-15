@@ -2401,3 +2401,156 @@ cache through a flat segment first), and the wrong build fails it. Two versions 
 passed the wrong build before the third did not: instructions beyond the limit are not in the
 cache unless something put them there, and a run is not attempted on a page that begins below
 the segment's base.
+
+## E032: The next instruction by position, not by address (2026-11-15)
+
+- **Hypothesis**: What a run waits on is the load from one instruction's address to the next
+  (E031: 10 cycles for a NOP, at 59 host instructions or at 72). Keep, beside the cache, an
+  array `seq` of slot numbers in the order instructions were executed, and a place in it for
+  each slot. A run carries a position `p`; the instruction to run is the one `seq[p]` names,
+  and after it `p + 1`. Nothing about `seq[p + 1]` waits for the instruction at `p`: its
+  entry, its code bytes and the address after it all come from `p + 1`. Whether it *is* the
+  instruction at the address the one before it led to is a comparison (its tag against that
+  address), which the host predicts and runs past. When it is not (a taken jump whose target
+  is elsewhere in the array, or not in it yet), the slot is found from the address as now and
+  the position from the slot, or the instruction is appended; that costs what every
+  instruction costs today, once per such jump. This is a block of consecutive entries with no
+  notion of a block: the array is only ever a guess, and an entry is used only when its tag
+  matches the address, as now, so nothing new can be stale in a way that matters. Expected:
+  a NOP from 10 cycles to 8.5 or less (what is left is the host's width: 59 instructions and
+  a few more for the array); the boot's cycles down by 5% or more.
+- **What changed since last time**: E028 shortened the load on the chain; E031 showed it is
+  still the floor and that nothing else in the loop is. This takes the load off the chain for
+  instructions that follow one another, at the price of a host branch that now depends on
+  where the guest's jumps go.
+- **Next move for each result**:
+  - A NOP falls to 8.5 or less and the boot's cycles fall → keep. Then what bounds a run is
+    the bodies: guest registers and flags that go through memory (E031's second table)
+  - A NOP falls and the boot does not, or rises → the comparison is mispredicted where the
+    guest's jumps vary; count how often the position is found by address, and try remembering
+    a second successor for a jump before giving up
+  - A NOP does not fall → the floor is not that load after all; the array comes out, and the
+    next thing is a sampling profile of the loop by address, not another guess
+  - The guest instruction count changes → an entry was used whose tag did not match
+- **Cut-off**: The same day; `tools/difftest.sh` 60 of 60, test386, the boot's count.
+
+### Result
+
+2026-11-15. **Not kept: the boot took 16% more cycles.** And the measurements made to find out
+why close the question of blocks.
+
+| | main | With `seq` |
+|---|---:|---:|
+| Linux boot, host instructions | 211.7 billion | 240.7 billion |
+| Linux boot, cycles, two alternating runs | 36.75, 36.49 billion | 42.90, 42.50 |
+| `nop`, sixteen in a row, per instruction | 60 instructions, 10.0 cycles | 75, 9.3 |
+| `mov eax, edx`, sixteen in a row | 69, 10.3 | 83, 18 |
+
+A NOP fell by 0.7 cycles, not 1.5; everything else rose, and the boot ran 14% more host
+instructions: with a taken jump every few instructions, finding the place for the target
+(two more loads and often an append) costs more than following the array saves. The guest
+instruction count was unchanged. The array is out.
+
+**How much the load on the chain is worth, measured directly.** A build made only to be timed
+lets the NOP executor form the next address as "this one plus one", with no load. 250 NOPs in
+a row: 10.5 cycles each with the load, 8.6 without (at 64 host instructions, which is the
+host's width). So the load from one instruction's address to the next is 2 cycles of the 10,
+not the 10 of E031's reading, and no arrangement of entries can win more than that 2: about a
+tenth of the boot at the very most, before what the arrangement itself costs. **Blocks are
+off the list.** E031 was right that a NOP's time did not follow its instruction count, and
+wrong about why: at 72 instructions it was at the width, at 59 it is at the chain, and the two
+are 2 cycles apart.
+
+**The sixteen-in-a-row benchmark misleads.** `mov eax, 5` cost 14.7 cycles sixteen in a row,
+12.8 four in a row and 11.2 sixty-four in a row. A long row of one kind followed by another
+kind is the case a history-based predictor gets wrong at the dispatch jump, and the profile
+below shows those samples on the first instruction of the executor. E031's second table (LEA,
+INC and CMP "costing 6 to 9 cycles more than a NOP") is that effect, not registers and flags
+going through memory; that reading is withdrawn.
+
+**A profile by address** (`probe/prof.c`: a timer signal notes the program counter; an
+interrupted CPU reports the oldest instruction it has not finished, so samples pile up on what
+was being waited for). The Linux boot, 14,584 samples:
+
+| Where | Share |
+|---|---:|
+| `exec_short`, the run loop and its executors | 73.4% |
+| of which: the loads of the entry and of `dc_next`, the jump-table load, the stores that wait for them | about 28% |
+| of which: the first instruction after an unconditional jump (an executor's entry, where a mispredicted dispatch shows) | 11.8% |
+| `exec_general` | 10.9% |
+| of which: one store, the destination of `mov [mem], imm` on its way through the general path | 3.6% |
+| `run_until` | 5.3% |
+| of which: the script's search of the serial output for the text it waits for | 3.5% |
+| `shift` | 3.0% |
+| `string_op` | 1.9% |
+| `seg_read_general`, `seg_write_general` | 2.6% |
+| `parse_modrm` | 1.2% |
+
+Three things in it that no count of instructions showed. The script that these measurements
+are made with searches all of the serial output since the last match, on every poll, for the
+text it waits for: 3.5% of every boot figure in this ledger is that search, which is the
+harness and not the emulator. A single store in the general path holds 3.6%; the general path
+runs instructions met for the first time, whose bytes and operands are memory the host has
+not touched lately, so this is the guest's memory missing the host's caches, and it is the
+same wherever code is new. And `shift`, the general routine for shifts and rotates that the
+executors for a count in CL and for the less common shifts call, is 3%.
+
+## E033: Two things the profile pointed at (2026-11-15)
+
+- **Hypothesis**: Two entries in E032's profile are plain waste and are worth what the profile
+  says. (a) The script's wait for a text searches the serial output from the last match to the
+  end on every poll: 3.5% of the boot's cycles. Searching only what is new (from where the
+  last search ended, less the text's length) finds the same match on the same poll. This is
+  the measuring harness, not the emulator: it makes the figures honest and a scripted boot
+  faster, and an interactive boot no faster at all. (b) Shifts by CL (`D3`) go through the
+  general `shift` routine, a call that works on any width and sets the flags one at a time:
+  3.0% of the boot. SHL, SHR and SAR of 32 bits by a count of 1 to 31 have one-step inline
+  forms already (the executors for a constant count use them); with the count taken from CL
+  the executor can use the same forms, and call `shift` only for a count of zero and for
+  rotates. Expected: `shift` falls to under 1% of a profile, and the boot's cycles by about
+  2% from (b) and 3% from (a).
+- **What changed since last time**: Until E032 the choice of what to do came from counting
+  instructions and reading code. These two come from a profile by address.
+- **Next move for each result**:
+  - Both give about what the profile said → keep; the profile is a good guide to the size of
+    things, and the next targets are taken from it in order (the dispatch's mispredictions
+    are the largest that is not inherent)
+  - (b) gives much less → `shift`'s samples were something waiting inside it (the flags),
+    not its length; look at where in it they are
+  - The guest instruction count changes → (a) found a match on a different poll, or (b)'s
+    flags differ from `shift`'s for some count
+- **Cut-off**: The same day; `tools/difftest.sh` 60 of 60 with a deliberately wrong build for
+  (b), test386, the boot's count.
+
+### Result
+
+2026-11-15. **Both kept: 4.2% fewer cycles on the scripted boot, of which 3.4% is the harness.**
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main, three alternating runs | 211.7 billion | 36.63, 36.51, 36.54 billion |
+| with (a), the search of only what is new | 205.4 billion | 35.41, 35.26 |
+| with (a) and (b), shifts by CL in one step | 202.5 billion | 35.01, 35.05, 34.97 |
+
+(a) gave the 3.4% the profile said (3.5%). (b) gave 0.9% where the profile said `shift` was
+3.0%: not "much less", but under half. The routine is still called for rotates, for shifts of
+8 and 16 bits and from the general path, and some of its samples will have been the flags it
+reads and writes several times over, which the one-step forms do once.
+
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 60 of 60;
+test386 is byte for byte the reference and bench.bin is unchanged (neither uses the script's
+search, and neither is heavy in shifts by CL). Three wrong builds of (b) (SAR done as SHR, SHR
+as SHL, the count masked to four bits) all fail test386, and the first fails `u_short` too.
+
+**Every boot figure before this entry includes the search**, about 1.2 billion cycles at the
+end and more when boots were slower in host time but the same in polls. Comparisons between
+two builds measured the same way stand; the absolute figures, and the "cycles per guest
+instruction" derived from them, were about 3% high. From here the boot stands at 35.0 billion
+cycles and 202.5 billion host instructions: 21.2 cycles and 123 host instructions for each
+guest instruction.
+
+Where the day leaves the list. Gone from it: blocks (E032). The largest items of the profile
+that are not the guest's own memory: the dispatch jump's mispredictions (about 12% of samples
+sit on an executor's first instruction), the general path (11% of the time for 3.8% of the
+instructions, part of it cache misses on code met for the first time), and the loads that
+every instruction makes of its entry (about 28%, which is where the host's width shows).
