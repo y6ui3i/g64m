@@ -1030,6 +1030,7 @@ let K_ALU8_A_I = 73;     // 04 0C 14 1C 24 2C 34 3C: AL with an 8-bit immediate
 let K_TEST_A_I = 74;     // A9
 let K_TEST8_A_I = 75;    // A8
 let K_RDTSC = 76;        // 0F 31
+let K_LAST = 76;         // the largest kind with an executor
 
 // Byte k of the instruction, from its first eight.
 inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32; }
@@ -1441,12 +1442,22 @@ fn exec_short() -> bool {
     if lim < 15 { return false; }
     let ip_max = lim - 15;
     // The page of code last translated, and where it is in RAM: no short executor translates
-    // code or changes the paging, so these stand for the whole run too (E029). A run stays on
-    // that page, and off its last 15 bytes, which is one comparison of the offset from its
-    // start; a page number that is not one (nothing translated yet) never matches.
+    // code or changes the paging, so these stand for the whole run too (E029). A page number
+    // that is not one (nothing translated yet) is no page to run on.
     if code_page > 0xFFFFF || !code_ok { return false; }
     let page_at = code_page << 12;
-    let phys_at = code_phys;
+    // code_ok says the whole page is in RAM. Said again here as a test of the address itself,
+    // it lets the compiler see that every fetch below is inside `ram`, with no test of its own.
+    let phys_at: i64 = code_phys;
+    if phys_at >= RAM_SIZE - 4096 { return false; }
+    // A run stays on that page, off its last 15 bytes, and within the code segment's limit
+    // less 15. All three are one bound on the offset from the start of the page (E030): the
+    // instruction pointer at the start of the page is ip_lo, and it rises with the offset. A
+    // page on which it wraps, or that begins beyond the limit, is left to the general path.
+    let ip_lo = page_at - base;
+    if ip_lo > ip_max || ip_lo > 0xFFFFF000 { return false; }
+    var off_max: u32 = 0xFF0;
+    if ip_max - ip_lo < off_max { off_max = ip_max - ip_lo; }
     // If interrupts are being held off for the first instruction, one may be due straight
     // after it: that is a run with time for one instruction.
     var left = chain_until - vtime;
@@ -1459,17 +1470,28 @@ fn exec_short() -> bool {
     // for which `saved` is still whole.
     light_save = 1;
     loop {
-        let ip0 = a - base;
         let off = a - page_at;
-        if off > 0xFF0 || ip0 > ip_max { break; }
+        if off > off_max { break; }
         let slot: i64 = a & (DC_HALF - 1) | DC_HALF;
-        var kind = dc[slot].pre.kind;
-        if dc[slot].tag != a || kind == K_NONE { break; }
-        let raw = code64(phys_at | off);
+        if dc[slot].tag != a { break; }
+        let q = phys_at + off;
+        let b0: u64 = ram[q];
+        let b1: u64 = ram[q + 1];
+        let b2: u64 = ram[q + 2];
+        let b3: u64 = ram[q + 3];
+        let b4: u64 = ram[q + 4];
+        let b5: u64 = ram[q + 5];
+        let b6: u64 = ram[q + 6];
+        let b7: u64 = ram[q + 7];
+        let raw = b0 | b1 << 8 | b2 << 16 | b3 << 24 | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56;
         if (raw ^ dc[slot].bytes) & dc[slot].mask != 0 { break; }
-        if kind == 0 {
-            // Met for the second time: the first, general, execution recorded the operand.
-            // Classify it now and, if it has an executor, run it with that this time already.
+        var kind = dc[slot].pre.kind;
+        // One test for the usual case, a kind with an executor (1 to K_LAST). What is left is
+        // 0, an instruction met for the second time, whose first, general, execution recorded
+        // the operand: classify it now and, if it has an executor, run it with that this time
+        // already. Or K_NONE.
+        if kind - 1 >= K_LAST {
+            if kind != 0 { break; }
             ins = dc[slot].pre;
             classify(slot, raw);
             kind = dc[slot].pre.kind;

@@ -2280,3 +2280,124 @@ validating the entry (slot, tag, kind, the eight code bytes fetched with a range
 compared under the mask) about 25; loading the entry's fields, storing `cpu.ip`, and the
 dispatch about 15; the tail (time left, virtual time, the saved instruction pointer and
 flags, the next offset and limit tests) about 20.
+
+## E030: Validating an entry in fewer host instructions (2026-11-15)
+
+- **Hypothesis**: Of the 71 host instructions a NOP costs in a run, about 25 find and validate
+  its entry, and four pieces of that are bookkeeping the loop can do once or not at all:
+  (1) the range test around the fetch of the eight code bytes, which holds for every offset
+  once the page is known to be in RAM; (2) "no executor" and "not classified yet" as two tests
+  of the kind, then a third inside the dispatch for the range of the jump table: one test for
+  "is this a kind with an executor" can do for all three; (3) the test of the instruction
+  pointer against the segment limit, which for a given page is a bound on the offset in the
+  page, like the page test itself; (4) the multiply by 40 to address the entry: an entry of 64
+  bytes is addressed by a shift. Together about 14 of the 71, and by E029's ratio the boot
+  loses about 6% of its host instructions and 4% of its cycles.
+- **What changed since last time**: E029 took what was plainly repeated. These four need the
+  compiler to see something (a range, a single test), so each is checked in the generated
+  code and by the instruction count of a NOP, one at a time.
+- **Next move for each result**:
+  - A piece lowers the NOP's count → keep it. Then the body: the memory path and the flags
+  - A piece does not lower it (the compiler does not see it) → take it out; say so
+  - 64-byte entries lower the count but raise the boot's cycles (more cache per instruction)
+    → keep 40
+  - The guest instruction count changes → the limit folded into the offset bound is wrong at
+    a page that straddles the limit; that case must take the general path
+- **Cut-off**: The same day; the checks of E026, 58 of 58.
+
+### Result
+
+2026-11-15. **Kept for the instructions; the cycles did not follow, which is the finding.**
+Pieces (1) to (3) went in together; (4), the 64-byte entry, was not tried, because of what the
+first three showed.
+
+| | Before | With (1) to (3) |
+|---|---:|---:|
+| A NOP in a run | 72 host instructions, 10 cycles | 59, 10 |
+| Linux boot, host instructions | 229.6 billion | 211.8 billion (7.8% fewer) |
+| Linux boot, cycles, three alternating runs | 37.62, 37.74, 37.65 billion | 36.90, 36.73, 37.96 (about 1% fewer) |
+
+The compiler did see all three: the range test around the code bytes is gone once the page's
+address is tested against RAM before the loop and the index is formed by adding in 64 bits;
+one test of `kind - 1` against the last kind replaces three; the limit is a bound on the
+offset. The guest instruction count is unchanged; `tools/difftest.sh` is at 60 of 60 with the
+new self-check described under E031; test386 is byte for byte the reference (19.79 to 19.40
+billion host instructions, 3.03 to 3.00 billion cycles); bench.bin is unchanged.
+
+But E029 lost 7% of the instructions and 5% of the cycles, and this loses 8% and 1%. By the
+card's reading of E029 ("instructions fall and cycles do not → the loop is still waiting on
+something") there is a chain again, and it is not the one E028 cut: a NOP's 10 cycles are
+unchanged at 59 instructions, and DEC with JNZ costs 16 each.
+
+## E031: A conditional jump that waits for its flags (2026-11-15)
+
+- **Hypothesis**: In a run, a conditional jump is `if condition { next += offset }`, and the
+  compiler turns that into a conditional select, not a branch. A select is data: the address
+  of the instruction after the jump then depends on the flags, the flags on the instruction
+  that set them, and that instruction on its operands and its own entry. So across every
+  conditional jump the host can start nothing of what follows until the compare before it is
+  done, where a branch would have been predicted and run ahead. That is the whole body of an
+  instruction, with two trips through memory for the flags, on the chain: about 30 cycles for
+  the benchmark's DEC and JNZ, which is what the empty loop costs (32). Making the taken path
+  something the compiler cannot fold into a select (a store to a variable that is not stored
+  otherwise) forces a branch.
+- **What changed since last time**: E030 showed the cycles no longer follow instructions; this
+  names the chain and changes one thing, in the four conditional-jump executors.
+- **Next move for each result**:
+  - The empty loop falls from 32 cycles towards 20, and the boot's cycles fall → keep; then
+    look for other selects on the way to the next address (RET's target is a load, which is
+    data too, but there is nothing to predict it with short of a return stack)
+  - The loop falls and the boot rises → the host mispredicts the one branch all guest jumps
+    share more than the select cost; try a branch per condition kind, or leave the select
+  - Nothing moves → the compiler already branched, or made a select again: read the code
+- **Cut-off**: The same day; the checks of E026, 58 of 58.
+
+### Result
+
+2026-11-15. **Nothing moved; taken out.** With a store on the taken path of the four
+conditional-jump executors the empty loop cost 31.1 cycles against 31.3, and the other lines
+moved by less than their spread. Whether the compiler had made a branch already was not
+settled by reading the code (the loop is laid out in several copies); the measurement says the
+jump is not what the loop waits on, either way.
+
+Then the pieces of the loop were taken out one at a time, in builds made only to be timed (the
+store of the interrupt shadow, the saved flags, the saved instruction pointer, the virtual
+time, the comparison of the code bytes, the tag test): a NOP stayed between 39 and 43 cycles
+per iteration in all of them. None of them is the floor.
+
+What the floor is, by elimination and by sixteen of one instruction in a row (per instruction):
+
+| Instruction | Host instructions | Cycles |
+|---|---:|---:|
+| `nop` | 59 | 10.0 |
+| `mov eax, edx` | 68 | 10.3 |
+| `inc eax` | 87 | 16.7 |
+| `lea eax, [ebx+8]` | 81 | 16.8 |
+| `cmp eax, edx` | 94 | 18.6 |
+| `mov eax, [ebx+8]` | 129 | 18.9 |
+| `add eax, edx` | 101 | 19.5 |
+| `add [ebx+8], eax` | 203 | 29.3 |
+
+A NOP at 59 instructions and at 72 (before E030) is 10 cycles: that is the step E028 left,
+from this instruction's address to a slot, to a load from `dc_next`, to the next address.
+A load whose address comes from the load before it cannot be made shorter by arranging the
+array; E028 took it from about 14 cycles to about 10 and that is where it stays while the next
+instruction is found *by its address*. This is the measured case for a block of consecutive
+entries (E024's second candidate): inside a block the next entry is the one after this one,
+known without waiting, and only a taken jump has to look anything up. The floor is 10 of the
+22 cycles the boot averages per guest instruction.
+
+The second thing the table shows: `lea`, `inc` and `cmp` cost 6 to 9 cycles more than a NOP
+for 20 to 35 more instructions, far more than their share. They have in common that they read
+a guest register that the instruction before them wrote (through memory), and INC and CMP
+that they write the flags, which are read, changed and stored in memory. That is the body's
+own chain, and it is the same shape E026 found for the instruction pointer.
+
+**A hole found on the way, older than this change.** With the limit folded into the offset
+bound, a build that ignores the limit passed every test, and so would have a build that ignored
+the old limit test: nothing ran a run up to a code segment's limit. `s_cslimit` does (a
+segment whose limit ends in the middle of a row of INCs, the ones beyond it made known to the
+cache through a flat segment first), and the wrong build fails it. Two versions of the test
+passed the wrong build before the third did not: instructions beyond the limit are not in the
+cache unless something put them there, and a run is not attempted on a page that begins below
+the segment's base.
