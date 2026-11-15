@@ -2123,3 +2123,106 @@ longer hanging idle off a long chain. Before building blocks, the same measureme
 whether what is left is a chain (slot, load of the entry, next slot; the virtual time, which
 is also a global stored and loaded every time; the flags from one instruction to a jump) or
 the host's width, in which case it is host instructions that count again.
+
+## E027: What a run still waits on: the virtual time, then the entry (2026-11-15)
+
+- **Hypothesis**: After E026 a NOP in a run costs 15.8 cycles for 83 host instructions, where
+  the host's width alone would allow about 10; a load costs 20.3 for 149 and `add [mem], reg`
+  30.5 for 223, so cycles now rise with instructions, on top of a floor that is still a chain.
+  Two candidates for the floor, read off `exec_short`. (a) `vtime += 1`: a global loaded, added
+  to and stored for every instruction, the same shape as `cpu.ip` was, though nothing else in
+  the instruction waits for it. (b) instruction pointer → slot → load of the entry's length →
+  next instruction pointer, which is in every instruction's way. Counting the virtual time in a
+  local and only storing the global removes (a) without changing what any reader of `vtime`
+  sees. If the NOP line falls, (a) was on the floor; if it does not, the floor is (b).
+- **What changed since last time**: E026 took out the instruction pointer's trip through
+  memory. This takes out the second, and only the second, global that a run stores and loads
+  each time, so the result separates (a) from (b).
+- **Next move for each result**:
+  - The NOP line falls by 2 cycles or more → keep; measure again, and go on to (b) with what
+    is left as the number to beat
+  - It does not fall → keep the change only if the boot's cycles fall at all (they are
+    reproducible to 1%); the floor is (b), and the next card is a block of consecutive
+    entries, to be judged against 15.8 cycles for a NOP
+  - The guest instruction count changes → something read `vtime` between the store and where
+    it used to be (RDTSC's executor, a fault)
+- **Cut-off**: The same day; the checks of E026.
+
+### Result
+
+2026-11-15. **The NOP line did not fall: the virtual time is not on the floor. Kept all the
+same, for the instructions.** `probe/bench32.asm`: a NOP 54.1 cycles per iteration against 53.8,
+the other lines within 1.5 either way. Linux boot, three alternating runs: 43.28, 43.10, 42.90
+billion cycles before; 42.83, 43.14, 43.00 after; host instructions 249.2 to 248.0 billion
+(the compiler no longer reloads the global). Guest instructions 1,651,240,001.
+
+So the floor is (b), and the generated code for the loop shows how long it is: from the
+instruction pointer, add the base, mask to a slot, **multiply by 40** (the size of an entry) to
+address it, load the entry's operand word, extract three bits, add twice. About 14 cycles of
+the 15.8, and the entries sit at an odd address, 40 bytes apart, so the load often straddles
+two cache lines.
+
+## E028: The next instruction's address in an array of its own (2026-11-15)
+
+- **Hypothesis**: The chain E027 found is slot → entry → length → next slot, about 14 cycles,
+  and most of it is not the load but getting to it and away from it: a multiply by 40, an
+  extract and two adds. Keep, for each slot, the linear address of the instruction after it in
+  a separate array of 32-bit numbers, and carry the linear address (not the instruction
+  pointer) through the run. The chain becomes: mask, load indexed by four bytes, and for a
+  taken jump one add; 6 or 7 cycles. This is what a block of consecutive entries would give
+  (the next entry without computing where it is from what this one holds) for one array and
+  no new notion of validity: the number is used only after the entry's tag and bytes have
+  matched, as now. Expected: a NOP from 15.8 cycles towards the 10 or 11 that 83 instructions
+  need at this host's width, and the boot's 43.0 billion cycles down by 10% or more.
+- **What changed since last time**: E027 ruled out the virtual time and read the chain off the
+  generated code. This changes only how the next address is found, not what an entry is.
+- **Next move for each result**:
+  - A NOP falls to 12 cycles or less → keep. A run is then bound by the host's width, and
+    what counts from here is host instructions per guest instruction again (the run loop's
+    own checks, the memory path, the flags); blocks are not needed for the chain
+  - It falls by less than 2 → the load itself, or the dispatch jump, is the floor; count
+    mispredicted branches on the micro-benchmark before anything else
+  - The guest instruction count changes → the address after a jump or a RET was formed
+    wrongly, or a stale number was used before its entry was checked
+- **Cut-off**: The same day; the checks of E026.
+
+### Result
+
+2026-11-15. **Kept: a NOP at 10.7 cycles, and 8% fewer cycles on the boot.**
+`probe/bench32.asm`, cycles per iteration, host instructions unchanged:
+
+| BODY | Before (E027) | Now | Per instruction of BODY, now |
+|---|---:|---:|---:|
+| (empty: DEC, JNZ) | 38.9 | 32.4 | |
+| `nop` | 54.8 | 43.1 | 10.7 cycles for 82 instructions |
+| `mov eax, edx` | 53.9 | 43.4 | 11.0 for 91 |
+| `add eax, edx` | 58.4 | 49.2 | 16.8 for 124 |
+| `mov eax, [ebx+8]` | 58.6 | 51.0 | 18.6 for 150 |
+| `add [ebx+8], eax` | 69.1 | 64.2 | 31.8 for 228 |
+| `call fn` | 76.1 | 74.1 | 41.7 for 275 |
+
+| Benchmark | Before | Now |
+|---|---:|---:|
+| Linux boot to the shell prompt, three alternating runs | 43.27, 42.96, 43.17 billion cycles; 248.1 billion host instructions | 39.69, 40.01, 39.59; 246.6 billion |
+| test386 | 3.14 billion cycles | 3.08 billion |
+| bench.bin (real mode) | 14.07 billion cycles | 14.08 billion |
+
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 58 of 58;
+test386 is byte for byte the reference. Since the morning's main (E025) the boot has gone from
+47.7 to 39.8 billion cycles, 17%, on a host instruction count that moved by 0.3%.
+
+A NOP is at the 12 the card asked for, so by its first branch a run of simple instructions is
+now bound by how many host instructions there are, and the table says where they are dear: the
+lines with flags or memory did not fall as far as the NOP, and `add [mem], reg` and CALL hardly
+fell at all. Those have chains of their own inside the instruction (the flags stored and read
+back; a memory operand read, then written, with a translation each time; the stack pointer),
+and they are next: one access for read-modify-write (E024's third candidate), and the path
+from an ALU result to the stored flags.
+
+**A trace test cannot test this, and the first test written for it did not.** With a code
+segment based at 100h, four wrong builds were tried: three were caught by test386, and a RET
+that forgets to add the base to the address it carries was caught by nothing. The trace test
+written for it passed the wrong build too, because tracing stops after every instruction and
+then nothing is carried from one to the next. The check is now a self-check, `s_csbase`,
+which runs untraced: a RET in the based segment to an offset whose linear address, without the
+base, holds an instruction the cache already knows. The wrong build fails it.

@@ -108,6 +108,10 @@ for the total, a debugger stepping one instruction for the detail). See E010 and
   was 15 to 20 of the 27 host cycles a guest instruction cost; carrying it in a local, and only
   storing the global, took them off with the host instruction count unchanged (E026). Counting
   instructions does not show this; counting cycles for bodies of different lengths does
+- **Indexing an array of structs multiplies by the struct's size**, and a load from it waits for
+  that. For a 40-byte entry that is a multiply on the way to every load. What a loop needs in
+  order to find its next element is better kept in an array of plain numbers beside the
+  structs, indexed by a shift (E028: 5 of 16 cycles per guest instruction)
 - **`/` is checked for a zero divisor**, by a call, even when the divisor is the literal 8. Use a
   shift on hot paths. Mind the precedence when replacing: `a + w >> 3` is not `a + (w >> 3)`
 
