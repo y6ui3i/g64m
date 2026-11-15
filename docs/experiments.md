@@ -2680,3 +2680,73 @@ instructions and the same cycles to within the spread.
 A second single store in `exec_general` holds 5% of the samples, in the code for `mov r/m,
 imm`, at an address in the decompressor's working memory, and by the counts that instruction
 is far too rare there to cost that by running. It is not explained.
+
+## E036: A copy from a few bytes back (2026-11-15)
+
+- **Hypothesis**: E035 left the decompressor's `movsw; dec ecx; jnz` at about 180 cycles a
+  copy in the boot where its executor takes 60 with source and destination far apart. The
+  guess: the copy reads from a few bytes behind where it writes, and when that distance is
+  odd, or 1, each 16-bit load straddles two earlier 16-bit stores; the host cannot forward
+  such a load out of its store buffer and makes it wait until both stores have left the
+  buffer, which is after everything before them has completed. If so, in
+  `probe/bench32.asm` (within the first megabyte, an outer loop setting the pointers again)
+  a distance of 1 or 3 costs several times what a distance of 2, 4 or 4096 costs, and the
+  fix is in how `seg_read` gets its bytes: a load that can come from the store buffer is one
+  that lies inside one earlier store, so a 16-bit read that might straddle is better made as
+  two byte loads, each inside one store.
+- **What changed since last time**: E035's attempt to measure this wrapped at 1 MB onto its own
+  code. This measures first and changes code only if the distances differ.
+- **Next move for each result**:
+  - Odd distances cost several times even ones → the guess holds; make the read of MOVSW
+    (and MOVSD, whose 32-bit load straddles for any distance under 4) byte by byte in the
+    executors, measure the same table again, then the boot
+  - All distances cost the same → the guess is wrong, and the boot's 180 cycles are the
+    guest's memory (the destination is memory the host has not touched); nothing to change
+    in the copy; record it and take the next item of the profile
+  - Small distances cost more whether odd or even → it is the dependence itself (each copy
+    needs the one before); that is the guest's own chain and cannot be shortened below one
+    store-to-load step, but byte loads may still shorten that step
+- **Cut-off**: The same day.
+
+### Result
+
+2026-11-15. **All distances cost the same: the guess is wrong, and nothing in the copy
+changes.** `probe/bench32.asm` with an outer loop (100 times 200,000 copies from 10000h, so it
+stays under 1 MB), main, per iteration of the instruction, DEC and JNZ:
+
+| Distance from source to destination | MOVSW | MOVSD |
+|---:|---:|---:|
+| 4096 | 55.8 cycles | 48.9 |
+| 8 | 49.1 | 49.1 |
+| 4 | 53.2 | 49.0 |
+| 3 | 49.3 | 49.9 |
+| 2 | 49.4 | 49.5 |
+| 1 | 50.3 | 49.2 |
+
+341 host instructions an iteration in every case. A load that straddles two earlier stores
+costs nothing measurable here: by the time the interpreter reaches the next copy, the stores
+of the last one have long left the buffer.
+
+**And the "180 cycles a copy" was a misreading of the profile, not a cost of the copy.** By the
+card's second branch the suspicion moved to the profiler: are samples drawn to stores into
+memory the host is touching for the first time? A profiling build that writes to every page of
+guest RAM and of the cache before it starts gave the same picture, so they are not. What the
+sampled instruction is, is one 16-bit store into guest RAM that the compiler has merged from
+several executors: MOVSW's, but also `mov [mem], r16` and the others that store 16 bits. Its
+samples are those of every 16-bit store in the boot, and dividing them by the number of MOVSWs
+was the error. The same holds for the single byte load (4.5%), the byte store (3.0%) and the
+store in `exec_general` that E035 called unexplained (it is where every write of the general
+path's `mov r/m, imm` and its neighbours lands). **A profile by address can say where the host
+waits, and cannot say for which guest instruction, wherever the compiler shares code between
+executors.** That note is now in `probe/prof.c`.
+
+What the profile does say, with all memory touched beforehand (7,566 samples): `exec_short`
+80.5%, `exec_general` 10.3%, `string_op` 2.3%, `shift` 1.8%, `run_until` 1.4%. Inside
+`exec_short` the accesses to guest RAM together hold about 15%, the loads of the entry and
+the dispatch about 25%.
+
+The day, E026 to E035: the scripted boot from 47.7 to 34.2 billion cycles (28%), 247 to 196
+billion host instructions; of that, 3.4 points were the script's own search. What is left on
+the list are items of one to two percent each: a "flat" bit so that an access through a flat
+segment skips the attribute and limit tests (E024's fourth), one translation for an
+instruction that reads and writes the same operand (its third), REPNE SCASB a page at a time.
