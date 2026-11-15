@@ -95,7 +95,7 @@ each `--type` types at the keyboard. A scripted run is not paced and skips idle 
 ```
 
 A Linux kernel image is loaded and entered directly, and the terminal becomes its serial console:
-the boot log scrolls by, and after about 20 seconds there is a shell. **Ctrl-]** leaves.
+the boot log scrolls by, and after about 15 seconds there is a shell. **Ctrl-]** leaves.
 
 ```bash
 ./build/g86m --initrd images/initramfs-mini images/vmlinuz-lts

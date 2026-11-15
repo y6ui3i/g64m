@@ -1231,11 +1231,16 @@ inline fn short_write16(mm: u32, v: u32) {
     else { seg_write(ea_seg, ea_off, 16, v); }
 }
 
-inline fn run_short(kind: u8, slot: i64, ip0: u32) {
+// Returns where the next instruction begins. The caller keeps that in a local for the whole run,
+// so that finding the next instruction does not wait on a load of cpu.ip that this one has just
+// stored (E026); cpu.ip is stored all the same, for CALL to push, for a fault to be reported
+// against, and for the end of the run.
+inline fn run_short(kind: u8, slot: i64, ip0: u32) -> u32 {
     let mm = dc[slot].m;
     let imm = dc[slot].imm;
     let reg = mm >> 4 & 7;
-    cpu.ip = ip0 + (mm >> 26 & 7) + 1;
+    var nx = ip0 + (mm >> 26 & 7) + 1;
+    cpu.ip = nx;
     match kind {
         1 => { short_ea(mm, slot); cpu.regs[reg] = short_read(mm); },
         2 => { short_ea(mm, slot); short_write(mm, cpu.regs[reg]); },
@@ -1261,10 +1266,10 @@ inline fn run_short(kind: u8, slot: i64, ip0: u32) {
         7 => { short_ea(mm, slot); alu(4, short_read(mm), cpu.regs[reg], 32); },
         8 => { short_ea(mm, slot); short_write(mm, shift(reg as! u8, short_read(mm), imm as! u8, 32)); },
         9 => { short_ea(mm, slot); short_write(mm, shift(reg as! u8, short_read(mm), r8(1), 32)); },
-        10 => { if cond(dc[slot].disp as! u8) { cpu.ip += imm; } },
-        11 => { cpu.ip += imm; },
-        12 => { push_w(cpu.ip, 32); cpu.ip += imm; },
-        13 => { cpu.ip = pop_w(32); },
+        10 => { if cond(dc[slot].disp as! u8) { nx += imm; cpu.ip = nx; } },
+        11 => { nx += imm; cpu.ip = nx; },
+        12 => { push_w(nx, 32); nx += imm; cpu.ip = nx; },
+        13 => { nx = pop_w(32); cpu.ip = nx; },
         14 => {},
         15 => { push_w(cpu.regs[dc[slot].pre.op & 7], 32); },
         16 => { let v = pop_w(32); cpu.regs[dc[slot].pre.op & 7] = v; },
@@ -1310,9 +1315,9 @@ inline fn run_short(kind: u8, slot: i64, ip0: u32) {
             cpu.regs[reg] = p as! u32;
         },
         31 => { short_ea(mm, slot); short_write8(mm, if cond(imm as! u8) { 1 } else { 0 }); },
-        32 => { let d = dc[slot].disp; if (cpu.flags & d & 0xFFF != 0) != (d >> 31 != 0) { cpu.ip += imm; } },
-        33 => { let lt = (cpu.flags >> 7 ^ cpu.flags >> 11) & 1; if lt != dc[slot].disp { cpu.ip += imm; } },
-        34 => { let le = ((cpu.flags >> 7 ^ cpu.flags >> 11) | cpu.flags >> 6) & 1; if le != dc[slot].disp { cpu.ip += imm; } },
+        32 => { let d = dc[slot].disp; if (cpu.flags & d & 0xFFF != 0) != (d >> 31 != 0) { nx += imm; cpu.ip = nx; } },
+        33 => { let lt = (cpu.flags >> 7 ^ cpu.flags >> 11) & 1; if lt != dc[slot].disp { nx += imm; cpu.ip = nx; } },
+        34 => { let le = ((cpu.flags >> 7 ^ cpu.flags >> 11) | cpu.flags >> 6) & 1; if le != dc[slot].disp { nx += imm; cpu.ip = nx; } },
         35 => { short_ea(mm, slot); short_write(mm, shl32(short_read(mm), imm)); },
         36 => { short_ea(mm, slot); short_write(mm, shr32(short_read(mm), imm)); },
         37 => { short_ea(mm, slot); short_write(mm, sar32(short_read(mm), imm)); },
@@ -1349,6 +1354,7 @@ inline fn run_short(kind: u8, slot: i64, ip0: u32) {
         76 => { cpu.regs[0] = vtime as! u32; cpu.regs[2] = (vtime >> 32) as! u32; },
         _ => {},
     }
+    return nx;
 }
 
 // May the instruction with opcode op carry a LOCK prefix? Only a short list may, and only with a
@@ -1431,8 +1437,9 @@ fn exec_short() -> bool {
     let ip_max = lim - 15;
     var held = shadow;
     var left = chain_until - vtime;
+    var ip = cpu.ip;
     loop {
-        let ip0 = cpu.ip;
+        let ip0 = ip;
         let a = base + ip0;
         if a >> 12 != code_page || !code_ok || a & 0xFFF > 0xFF0 || ip0 > ip_max { break; }
         let slot: i64 = a & (DC_HALF - 1) | DC_HALF;
@@ -1449,14 +1456,14 @@ fn exec_short() -> bool {
             if kind == K_NONE { break; }
         }
         shadow = false;
-        run_short(kind, slot, ip0);
+        ip = run_short(kind, slot, ip0);
         // If interrupts were being held off for that instruction, one may be due straight
         // after it: no run then.
         if held || left <= 1 { light_save = 0; return true; }
         held = false;
         left -= 1;
         vtime += 1;
-        saved.ip = cpu.ip;
+        saved.ip = ip;
         saved.flags = cpu.flags;
         light_save = 1;
         ran = true;

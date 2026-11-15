@@ -2046,3 +2046,80 @@ passed: nothing read the two bytes after the store. The test now fills the word 
 it back. The self-check for RDTSC (`s_rdtsc`) at first compared two readings within a pass,
 which a counter off by one in the executor leaves unchanged; it now also compares the distance
 between passes, the first of which is the general path, and the wrong build fails it.
+
+## E026: The instruction pointer goes through memory between two instructions of a run (2026-11-15)
+
+- **Hypothesis**: What a run costs per instruction is not its host instructions but one chain of
+  dependent work from each guest instruction to the next, about 20 cycles long, and the body of
+  the instruction hangs off it in parallel. Measured on main with `probe/bench32.asm` (per
+  iteration of BODY, DEC, JNZ; the empty loop is 224.8 host instructions and 54.6 cycles):
+
+  | BODY | Host instructions added | Cycles added |
+  |---|---:|---:|
+  | `nop` | 83 | 20.6 |
+  | `mov eax, edx` | 90 | 17.7 |
+  | `add eax, edx` | 123 | 20.8 |
+  | `mov eax, [ebx+8]` | 149 | 19.9 |
+  | `add [ebx+8], eax` | 223 | 27.2 |
+  | `call fn` (with its RET) | 273 | 32.6 |
+
+  A NOP and a load cost the same 20 cycles at 83 and 149 instructions. The chain, read off
+  `exec_short`: load `cpu.ip` (just stored by the instruction before, so forwarded from the
+  store), add the base, find the slot, load the entry's length, add, store `cpu.ip`; a jump
+  loads, adds and stores it once more. Keeping the instruction pointer in a local for the whole
+  run, with `cpu.ip` only stored (for a fault and for the end of the run), takes the two
+  store-to-load steps out of the chain. Expected: several cycles off every line of the table,
+  and the Linux boot's 47.7 billion cycles down by 10% or more.
+- **What changed since last time**: E024's fifth-column reading ("blocks shorten what the next
+  instruction waits on") was a guess about where the chain is. The table above is the first
+  measurement that separates the chain from the body, and it points at something much smaller
+  than blocks to try first.
+- **Next move for each result**:
+  - The NOP line falls by 4 cycles or more and the boot's cycles fall → keep. The chain is
+    where the table says. What is left of it is slot → load of the entry → next slot, which is
+    exactly what a block of consecutive entries removes: blocks next, with a number to expect
+  - No line falls → forwarding from a store costs this host nothing, or the compiler already
+    kept the pointer in a register; read the generated code for the loop and find what the 20
+    cycles are (the dispatch jump mispredicted, the virtual time, the flags) before anything
+    is built
+  - A test fails or the boot's guest instruction count changes → an executor read `cpu.ip`
+    where it now has to take the local (CALL pushes it; a fault restores it)
+- **Cut-off**: The same day. `tools/difftest.sh` 56 of 56, test386 byte for byte, the boot at
+  1,651,240,001 instructions; cycles by three alternating runs against main.
+
+### Result
+
+2026-11-15. **The hypothesis held: about 10% fewer cycles on the boot, with more host
+instructions, not fewer.** `probe/bench32.asm`, cycles per iteration (host instructions are the
+same to within 3 on every line):
+
+| BODY | main | With the pointer in a local |
+|---|---:|---:|
+| (empty: DEC, JNZ) | 52.2 | 38.9 |
+| `nop` | 75.4 | 54.7 |
+| `mov eax, edx` | 73.2 | 53.8 |
+| `add eax, edx` | 75.9 | 58.4 |
+| `mov eax, [ebx+8]` | 75.5 | 59.2 |
+| `add [ebx+8], eax` | 81.9 | 69.4 |
+| `call fn` | 89.5 | 78.7 |
+
+| Benchmark | main | Now |
+|---|---:|---:|
+| Linux boot to the shell prompt, three alternating runs | 48.12, 48.10, 47.61 billion cycles; 247.3 billion host instructions | 43.26, 42.95, 43.03; 249.2 billion |
+| test386 | 3.30 billion cycles | 3.14 billion |
+| bench.bin (real mode, does not use runs) | 14.18 billion cycles | 14.30 billion |
+
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 56 of 56;
+test386 is byte for byte the reference.
+
+The change is a dozen lines: `run_short` returns where the next instruction begins as well as
+storing it, and `exec_short` carries that in a local from one instruction to the next. The boot
+runs 0.8% *more* host instructions and takes 10% fewer cycles, which is rustx86's rule seen
+from the other side: what was removed is waiting, not work.
+
+What this says about the next step. A guest instruction in a run now costs about 16 to 20
+cycles for 83 to 150 host instructions, five or more instructions a cycle, so the body is no
+longer hanging idle off a long chain. Before building blocks, the same measurement has to say
+whether what is left is a chain (slot, load of the entry, next slot; the virtual time, which
+is also a global stored and loaded every time; the flags from one instruction to a jump) or
+the host's width, in which case it is host instructions that count again.

@@ -102,6 +102,12 @@ for the total, a debugger stepping one instruction for the detail). See E010 and
 - **Globals and struct fields are packed, with no alignment.** A 32-bit field can sit at an odd
   address. On arm64 that costs one extra instruction per access, which turned out not to matter
   (1.5%, E015)
+- **A global that a loop both stores and loads each time round is a chain through memory.** The
+  compiler cannot keep it in a register across a call that might change it, so each iteration
+  waits for the store before it to be forwarded to its load. For g86m's instruction pointer that
+  was 15 to 20 of the 27 host cycles a guest instruction cost; carrying it in a local, and only
+  storing the global, took them off with the host instruction count unchanged (E026). Counting
+  instructions does not show this; counting cycles for bodies of different lengths does
 - **`/` is checked for a zero divisor**, by a call, even when the divisor is the literal 8. Use a
   shift on hot paths. Mind the precedence when replacing: `a + w >> 3` is not `a + (w >> 3)`
 
