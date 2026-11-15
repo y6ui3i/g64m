@@ -48,6 +48,7 @@ fn set_cache(s: i64, sel: u16, lo: u32, hi: u32) {
     cpu.base[s] = d_base(lo, hi);
     cpu.limit[s] = d_limit(lo, hi);
     cpu.attr[s] = d_attr(hi) | A_ACCESSED;
+    seg_bound(s);
 }
 
 fn null_seg(s: i64, sel: u16) {
@@ -55,6 +56,7 @@ fn null_seg(s: i64, sel: u16) {
     cpu.base[s] = 0;
     cpu.limit[s] = 0;
     cpu.attr[s] = 0;
+    seg_bound(s);
 }
 
 // A segment register as virtual-8086 mode has it: real-mode addressing, 64 KB, privilege level 3.
@@ -62,6 +64,7 @@ fn v86_seg(s: i64, sel: u16) {
     set_seg(s, sel);
     cpu.limit[s] = 0xFFFF;
     cpu.attr[s] = if s == CS { 0x100FB } else { 0x100F3 };
+    seg_bound(s);
 }
 
 // ---- Loading ES, SS, DS, FS, GS ----

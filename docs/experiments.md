@@ -2750,3 +2750,62 @@ billion host instructions; of that, 3.4 points were the script's own search. Wha
 the list are items of one to two percent each: a "flat" bit so that an access through a flat
 segment skips the attribute and limit tests (E024's fourth), one translation for an
 instruction that reads and writes the same operand (its third), REPNE SCASB a page at a time.
+
+## E037: One bound per segment for the short access path (2026-11-15)
+
+- **Hypothesis**: `seg_read` and `seg_write` test, on every access, that the segment is valid,
+  writable data that grows upward (a load, a mask, a compare), that its limit is at least the
+  access's width, and that the offset is within it (a load and two compares), before they look
+  in the TLB. All of that depends only on the segment, which changes at four places in the
+  source (a descriptor loaded, a null selector, a virtual-8086 load, the Linux loader's set-up)
+  and when a fault puts the CPU back. Keep one number per segment, `seg_top`: the first offset
+  that may *not* take the short path (the limit less 2, or zero for a segment that never may),
+  and the tests become one load and one compare. An access in the last three bytes of a
+  segment then takes the general path whatever its width, which is right and slower, and rare.
+  About 7 host instructions off each access to memory; by the profile about 15% of the time
+  is in those accesses and a guest instruction makes one about every other time: expected
+  2 to 3% of the boot's host instructions and 1.5% or more of its cycles.
+- **What changed since last time**: E024's fourth candidate, a "flat" bit in a mode word, in
+  the form that needs no mode word and serves segments that are not flat as well (real mode's
+  64 KB ones, the per-CPU segment).
+- **Next move for each result**:
+  - Instructions fall by 2% and cycles by 1% or more → keep; next, one translation for an
+    instruction that reads and writes the same operand
+  - Instructions fall and cycles do not → the access path is not what the accesses' time is
+    (the guest's memory is); stop shaving it and say so
+  - A test fails, or a build that checks `seg_top` against the limit and attributes at every
+    access finds a difference → a place that changes a segment was missed
+- **Cut-off**: The same day; a checking build run over `tools/difftest.sh` and a Linux boot;
+  a deliberately wrong build (a setter that does not refresh the bound) must fail a test.
+
+### Result
+
+2026-11-15. **Kept: 3.6% fewer host instructions and 1.8% fewer cycles on the boot.**
+
+| | main | With `seg_top` |
+|---|---:|---:|
+| Linux boot, host instructions | 195.8 billion | 188.7 billion |
+| Linux boot, cycles, four alternating runs on a quiet machine | 34.34, 34.16, 34.15, 34.16 billion | 33.56, 33.56, 33.54, 33.62 |
+| test386 | 18.87 billion instructions, 2.94 billion cycles | 18.38 billion, 2.91 billion |
+| bench.bin (real mode) | 97.60 billion instructions, 14.36 billion cycles | 96.13 billion, 14.10 billion |
+
+(Three earlier alternating runs, with something else running on the host, spread from 33.7 to
+35.7 billion for both builds and decided nothing; the instruction counts were the same in all
+seven.) The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 63
+of 63 with the new self-check; test386 is byte for byte the reference. The 16-bit benchmark
+gains as well, since its accesses take the same path.
+
+**How the bound was checked.** A copy of the source in which every access first compares
+`seg_top` with what the limit and attributes say, and stops the machine on a difference, ran
+the whole of `tools/difftest.sh` and a Linux boot to the prompt without stopping.
+
+**Three wrong builds, and what caught them.** A build in which loading a descriptor does not
+refresh the bound, one in which loading a null selector does not, and one in which a fault's
+restoring of the CPU does not: all three passed every test there was. The first two are
+errors that let an access through that must fault, and nothing tested for that after the
+segment register had held something larger. `s_segbound` does (a segment with a limit of FFh
+after a flat one; a null selector after a flat one; a read, a write and a read through FS,
+four passes), and both wrong builds fail it. The third is not caught by any test: it needs
+an instruction that changes a segment register and then faults, and none of the tests has
+one. The refresh after a restore is there because the restore can change the segments, not
+because a test demands it.
