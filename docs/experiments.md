@@ -1882,3 +1882,95 @@ executor. The byte comparison is the one a different design would remove: rememb
 of code has not been written to since its entries were checked, instead of checking each entry
 each time. That needs every store to memory to tell the cache about it, and a missed one would
 run stale code; it is the next card or none.
+
+## E024: What v86, VirtualBox and rustx86 do that g86m does not (2026-11-15)
+
+Not an experiment with one hypothesis but a survey, at the owner's suggestion, to find the next
+ones. Three sources: rustx86's design records and source (read here); v86's Rust core at commit
+315b2b0; VirtualBox's software CPU (IEM, with its threaded recompiler) from the trunk of the
+GitHub mirror. The last two were read by separate research passes with file and function names
+for each claim; nothing in them was measured. One thing was measured on g86m on the way and is
+kept; one was tried and is not.
+
+### Kept: a decode cache sixteen times the size
+
+Counting what still takes the general path on a Linux boot gave 12.6% of all instructions, and
+the list was led by instructions that *have* short executors (`89`, `8B`, `8D`, `31`, `E8`,
+`C3`, `55`). They were being lost, not missing. The cache was 8,192 entries per code size,
+indexed by the low bits of the address; a kernel and a userland do not fit.
+
+| Entries per code size | Host instructions on the boot | Cycles |
+|---:|---:|---:|
+| 8,192 (was) | 277.1 billion | 55.3 billion |
+| 32,768 | 257.9 billion | 51.3 billion |
+| 131,072 (now) | 250.4 billion | 49.0 to 49.3 billion |
+| 262,144 | 248.7 billion | 49.4 billion |
+| 524,288 | 247.5 billion | 49.1 billion |
+
+It levels off at 131,072, which costs 10 MB. 11% fewer cycles for one constant; the boot still
+takes 1,651,240,001 guest instructions, `tools/difftest.sh` is at 53 of 53, test386 and the
+16-bit benchmark are unchanged. rustx86's cache has 131,072 entries, and its records say a
+sweep of that number was a wash there: it had been large from the start.
+
+With the larger cache the general path takes 7.2% of instructions (118.6 million), of which
+only 10.5 million are misses or instructions too near a page end; the rest are instructions
+with no short executor.
+
+### Tried, not kept: a run that goes on into another page of code
+
+A run ended whenever the next instruction was on a page other than the one last translated,
+and the general path ran that instruction (26.6 million times in a boot). Translating the new
+page inside the run instead: 257.0 to 257.2 billion host instructions against 250.3 to 250.8,
+and cycles within the run-to-run spread (48.5 to 49.7 billion against 49.0 to 50.9). More
+instructions and no fewer cycles. Why it is more instructions was not found. rustx86's records
+list the same idea among its washes.
+
+### What the other three do
+
+| | g86m | rustx86 | v86 | VirtualBox IEM |
+|---|---|---|---|---|
+| Unit of execution | one instruction, from a cache of decoded instructions; runs of them without returning | the same, plus chaining of blocks, plus a JIT | one instruction, decoded every time; a JIT to WebAssembly for hot pages | a block of pre-decoded entries (threaded recompiler); a native recompiler above it |
+| Is the cached code still valid? | compare the instruction's first eight bytes, every time | a generation number per physical page, bumped by writes to pages that hold code | (JIT) a "has code" bit in the TLB entry, tested by writes | a copy of the block's bytes, compared at block entry, at branch targets and at page crossings |
+| Arithmetic flags | computed at once | lazy | lazy: operand, result and size are stored, flags derived when read | computed at once (through the host's own flags) |
+| Data TLB | 256 entries per kind of access and privilege mode, tagged | tagged, plus an optional mapping through the host MMU | one untagged entry for each of the million pages, permission bits in the entry, no split by mode | 256 or 8,192 tagged entries; a flush is an increment of a revision that is part of the tag |
+| Segment check on a data access | attributes and limit, each time | each time, or folded into a decoded operand | none (base only) | none in "flat" variants, chosen from a precomputed mode word |
+| State saved for a fault | instruction pointer and flags (in a run) | the whole CPU, only for instructions that touch memory | the instruction pointer; handlers write registers last | nothing; handlers advance the instruction pointer last, and a longjmp leaves |
+| Checking for interrupts | at a deadline in virtual time worked out beforehand | at a countdown to the next timer tick | about every 100,000 instructions, and after STI, POPF, IRET | every 32 instructions in a block, and after instructions that can enable them |
+| Read-modify-write on memory | two accesses | - | one translation for both | one mapping for both |
+| Repeated string instructions | a page at a time (E020) | a page at a time | a page at a time, MOVS by memcpy | a page at a time, element by element |
+
+### What rustx86 learned that changes how to measure
+
+Its record of closing its optimisation phase (ADR-0015) gives four rules from 26 measured
+experiments. In short: bookkeeping that nothing waits for is free on an out-of-order CPU, so
+removing it shows in the instruction count and not in the time; removing parallel work saves
+at most the longest strand; and what pays is shortening the chain of dependent work that the
+*next* guest instruction waits on. Its losses include a larger cache, two levels of TLB, fewer
+generation checks, fusing compare with jump, and chaining across pages; its wins include
+linking blocks (43%) and the step it calls batch1 (8%).
+
+E023 here is an instance: 4% fewer host instructions, 1% fewer cycles. So is this entry's
+second item. **From now on the cycle count decides, with the instruction count as the
+reproducible check that nothing else changed.** Cycles vary by about 2% between runs on a busy
+machine, so a change under that needs several alternating runs or an idle machine.
+
+### Candidates, in the order this suggests
+
+1. **Executors for what still takes the general path** (7.2% of instructions, each about 250
+   host instructions where a short one costs about 100). Measured list, largest first: a
+   segment-override prefix on `8B`, `89` and `8D` (per-CPU data through FS), `FF` (indirect
+   call and jump, push), two-byte opcodes without an executor (MOVSX, CMOVcc, the bit tests),
+   `F7`, `F3 90` (PAUSE), `D1`, `C7`, `3C`, the string instructions without REP. rustx86
+   measured its own version of this: 1.1% of instructions, 6% of the time
+2. **Blocks**: remember a straight run of instructions as one array of entries, check its bytes
+   once, and step from entry to entry without computing an address, finding a slot and
+   comparing a tag for each. This is the item that shortens what the next instruction waits on:
+   today that chain is instruction pointer, slot, entry, kind, jump. VirtualBox's threaded
+   blocks and rustx86's linking are both this
+3. **One access for read-modify-write** (`add [mem], reg` costs 240 host instructions where a
+   read costs 141)
+4. **A mode word with a "flat" bit**, worked out when a segment register is loaded, so that an
+   access tests one bit instead of a segment's attributes and limit
+5. **Lazy flags**: v86's form is four stores per arithmetic instruction. By rustx86's rules the
+   flags of an instruction are mostly work nothing waits for, except by the jump that follows
+   a compare; expected to show less in cycles than in instructions

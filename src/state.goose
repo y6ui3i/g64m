@@ -154,8 +154,8 @@ struct Decoded {
     imm: u32,            // for an instruction with a short executor: its immediate or its branch offset
 }
 
-let DC_HALF = 8192;      // entries for 16-bit code segments, then as many for 32-bit ones
-let DC_SIZE = 16384;
+let DC_HALF = 131072;    // entries for 16-bit code segments, then as many for 32-bit ones
+let DC_SIZE = 262144;
 
 // ---- Faults ----
 
