@@ -2554,3 +2554,129 @@ that are not the guest's own memory: the dispatch jump's mispredictions (about 1
 sit on an executor's first instruction), the general path (11% of the time for 3.8% of the
 instructions, part of it cache misses on code met for the first time), and the loads that
 every instruction makes of its entry (about 28%, which is where the host's width shows).
+
+## E034: The first instruction on another page of code (2026-11-15)
+
+- **Hypothesis**: The profile (E032) has the general path at 11% of the time for 3.8% of the
+  instructions. Counted again by opcode on a boot, with whether the decode cache had the
+  instruction: 2.66% of all instructions are listed (those counted 200,000 times or more),
+  1.07% with no executor (REP MOVSD 0.47%, LODSB 0.18%, SCASB 0.15%, then small ones) and
+  **1.58% that the cache was not even asked about**: `8D` with a segment prefix (the kernel's
+  padding), `C3`, `EB`, `8B`, `89`, `55`, `85`, `E8`. Those are instructions that do have
+  executors, at the start of a page of code other than the one last translated: a run ends
+  there (E024 counted 26.6 million such ends), and the general path then finds the cache
+  "not usable", because its test is that the page is the translated one, and decodes the
+  instruction from its bytes. Translating the page first (one TLB lookup, which the fetch of
+  the first byte would do anyway) makes the cache usable, and the instruction is run by its
+  executor from the general path. Expected: about 200 host instructions saved 26 million
+  times, 2.5% of the boot's instructions, and 2% or more of its cycles (these instructions
+  also touch the bytes of the instruction a second time, which the executor does not).
+- **What changed since last time**: E024 tried to keep the *run* going across the page and it
+  did not pay. This leaves the run's end where it is and only stops the general path from
+  decoding what the cache holds.
+- **Next move for each result**:
+  - Cycles fall by 2% or more → keep; the count of what is left on the general path then has
+    REP MOVSD, LODSB and SCASB at its head, and LODSB and SCASB without REP are two executors
+  - They fall by less → the cost of a run's end is elsewhere (the way out of the loop and
+    back in); measure a run's end by itself before touching it
+  - A test fails or the guest instruction count changes → the translation raised a page
+    fault at a different moment than the fetch did (it must come after the checks for a
+    pending fault and an interrupt, and not when the instruction pointer is beyond the limit)
+- **Cut-off**: The same day; `tools/difftest.sh` 60 of 60, test386, the boot's count.
+
+### Result
+
+2026-11-15. **Kept, at 1.3% where the card said 2% or more.** Linux boot, three alternating
+runs: 35.02, 35.03, 34.99 billion cycles before; 34.54, 34.50, 34.69 after; host instructions
+202.5 to 199.4 billion (1.5%). The guest instruction count is unchanged.
+
+By the card's second branch the cost of a run's end is elsewhere, so the boot was profiled
+again (`probe/prof.c`, three profiles that agree to within a point), and the answer was not a
+run's end at all:
+
+| Where | Share |
+|---|---:|
+| `exec_short` | 68 to 71% |
+| `string_op` | 12 to 13% |
+| `exec_general` | 10 to 11% |
+| `shift` | 2% |
+| `run_until` | 2% |
+
+`string_op` was 1.9% in E032's profile. That profile's build laid the code out differently
+(the bulk routine was not inlined into it) and its share was spread over two functions; the
+figure to trust is this one, three times over. Nine of its twelve points are on one
+instruction, a byte store in the per-element path.
+
+## E035: String instructions without REP (2026-11-15)
+
+- **Hypothesis**: Counting the elements that go through `string_op`'s per-element path on a
+  boot: 7.7 million MOVSW without REP, 5.3 million SCASB under REPNE, 2.9 million LODSB and
+  2.5 million SCASB without REP, 0.55 million CMPSB under REPE. The MOVSW is one loop, found by
+  its address and bytes: `66 A5 / 49 / 75 FB`, `movsw; dec ecx; jnz`, the match copy of the
+  decompressor that unpacks the kernel (5.9 million) and of the kernel's own that unpacks the
+  initramfs (1.8 million), copying two bytes at a time from a few bytes back. Each one takes
+  the general path (about 480 host instructions against 100 for an executor, measured with
+  `probe/bench32.asm`) and ends a run, so the loop's DEC and JNZ each start a new one. Short
+  executors for MOVS (32, 16 and 8 bits), LODSB, SCASB and STOS (8 and 32 bits) without REP,
+  either direction, with a segment override for the source, keep such loops inside one run.
+  Expected: `string_op` from 12% of a profile to about 3% (what REPNE SCASB and the bulk
+  routine leave), and the boot's cycles down by 5% or more.
+- **What changed since last time**: E025 listed "LODSB and SCASB without REP (0.33%)" by
+  count and left them; the count missed MOVSW because it was read as REP MOVSD (same opcode,
+  different prefix), and nothing weighed these by time until the profile.
+- **Next move for each result**:
+  - Cycles fall by 5% or more → keep. REPNE SCASB (a `strlen`) is then the largest string
+    item, and it can scan a page at a time as REP MOVS copies one
+  - They fall by much less than the profile's nine points → the store's samples were the
+    guest's memory (the copy's destination is fresh memory), not the path; say so
+  - A test fails or the guest instruction count changes → direction, the source's segment,
+    or what is left changed when the access faults
+- **Cut-off**: The same day; a trace test that runs each new executor four times, forwards
+  and backwards and through an overridden segment, against rustx86, and fails for
+  deliberately wrong builds; `tools/difftest.sh`, test386, the boot's count.
+
+### Result
+
+2026-11-15. **Kept, at about 1.2% where the card said 5% or more: the second branch.** With
+E034 the two together, three alternating runs against main: 35.46, 35.41, 35.36 billion cycles
+before; 34.28, 34.10, 34.27 after (3.3%); host instructions 202.6 to 195.7 billion (3.4%).
+E034 alone had reached 34.5 to 34.7. The guest instruction count is unchanged.
+
+| | main | E034 and E035 |
+|---|---:|---:|
+| Linux boot, host instructions | 202.6 billion | 195.7 billion |
+| Linux boot, cycles | 35.41 billion | 34.22 billion |
+| General path, share of guest instructions | 3.8% (E025's count) | 1.42% |
+| test386 | 19.28 billion instructions, 2.99 billion cycles | 18.87 billion, 2.94 billion |
+| bench.bin (real mode) | 96.9 billion instructions, 14.2 billion cycles | 97.55 billion, 14.28 billion |
+
+`tools/difftest.sh` is at 61 of 61 with the new trace test `u_string`; test386 is byte for
+byte the reference. Seven deliberately wrong builds of the new executors: six failed
+`u_string` at once; the seventh, MOVSB ignoring a segment override, passed, because the test
+read back the four bytes before the one that MOVSB wrote. It reads the right ones now and the
+wrong build fails.
+
+**The store is still where the time is.** In a profile of the new build the MOVSW loop's store
+(now one 16-bit store in `exec_short`) holds 4.1% of the samples for 7.7 million executions,
+about 180 cycles each; in the general path it held 9%, about 400 each. An executor costs 60
+cycles in `probe/bench32.asm` with source and destination far apart. So most of what that
+loop costs is neither path: the time per copy fell with the number of host instructions per
+iteration but stayed several times what those instructions take. The loop copies from a few
+bytes behind where it writes. **Not established, the leading guess:** when the distance is
+odd, the 16-bit load of one iteration straddles the 16-bit stores of two earlier ones, the
+host cannot forward such a load from its store buffer, and the load waits until those stores
+have left it, which makes each iteration wait for the one before to be completely done. The
+benchmark could not test it: its addresses above 1 MB wrap, with the A20 line off, onto its
+own code. A benchmark with A20 on and the distance as a parameter is the first step of the
+next card; if the guess holds, the copy has to read its bytes so that each comes from one
+earlier store.
+
+**16-bit code paid for E034 at first.** The test "is this another page" ran on every
+instruction of the general path, which is every instruction of 16-bit code: bench.bin took 3%
+more host instructions and 2.5% more cycles. It is now made for 32-bit code only (16-bit code
+does not run in runs, and its first fetch translates the page); bench.bin is at 0.7% more
+instructions and the same cycles to within the spread.
+
+A second single store in `exec_general` holds 5% of the samples, in the code for `mov r/m,
+imm`, at an address in the decompressor's working memory, and by the counts that instruction
+is far too rare there to cost that by running. It is not explained.
