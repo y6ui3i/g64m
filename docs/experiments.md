@@ -3563,3 +3563,41 @@ happened.**
 
 By the card: the next is the same split for the arithmetic executors that take a register or
 memory (CMP, ADD, TEST and the rest of that grid).
+
+## E047: A register form apart for the executors whose operand is of both forms (2026-11-16)
+
+- **Hypothesis**: E046's card said "the arithmetic executors next". Counted first, by kind
+  and by form of the operand over a boot, and the count changes which ones. `mov r, r/m` was
+  from memory every time (13.5% of instructions, no register form among them): its test was
+  always predicted, and what E046 won came from `mov r/m, r` alone, 7.3% to memory and 6.7%
+  between registers. That is 0.57 billion cycles for 110 million instructions of the form in
+  the minority, **about 5 cycles for each**. ADD, XOR, AND, SUB and the immediates are
+  register forms almost every time (ADD 4.15% against 0.08%) and so predicted. The executors
+  that are of both forms are six:
+
+  | Kind | To or from memory | Between registers |
+  |---|---:|---:|
+  | CMP `r/m, r` | 1.84% | 2.13% |
+  | MOVZX from 8 bits | 3.00% | 0.97% |
+  | MOVZX from 16 bits | 0.53% | 1.02% |
+  | CMP `r/m, imm` | 0.25% | 1.24% |
+  | TEST `r/m8, imm8` | 0.51% | 0.51% |
+  | `mov r/m8, r8` | 1.01% | 0.15% |
+
+  The minority forms together are 4.25% of all instructions, 70 million. A kind for the
+  register form of each, and the old kinds left for memory without the tests: at E046's 5
+  cycles each, 0.35 billion, **about 1.2% of the boot's cycles**, for about 0.4% of its
+  host instructions.
+- **What changed since last time**: E046 split by guess (the two most frequent kinds) and
+  half of the guess was idle. This splits by a count of which kinds are of both forms, and
+  predicts from E046's own figure.
+- **Next move for each result**:
+  - 0.8% or more → keep; "cycles for each instruction of the minority form" is then a figure
+    to predict with, and the next card looks for other tests inside an executor that go
+    both ways (the 8-bit register's high or low half, a conditional jump's kind)
+  - Under 0.5% → not kept; E046's gain was something else about `mov r/m, r` (the store),
+    and the figure is withdrawn
+  - A test fails or the guest instruction count changes → a register form with its two
+    registers the wrong way round, or flags of a CMP or TEST from the wrong operand
+- **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, wrong builds,
+  twelve pairs. The build's whole output is read.
