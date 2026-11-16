@@ -3721,3 +3721,86 @@ What the comparison is and is not:
 By the card: none of the three branches named this one. The nearest is the first, and what is
 to be said is "behind in the fragment, ahead as a program, and ahead of rustx86's JIT on this
 boot". The next cards stay on E043's list.
+
+## E049: What a run writes down after every instruction (2026-11-17)
+
+- **Hypothesis**: Between two instructions of a run the loop stores five things and loads
+  one: `cpu.ip` (at the start of the executor), `shadow`, `vtime`, `saved.ip` and
+  `saved.flags` (with a load of `cpu.flags`). Three of the five are there only so that a
+  fault can put the instruction pointer and the flags back, and one only for the first
+  instruction of a run. If `cpu.ip` is stored after the executor and not before, it still
+  holds the faulting instruction's own address when a fault comes, and `saved.ip` is not
+  needed; if the few executors that set the flags before a store to memory put the old flags
+  back around that store, `saved.flags` is not needed; `shadow` can only be set for the
+  first instruction, and a run with it set is one instruction long, so it can be cleared
+  where that run returns. That leaves two stores (`cpu.ip`, `vtime`): about 4 host
+  instructions fewer for each guest instruction, **4% of the boot's host instructions and
+  1% or more of its cycles** (a store is cheap; E047 saw 0.36% of the instructions buy
+  nothing).
+- **What changed since last time**: E023 and E026 to E029 shortened what the loop waits for
+  (loads on the path to the next entry). This takes out stores nothing waits for, by changing
+  who is responsible for a fault's undo: the executor, not the loop. Not tried before.
+- **Next move for each result**:
+  - Cycles down by 0.6% or more over padded builds of both sides → keep; the memory operand
+    (E050) next, measured the same way
+  - Host instructions down and cycles within 0.6% → keep only if every layout of the new
+    source is at or under the old one's mean (a change that removes work and cannot be told
+    from nothing is still less code in the loop); otherwise not kept
+  - A test fails or the boot's count changes → an executor that changes the flags or
+    `cpu.ip` before its last fault and is not on the list; find it with a wrong build of the
+    one suspected
+- **Cut-off**: The same day. `tools/difftest.sh`, test386, the boot's count; a test in which
+  each executor that sets flags before a store faults on that store, and wrong builds that
+  leave the old flags out; four padded layouts of each side, six rounds.
+
+### Result
+
+2026-11-17. **Kept: 4.2% fewer host instructions and about 1.7% fewer cycles, in every
+layout. On the way: without a store on its taken path a conditional jump becomes a select,
+and that alone costs 14%.** `tools/difftest.sh` 80 of 80 (two new tests); the boot stops at
+1,651,240,001 instructions as before.
+
+**The first build was 14% slower with 4.3% fewer instructions.** It stored `cpu.ip` once,
+after the executor, and so took `cpu.ip = nx - base` out of every executor, the conditional
+jumps included. Putting the loop's stores back one at a time changed nothing (33.95 to 34.45
+billion cycles against main's 29.7); aligning the CPU state changed nothing (see below); a
+profile showed no one place, only the loads on the way to the next instruction all a little
+heavier. What the slow builds had in common was the taken path of a conditional jump: with
+nothing on it but `nx += imm`, the compiler makes a conditional select, the next
+instruction's address is then data that waits for the flags, and the host cannot run ahead.
+With the store back on the taken path only (it is live because the run no longer stores
+`cpu.ip` itself) the same source is faster than main. **This is E031's hypothesis, and it was
+right**: E031 added a store where there already was one, saw nothing move, and concluded the
+jump was not what the loop waits on. It is; main had the branch by accident. The store now
+has a comment that says why it is there.
+
+**As kept.** A run notes where each instruction begins in `saved.ip` (as before) and leaves
+`cpu.ip` behind until it ends or faults; `saved.flags` and the per-instruction store of
+`shadow` are gone; the executors that set flags before a store to memory (ADC and SBB to
+memory, the shifts and rotates, NEG, the 8-bit arithmetic, and the slow paths of the
+read-modify-write helpers) have the old flags in place while they store. Per instruction the
+loop now stores two things, `vtime` and `saved.ip`.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of four layouts |
+|---|---:|---:|
+| main | 164.1 billion | 29.38, 29.46, 29.55, 29.49 billion |
+| E049 | 157.1 to 157.5 billion | 28.88, 28.87, 29.00, 29.06 billion |
+
+The slowest layout of E049 is under the fastest of main. By the card: the first branch.
+
+**Tests.** `s_flagro`: thirteen instructions, one for each executor that sets flags before a
+store, each faulting on a read-only page after a CMP; the handler checks the flags in its
+frame and the address the fault is reported against. `s_shadow`: a timer interrupt waiting
+behind an STI is taken after exactly one more instruction. Seventeen wrong builds, each
+caught: twelve that store with the new flags in place (one for each executor), `cpu.ip` not
+set at a fault, at the end of a run, or when a run is out of time, `saved.ip` not noted, and
+the shadow not cleared. Two of them passed at first: nothing looked at the address in a
+fault's frame when the handler does not return to it, and nothing ran a short executor
+behind an STI with an interrupt waiting.
+
+**Found on the way: the CPU state is three bytes off alignment.** Goose packs globals with
+no padding, and `cpu` begins at an address that is 3 modulo 4, so every guest register, the
+flags, the TLB arrays and the rest of `state.goose` are loaded and stored unaligned, and the
+compiler needs an extra instruction to form each address. One pad byte before `cpu`, on
+main, in a build made only to be timed: 157.8 billion host instructions against 164.1, and
+29.0 billion cycles against 29.65. That is the next card.
