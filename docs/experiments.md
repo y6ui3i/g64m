@@ -3530,3 +3530,36 @@ is the two executors for `mov`.
     taken the wrong way round for one of the opcodes
 - **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, wrong builds,
   twelve pairs.
+
+### Result
+
+2026-11-16. **Kept: about 2% of the boot's cycles for 0.85% of its host instructions; more
+than the card said, and the first branch.** Kinds 38 and 39 are `mov` between registers by
+opcode 8B and by 89; kinds 1 and 2 are for memory only and ask nothing.
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main (with E045) | 165.41 to 165.62 billion | twelve runs, 29.83 to 30.43 billion |
+| with the register form apart | 164.02 to 164.11 billion | twelve runs, 29.29 to 29.84 billion |
+
+Twelve pairs run back to back, the order alternating: the new build is the faster in all
+twelve, by 0.65 to 3.1%, 1.9% on average. The cycles fell by more than twice what the
+instructions did, which is what a test that was mispredicted looks like; the card's upper
+figure was 1.5%. test386 (18.02 to 18.06 billion host instructions, 2.86 to 2.90 billion
+cycles) and bench.bin (98.71 to 98.73 billion, 14.53 to 14.66 billion) are as they were.
+
+The boot still takes 1,651,240,001 guest instructions; test386 is byte for byte the
+reference; `tools/difftest.sh` is at 78 of 78 with one new test. Four deliberately wrong
+builds all fail: each register form the wrong way round, 8B from memory taken for registers,
+89 between registers taken for memory. The first of them passed every test there was: an
+assembler writes a move between registers with opcode 89, so 8B with a register operand was
+in no test, and a compiler seldom writes it either. `s_movrr` has both, as bytes.
+
+One slip on the way: the first build of this did not compile (kinds 38 and 39 were in the
+arm for kinds that do nothing), the command's output was cut to its last lines, and three
+pairs were timed against the old binary under the new name before the equal instruction
+counts gave it away. **A build whose output is not read in full is not known to have
+happened.**
+
+By the card: the next is the same split for the arithmetic executors that take a register or
+memory (CMP, ADD, TEST and the rest of that grid).
