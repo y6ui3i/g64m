@@ -3656,3 +3656,68 @@ By the card: the splits by operand form are finished. Of E043's list what is lef
 fourth item, the memory operand itself (one comparison for page, crossing and RAM; a window
 for the stack), each expected at about a point, which is now at the edge of what can be
 measured; and, from E044, the 16-bit general path.
+
+## E048: The Linux boot against rustx86 again, on one day (2026-11-16)
+
+- **Hypothesis**: The comparison in E017's addendum is two days and thirty cards old: rustx86's
+  interpreter 16.1 s and 257 billion host instructions, its JIT 11.4 s, g86m 27.3 s and then
+  20.6 s. Main is now at about 165 billion host instructions and 30 billion cycles on the boot.
+  Measured on one day from the same two files, g86m main reaches "busybox shell" in less time
+  than rustx86's interpreter (by a third or more) and within 15% of rustx86 with its JIT.
+- **What changed since last time**: g86m is main after E046 (b84b2be) and not the branch of
+  E017; rustx86 is the same commit (64aba23), built again today. Both are given g86m's
+  `images/vmlinuz-lts` and `images/initramfs-mini` (rustx86's own `initramfs-mini` is a
+  different file; the kernel is the same). rustx86 is run through `jboot`, with
+  `RUSTX86_JIT=0` and without; g86m with `--wait "busybox shell"`. Whole-process figures from
+  `/usr/bin/time -l` for all three, seven rounds, interleaved.
+- **Next move for each result**:
+  - g86m ahead of the interpreter and within 15% of the JIT → the README and the talk say
+    "behind in the fragment (E002, E019), ahead as a program, level with the JIT"; the next
+    cards stay on E043's list
+  - g86m ahead of the interpreter, more than 15% behind the JIT → say that the gap left is
+    what a JIT buys, with its size; nothing in g86m's plan changes (Goose cannot call
+    generated code)
+  - g86m not ahead of the interpreter → the 165 billion is not what rustx86 is at today or the
+    two runs do not do the same work; compare guest instruction counts and the serial output
+    before saying anything
+- **Cut-off**: The same day; seven rounds. If the serial output of the two does not reach the
+  same line, the comparison is reported as not made.
+
+### Result
+
+2026-11-16, Apple M1, rustc 1.97.1, Goose v2026.4 with clang. **g86m is ahead of both: 43% less
+time than rustx86's interpreter and 21% less than rustx86 with its JIT. The hypothesis had the
+first and not the second; it expected the JIT level or ahead.** Seven rounds, the three runs
+interleaved in each; medians, with the range of the seven. Time, host instructions and cycles
+are for the whole process, from `/usr/bin/time -l`.
+
+| | Guest instructions | Time | Host instructions | Per guest instruction | Cycles |
+|---|---:|---:|---:|---:|---:|
+| g86m main (b84b2be) | 1,647 million | 9.46 s (9.33 to 9.77) | 163.5 billion | 99 | 29.4 billion (29.2 to 29.9) |
+| rustx86, interpreter (`RUSTX86_JIT=0`) | 1,500 million | 16.57 s (16.20 to 16.64) | 257.1 billion | 171 | 51.2 billion (50.8 to 51.5) |
+| rustx86 with its JIT | 1,500 million | 11.95 s (11.81 to 12.61) | 176.2 billion | 117 | 37.0 billion (36.7 to 38.2) |
+
+rustx86's figures are those of E017's addendum again (16.1 s, 257 billion, 171; 11.4 s with the
+JIT), so the two days between did not move the instrument. Its JIT ran 58% of the guest
+instructions as generated code in every round. Every g86m run printed the same 13,991 bytes and
+stopped at 1,647,140,001 instructions; all fourteen rustx86 runs have the same instruction
+count and serial checksum.
+
+What the comparison is and is not:
+
+- Both stop when "busybox shell" is in the serial output, from the same kernel and the same
+  initramfs. `jboot` does not print the serial text, so that the two outputs are the same line
+  for line was not checked; the stop is the same string.
+- The guest instruction counts differ by 10% (rustx86 runs 256 instructions per timer tick,
+  g86m 64, and rustx86 looks for the string every 10 million instructions). g86m does the
+  larger count in the shorter time, so the difference does not favour it.
+- The machine was not idle (load average about 3). The rounds fall into a quiet state and a
+  busier one about 2% apart for all three; the order of the three is the same in every round.
+- It is two programs, not two compilers. E002 and E019 are the comparison of the languages
+  (the same fragment: Goose 35% slower as first written, within 7% with one change). Here
+  g86m has had thirty cards of work on this boot since E017 and rustx86 has had none; rustx86
+  was closed before that work.
+
+By the card: none of the three branches named this one. The nearest is the first, and what is
+to be said is "behind in the fragment, ahead as a program, and ahead of rustx86's JIT on this
+boot". The next cards stay on E043's list.
