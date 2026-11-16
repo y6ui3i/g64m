@@ -3656,3 +3656,29 @@ By the card: the splits by operand form are finished. Of E043's list what is lef
 fourth item, the memory operand itself (one comparison for page, crossing and RAM; a window
 for the stack), each expected at about a point, which is now at the edge of what can be
 measured; and, from E044, the 16-bit general path.
+
+## E048: The Linux boot against rustx86 again, on one day (2026-11-16)
+
+- **Hypothesis**: The comparison in E017's addendum is two days and thirty cards old: rustx86's
+  interpreter 16.1 s and 257 billion host instructions, its JIT 11.4 s, g86m 27.3 s and then
+  20.6 s. Main is now at about 165 billion host instructions and 30 billion cycles on the boot.
+  Measured on one day from the same two files, g86m main reaches "busybox shell" in less time
+  than rustx86's interpreter (by a third or more) and within 15% of rustx86 with its JIT.
+- **What changed since last time**: g86m is main after E046 (b84b2be) and not the branch of
+  E017; rustx86 is the same commit (64aba23), built again today. Both are given g86m's
+  `images/vmlinuz-lts` and `images/initramfs-mini` (rustx86's own `initramfs-mini` is a
+  different file; the kernel is the same). rustx86 is run through `jboot`, with
+  `RUSTX86_JIT=0` and without; g86m with `--wait "busybox shell"`. Whole-process figures from
+  `/usr/bin/time -l` for all three, seven rounds, interleaved.
+- **Next move for each result**:
+  - g86m ahead of the interpreter and within 15% of the JIT → the README and the talk say
+    "behind in the fragment (E002, E019), ahead as a program, level with the JIT"; the next
+    cards stay on E043's list
+  - g86m ahead of the interpreter, more than 15% behind the JIT → say that the gap left is
+    what a JIT buys, with its size; nothing in g86m's plan changes (Goose cannot call
+    generated code)
+  - g86m not ahead of the interpreter → the 165 billion is not what rustx86 is at today or the
+    two runs do not do the same work; compare guest instruction counts and the serial output
+    before saying anything
+- **Cut-off**: The same day; seven rounds. If the serial output of the two does not reach the
+  same line, the comparison is reported as not made.
