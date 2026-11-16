@@ -2908,3 +2908,142 @@ indicated (nothing measured since has pointed at the flags), the rest done. The 
 is at 32.9 billion cycles and 185.8 billion host instructions, from 47.7 and 247.3 this
 morning: 20 cycles and 113 host instructions for each guest instruction. By the first branch
 of the card, what follows is a new survey and not another item.
+
+## E040: A second survey: where the other ten cycles are (2026-11-16)
+
+Like E024, a survey to find the next experiments, not one hypothesis about one change. Nothing
+in `src/` changes on this card.
+
+- **Hypothesis**: A NOP in a row costs 10 cycles and the boot averages 20 for each guest
+  instruction. The other ten are in one or more of three places, and which one decides what
+  to try next: (a) a stretch of the boot that costs far more than the rest for each
+  instruction (paging just turned on, user mode, a driver's loop); (b) what happens between
+  runs and around them (entering a run, the general path, interrupts, faults, misses of the
+  data TLB), which no executor's cost contains; (c) the dispatch jump being mispredicted,
+  which E032's profile put at about 12% of samples and nothing since has addressed.
+- **What changed since last time**: E024 compared designs and counted what took the general
+  path; E032 profiled once, before E033 to E039 moved a fifth of the cost. This one measures
+  three things not measured before: cycles for each stretch of the boot (the same boot stopped
+  at a series of instruction counts), how long runs are and what ends them, and the profile
+  by address again on today's code.
+- **Next move for each result**:
+  - One stretch costs more than 1.5 times the average for each instruction → profile that
+    stretch by itself and find what it does that the others do not
+  - Runs are short (under about 20 instructions) and one cause ends most of them → measure
+    what one entry into a run costs, and remove that cause
+  - Samples on an executor's first instruction are still 10% or more → an experiment on the
+    dispatch itself (a second place to jump from, for the pairs that follow each other most)
+  - None of the three, and no single site above about 3% that is not the guest's own memory →
+    say so plainly: at this design the interpreter is near its floor, and what is left is a
+    change of design (generated code), which is the owner's decision and not an item
+- **Cut-off**: The same day. Three measurements, each one build at most; if a measurement
+  needs more than a counting build and a profile build, it is dropped and named as not done.
+
+### Result
+
+2026-11-16. **The profiler was wrong about stores, the boot is flat, and two things stand
+out of it: rotates done a bit at a time, and what a run's end costs.** Nothing in `src/`
+changed; `probe/prof.c` is a different sampler now.
+
+**(a) No stretch stands out.** The same boot stopped at a series of instruction counts,
+cycles for each guest instruction in each stretch:
+
+| Guest instructions (millions) | 0-100 | -200 | -300 | -400 | -500 | -600 | -800 | -1000 | -1200 | -1400 | -1600 | -1651 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Cycles each | 18.0 | 18.7 | 13.8 | 16.1 | 24.2 | 15.5 | 20.3 | 23.7 | 20.3 | 22.7 | 20.2 | 16.1 |
+
+The average is 19.9 and the worst stretch is 1.2 times that. The decompressor (to about 394
+million) runs at 16.6, the kernel at about 21.
+
+**(b) Runs are 32 instructions long, and half of them end at a page of code.** A counting
+build: 49.8 million runs for 1,601.6 million instructions. What ends them: the next
+instruction is on another page, 26.6 million (53%); an instruction with no executor, 12.9
+million (26%); not in the cache, 8.1 million (16%); within 15 bytes of a page's end, 1.9
+million; out of time, 0.17 million. Every end is a trip through the general path, 49.7
+million of them.
+
+**(c) The sampler of E032 was biased, and what it said about single stores is withdrawn.**
+To attribute samples to guest instructions in spite of merged code, a profiling copy noted the
+kind of each instruction before running it, and each sample was counted under the kind last
+noted. That put MOVSW (the decompressor's copy) at 5.4% of the boot for 0.5% of its
+instructions, 231 cycles each, 92% of it on one 16-bit store: E035's reading again, which
+E036 had withdrawn as an effect of merged code. It is not merged code, and it is not time
+either. Tried and found to change nothing: the destination at the boot's addresses (68 MB)
+instead of under 1 MB, 40 MB of memory never written before, match distances and lengths
+drawn at random as an LZ stream has them (`movsw` stays at 16 to 17 cycles in all of these),
+and, in the boot itself, the store and the load each made a byte at a time. Then the host's
+clock read before and after the executor, summed over the boot:
+
+| Executor | Times | Total | Each, clock calls included |
+|---|---:|---:|---:|
+| MOVSW | 7.7 million | 0.072 s | 9.3 ns |
+| PUSH | 22.4 million | 0.169 s | 7.5 ns |
+| `mov [mem], r8` | 19.2 million | 0.156 s | 8.1 ns |
+
+MOVSW takes 0.7% of the boot, not 5.4%. The samples were wrong: the timer signal
+(ITIMER_PROF every 200 microseconds) delivered 10 to 12 thousand samples in a boot where 52
+thousand were due, and put them by preference on stores into guest RAM. Why it prefers them
+was not looked into. `probe/prof.c` now takes its samples from a second thread that suspends
+the main one and reads its program counter; it gets the 52 to 54 thousand, two runs agree to
+a few tenths of a point, and no store into guest RAM is in its first thirty addresses.
+
+| Where | The signal sampler (E036) | The thread sampler (now) |
+|---|---:|---:|
+| `exec_short` | 80.5% | 85.6% |
+| `exec_general` | 10.3% | 6.4% |
+| `shift` | 1.8% | 2.8% |
+| `run_until` | 1.4% | 1.9% |
+| `string_op` | 2.3% | 0.8% |
+| stores into guest RAM, all sites | 12 to 15% | under 0.1% |
+
+What this withdraws: E032's "one store in the general path holds 3.6%" and its explanation
+(memory the host has not touched); E034's "`string_op` is 12 to 13%, nine points of it on one
+byte store", which is why E035 expected 5% and got 1.2%; E035's "180 cycles a copy" and
+E036's explanation of it. What stands, because it was measured in cycles and not read from
+samples: every kept or rejected result, and E033's two items (the search was 3.5% in samples
+and 3.4% in cycles; `shift` is real, and larger than it looked). **A sample count is a
+suggestion until a count of cycles agrees with it.**
+
+**Time by kind of instruction**, with the thread sampler (two boots, 109,000 samples; cycles
+each are the share of 32.9 billion divided by the kind's count, and include about one cycle
+for the note):
+
+| Kind | Share of time | Share of instructions | Cycles each |
+|---|---:|---:|---:|
+| `mov r, r/m` | 13.1% | 13.4% | 19.6 |
+| `mov r/m, r` | 11.6% | 13.9% | 16.7 |
+| Jcc on one flag | 9.8% | 11.7% | 16.7 |
+| general path before the opcode is known (49.7 million entries) | 5.8% | | 39 an entry |
+| shifts and rotates by a constant, the general executor | 3.9% | 1.8% | 43.7 |
+| CMP `r/m, r` | 3.5% | 4.0% | 17.8 |
+| ADD `r/m, r` | 3.4% | 4.2% | 15.9 |
+| MOVZX from 8 bits | 3.1% | 4.0% | 15.7 |
+| LEA | 2.9% | 3.4% | 17.0 |
+| every other kind | under 2.8% each | | 13 to 29 |
+
+All executors together are 87.9% and the general path 11.6%, half of which is its entry. The
+table is flat: a kind's share of the time is its share of the instructions, within a factor
+of 1.5, with one exception. **The exception is kind 8**, the executor that E022 left for what
+its one-step shifts do not cover: after E022 that is the rotates. `shift()` rotates one bit
+for each pass of a loop, with a `match` in the pass, so a `rol eax, 13` is thirteen passes;
+29.5 million of them in a boot (the kernel's hashes) at 44 cycles where a shift takes 14, and
+`shift` itself is 2.8% of the samples.
+
+**The dispatch**: 1.8% of samples are on the first instruction after the dispatch jump, and
+12.9% after any unconditional jump, most of the rest being the loop's own tail where every
+executor rejoins. E033 called 12% "the dispatch's mispredictions"; with the instrument fixed
+it is under 2%, and no experiment on the dispatch is indicated.
+
+By the card: (a) no; (c) no; (b) partly. So, in order of what the numbers promise:
+
+1. **Rotates in one step** (next card). 29.5 million at about 27 cycles too many: about 2.4%
+   of the boot, plus what `shift` costs the general path.
+2. **A run's end.** 49.7 million ends at 39 cycles of entry each, 5.8% of the boot, before the
+   instruction itself. More than half are a page change. E024 tried going on into the next
+   page inside the run and saw more host instructions and no fewer cycles, on a loop that has
+   since been rebuilt (E026 to E030) and with a spread of 2 to 3% between runs; it is worth
+   one more measurement with today's loop and alternating runs, and if it fails again the
+   entry itself is the thing to shorten.
+3. **The floor.** `mov` at 17 to 20 cycles and a NOP in a row at 10 says the executors'
+   own work is about half of each instruction and the loop the other half. Nothing in this
+   survey points at a way under that short of generated code.
