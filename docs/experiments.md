@@ -3300,3 +3300,43 @@ walk costs was not measured.
   candidate.
 
 By the card: the first branch, for candidates 1 and 2. The next card is the first.
+
+## E044: A write to code is noticed at the write, not at every instruction (2026-11-16)
+
+- **Hypothesis**: Every instruction of a run loads eight bytes of guest memory and compares
+  them, under a mask, with the bytes its entry was decoded from. Taken out and replaced by
+  nothing, that is 9.7% of the host instructions and about 5% of the cycles on the first 390
+  million instructions of the boot (E043). Bochs, QEMU, Halfix and 86Box do without it by
+  noticing the write instead, and on g86m the writes that would have to be noticed are about
+  twenty thousand in a boot of 195 million (E043). So, for 32-bit code:
+  - an entry is found by the instruction's **physical** address and is good for as long as it
+    is there: the same bytes at another linear address, or other bytes at the same one, are
+    then no question at all. A run carries the physical address of the next instruction and
+    the page's difference to linear addresses, so the load from one instruction to the next
+    is the same one load (E028);
+  - a physical page with entries is **marked**, and a marked page gets no entry in the write
+    TLB, so the short paths for a write never see it and cost what they cost now;
+  - every other store into RAM (`set_mem8/16/32`, the bulk string routine) looks at the mark,
+    and for a marked page empties the entries that begin in the fifteen bytes before the
+    write or inside it. After sixteen such writes the page is taken to be data now: all its
+    entries go, and the mark with them.
+
+  16-bit code keeps the comparison: it runs on the general path only, and there code and
+  data share pages as a rule. Expected: **3 to 4% of the boot's cycles** and about 8% of its
+  host instructions.
+- **What changed since last time**: E030 made the comparison cheaper (8% of the instructions,
+  1% of the cycles); this removes it, together with the load of the code bytes that feeds it,
+  and E043 measured what that is worth before anything was built. Nothing in the ledger has
+  changed how an entry is known to be valid since E016.
+- **Next move for each result**:
+  - 2.5% or more of the boot's cycles → keep; the next card is INVLPG for one page
+  - 1 to 2.5% → keep, and say that the bound of the decompressor does not carry to the
+    kernel; count slow writes and emptied entries on the boot before the next card
+  - Under 1% → not kept: the loop waits on something the comparison was hiding behind
+  - test386 or bench.bin slower by 2% or more → pages that hold code and data together;
+    count their slow writes, and try a mark for a part of a page (Bochs: 128 bytes)
+  - A test fails or the guest instruction count changes → a way into RAM that does not look
+    at the mark, or an address carried in a run that is linear where it should be physical
+- **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, bench.bin, a
+  self-check for each way of writing to code and for one page at two addresses, deliberately
+  wrong builds, twelve pairs.
