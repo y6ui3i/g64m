@@ -3099,3 +3099,80 @@ fails all six; test386 fails five (not the unreduced count).
 The table by kind was a good guide to the size: 2.4% predicted from it, about 2% measured.
 That is the first prediction from a profile in this ledger to come out near its figure
 since E033's search, and the first from samples by kind. The next card is a run's end.
+
+## E042: A run that goes on into a page the TLB already knows (2026-11-16)
+
+- **Hypothesis**: 26.6 million runs in a boot end because the next instruction is on another
+  page of code (E040, 53% of all ends). Each such end leaves `exec_short`, copies the whole CPU
+  into `saved`, enters the general path (39 cycles before the opcode is known), runs the one
+  instruction there by its executor (E034), returns through `step` and the run loop, and
+  enters `exec_short` again. All the general path does for it is translate the new page. If
+  the run looks the page up in the read TLB itself and, on a hit, sets `code_page` and
+  `code_phys` and starts over on the new page, the trip is not made. A miss, or anything else
+  unusual, ends the run as before, so every page fault is still raised by the general path at
+  the moment it is raised today. Expected: 26.6 million times about 39 cycles is 1.0 billion,
+  **about 3% of the boot's cycles**, if nearly all of those pages are in the TLB.
+- **What changed since last time**: E024 translated the new page inside the run and saw 2.6%
+  more host instructions and cycles within a spread of 2 to 3%; why was not found. Three
+  things differ. The loop is not the one of E024 (E026 to E030 rebuilt it, and E034 changed
+  what a page change costs). The inner loop is left exactly as it is: its page, its place in
+  RAM and its bound stay constants, and a change of page leaves it and enters it again from an
+  outer loop that works them out anew, instead of making them variables that the loop carries.
+  And the judgment is by pairs run back to back (E041), which see 1%.
+- **Next move for each result**:
+  - 2% or more → keep; the next card is the other large end, an instruction with no executor
+    (12.9 million), by its opcodes
+  - Under 1%, or more host instructions again → count how many page changes the TLB probe
+    lets through and what the inner loop compiled to; if the count is high and the loop the
+    same, a run's end does not cost what E040's table says, and the entry is timed with a
+    clock before anything else is tried on it
+  - A test fails or the guest instruction count changes → the run went on where the general
+    path would have faulted or taken an interrupt: the probe, or the bound on the new page
+- **Cut-off**: The same day; `tools/difftest.sh` 66 of 66, test386, the boot's count, twelve
+  pairs, and deliberately wrong builds that the tests must fail.
+
+### Result
+
+2026-11-16. **Kept: about 2.5% of the boot's cycles and 1.1% of its host instructions, where
+the card said 3%; the first branch.** `exec_short` has an outer loop, one pass for each page of
+code. The inner loop is the one it was. When the next instruction is on another page it looks
+in the read TLB, for the current privilege level; on a hit it makes that the page of code,
+exactly as the general path would, and the outer loop works out the page's constants again. On
+a miss the run ends as before and the general path translates, so a page fault is raised where
+it always was.
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main | 183.06 to 183.14 billion | twenty runs, 31.64 to 33.40 billion |
+| with runs that go on | 181.06 to 181.07 billion | twenty runs, 30.84 to 32.85 billion |
+
+Twenty pairs run back to back. The first twelve were on a busy machine (a load of 6) and
+spread from 1.5% slower to 5.4% faster: 3.2% on average with main first (eight pairs), 0.5%
+with it second (four). The last eight, on a quieter machine and with the order strictly
+alternating, gave 2.0, 2.3, 2.5 and 3.4% with main second and 2.5, 2.7, 3.0 and 6.3% with it
+first. The new build is the faster in eighteen of the twenty. **About 2.5%**; the build run
+second has an advantage of about a point, as in E041, which is why the order alternates.
+
+Unlike E024's attempt, host instructions fell, by 2.0 billion. How many of the 26.6 million
+page changes the probe lets through was not counted; at the 39 cycles of E040's table the
+cycles saved are about 21 million of them. test386 takes 1.3% more host instructions (18.60
+billion against 18.36) for the same cycles (2.87 billion both ways); why more was not looked
+into.
+
+The boot still takes 1,651,240,001 guest instructions; test386 is byte for byte the
+reference; `tools/difftest.sh` is at 68 of 68, with one new test.
+
+**The tests did not cover this, and now they do.** Of the deliberately wrong builds, "the TLB's
+tag not compared" passed every test and failed only the boot (a triple fault), and "the
+supervisor's TLB entry taken in user mode" passed everything, the boot included: Linux never
+jumps from ring 3 into a supervisor's page that ring 0 has just read. `tests/asm/s_runpage.asm`
+is a self-check for both: two functions on pages that share a TLB slot, called in turn, and a
+supervisor's page that ring 0 runs first and ring 3 then calls six times, each call a page
+fault. With it, three wrong builds fail (those two, and "the new page's place in RAM not
+taken", which test386 also fails). A fourth, "one page too far", fails nothing and is not
+wrong: it never finds a page to go on to, and is main at more cost. Writing the test found
+nothing in g86m and two things in the test: 140000h is 40000h while address line 20 is off,
+and DS is emptied on the way to ring 3 and has to be loaded again before real mode.
+
+The next card is the other large end of a run: an instruction with no executor, 12.9 million
+ends, by opcode.
