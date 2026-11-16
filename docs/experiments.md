@@ -3601,3 +3601,58 @@ memory (CMP, ADD, TEST and the rest of that grid).
     registers the wrong way round, or flags of a CMP or TEST from the wrong operand
 - **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, wrong builds,
   twelve pairs. The build's whole output is read.
+
+### Result
+
+2026-11-16. **Not kept: the host instructions fell by 0.36% as the card said, and the cycles
+did not move. The figure the card predicted with is withdrawn, and so is E046's
+explanation of itself; E046's gain stands.** The six kinds are out again; `src/` is as it
+was after E046.
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main (E046) | 164.07 to 164.16 billion | twelve runs, 29.29 to 29.73 billion |
+| with the six register forms | 163.47 to 163.58 billion | twelve runs, 29.25 to 30.21 billion |
+
+Twelve pairs, the order alternating: the differences run from 1.8% slower to 1.1% faster,
+seven of twelve faster, 0.04% slower on average. By the card's second branch: under 0.5%,
+not kept, and "5 cycles for each instruction of the minority form" predicts nothing.
+
+**Which half of E046 its gain came from: neither.** Two builds, each with one half of E046
+undone, six rounds of four builds in turn (medians, billions of cycles):
+
+| | Cycles | Against E046 |
+|---|---:|---:|
+| E046 | 29.36 | |
+| `mov r, r/m` with its two tests back (it is from memory every time) | 29.46 | 0.3% more |
+| `mov r/m, r` one executor for both forms again | 29.48 | 0.4% more |
+| both undone (E045) | 29.85 | 1.7% more |
+
+Each half alone keeps three quarters of the gain, so the gain is not the sum of two
+effects, and it is not "a test that was mispredicted", which only the second half could
+be. What the two halves have in common is that `run_short` no longer has `short_read` and
+`short_write` in its two most frequent arms; the gain is the compiler's code for the loop
+as a whole, and this card's count by form does not say where it would come again.
+
+**Is E046's gain where the code landed? No.** The question had to be asked after E044 (a
+benchmark with two states) and after the table above. The same source built with a few
+lines that never run added to `main`, which is ahead of the run loop in the binary and
+moves `exec_short` by 56 to 248 bytes:
+
+| Source | Layouts | Cycles, quiet rounds |
+|---|---|---:|
+| E045 | as built, and three moved | 29.69 to 29.80 billion, every layout |
+| E046 | as built, and six moved | 29.30 to 29.68 billion; the means of the seven are 29.40 to 29.58 |
+
+Moving the code does not move the boot by more than the runs differ among themselves (0.6%
+between the means of seven layouts), and E045 is slower than E046 in every layout, by about
+1.2%. E046 is real; its twelve pairs said 1.9%, these say rather less. **A change under
+about 0.6% of the boot cannot be told from a layout by pairs of one build each; a few padded
+builds of each side can tell it**, and that is the instrument for the cards from here on.
+(bench.bin is another matter: its two states are 25% apart and padding was not tried on
+it.)
+
+By the card: the splits by operand form are finished. Of E043's list what is left is the
+fourth item, the memory operand itself (one comparison for page, crossing and RAM; a window
+for the stack), each expected at about a point, which is now at the edge of what can be
+measured; and, from E044, the 16-bit general path.
