@@ -122,6 +122,62 @@ for the total, a debugger stepping one instruction for the detail). See E010 and
 - Serialization (`to_bytes` / `from_bytes`) works on arrays. A single struct goes in a one-element array
 - `--debug` is about 10 times slower. Tests run on both debug and release builds; measurements use release
 
+## 6. Telling what a change to hot code did
+
+What a Goose program costs is decided by the C compiler two steps away from the source, so a
+change is judged by measuring, and the measuring has its own traps. All of these were met on
+g86m's Linux boot (about 1.65 billion guest instructions, 30 billion host cycles).
+
+- **Two rulers, for two questions.** The host instruction count (`/usr/bin/time -l`) repeats
+  to within 0.01% and says whether anything changed at all; the cycle count varies by 1 to 2%
+  and is what the time follows. They part company in both directions: carrying the instruction
+  pointer in a local added host instructions and took 10% off the cycles (E026); a cheaper
+  validity test took 8% off the instructions and 1% off the cycles (E030). Keep by cycles,
+  check by instructions, and compare builds in alternating pairs, not one after the other
+- **A third count says nothing broke.** The guest instruction count of a fixed workload must
+  not move by one. A change that made the boot 16% faster by delivering interrupts late was
+  caught by nothing else
+- **Under about 0.6%, a gain cannot be told from where the code landed.** A few lines that
+  never run, added to `main`, move the run loop by 56 to 248 bytes in the binary, and the
+  boot's cycles move by up to 0.6% between such builds of the same source. A pair of single
+  builds cannot see below that; a few padded builds of each side can (E047)
+- **A gain from splitting an executor is not the sum of its parts.** Giving `mov` between
+  registers its own executor gained between 1.2 and 1.9%, depending on how it is measured. Undoing either half of that change kept three
+  quarters of the gain: it came from what the C compiler made of the loop once two calls were
+  out of its most frequent arms, and counting operand forms did not predict where it would
+  come again (E046, E047)
+- **A row of one instruction repeated is a bad benchmark for a `match` dispatch.** The same
+  `mov eax, 5` cost 14.7 cycles sixteen in a row, 12.8 four in a row and 11.2 sixty-four in a
+  row: what is being measured is the host's branch predictor at the dispatch jump (E032)
+
+## 7. No function pointers: what an interpreter is left with, and what it costs
+
+Goose has no function pointers, so nothing can hold "what to run". Three consequences for
+g86m, in order of how much they turned out to matter:
+
+- **No JIT.** Generated code could not be called. This is the one that cannot be worked round
+- **A decode cache holds what was parsed, not a handler.** An entry carries a small `kind`
+  and its operands, and the run loop is one `match` on the kind (E017, E018). The dispatch is one indirect jump, as a table of handlers would be
+- **Chaining entries into blocks is not worth it.** The load from one entry to the next is
+  2 of a NOP's 10 cycles; an arrangement that removes it can win a tenth of the boot at the
+  very most, and the one tried cost 16% (E032)
+
+How far that goes, on the Linux boot to a shell, both programs given the same kernel and
+initramfs on the same day (E048, Apple M1):
+
+| | Time | Host instructions per guest instruction |
+|---|---:|---:|
+| g86m | 9.46 s | 99 |
+| rustx86, interpreter | 16.57 s | 171 |
+| rustx86, with its arm64 JIT | 11.95 s | 117 |
+
+This compares two programs and not two languages: g86m has had some thirty measured changes
+aimed at this boot, and rustx86 was finished before any of them. The comparison of the
+languages is the 250-line fragment of E002 and E019, where Goose is 35% behind Rust as first
+written and 7% behind with the `match` of section 4 written out. What the table does show is
+that the missing function pointers and the missing JIT are not what bounds an interpreter
+written in Goose.
+
 # Found in rustx86
 
 Behaviour of rustx86 that turned up while comparing g86m's tests with it. g86m does not follow it in
