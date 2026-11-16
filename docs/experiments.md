@@ -3340,3 +3340,98 @@ By the card: the first branch, for candidates 1 and 2. The next card is the firs
 - **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, bench.bin, a
   self-check for each way of writing to code and for one page at two addresses, deliberately
   wrong builds, twelve pairs.
+
+### Result
+
+2026-11-16. **Kept: about 3.5% of the boot's cycles and 8.5% of its host instructions, as the
+card said; the first branch. And the fourth: the 16-bit benchmark is 3.8% slower, for a
+reason that is not the card's.** A run no longer loads the bytes of the instruction it is
+about to execute.
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main | 181.04 to 181.05 billion | twelve runs, 30.96 to 32.42 billion |
+| with the write noticed | 165.65 billion | twelve runs, 29.87 to 30.62 billion |
+
+Twelve pairs run back to back, the order alternating: the new build is the faster in all
+twelve, by 3.1 to 4.8% in ten of them (6.2 and 7.2% in the two where main's run was
+disturbed); the median is 3.6%. Three earlier rounds on a quiet machine gave 30.88 to 30.95
+billion against 29.78 to 29.93. test386 takes 3.2% fewer host instructions (18.03 billion
+against 18.62) and about 1% fewer cycles (2.88 billion against 2.90 to 2.93).
+
+What was built is the card's design with one difference: the physical address finds an entry
+for 16-bit code as well (and there its bytes are still compared), because one kind of key for
+both cost the 16-bit path least; see below. `exec_short` reckons in physical addresses inside
+a page and hands the executors the code segment's base less the page's distance from linear
+to physical, so what the guest sees (a return address, the instruction pointer of a fault) is
+linear as before. A page of RAM is marked when an entry of 32-bit code is made in it;
+`tlb_fill_write` makes no entry for a marked page; `set_mem8/16/32` and the bulk string
+routine look at the mark and call `code_written`, which empties the entries that begin in the
+fifteen bytes before the store or inside it, and after sixteen stores empties the page's
+entries and takes the mark away.
+
+The boot still takes 1,651,240,001 guest instructions; test386 is byte for byte the
+reference; `tools/difftest.sh` is at 72 of 72 with two new tests.
+
+**Tests.** `s_codewrite` changes a function's second byte in six ways (a plain 32-bit store,
+a read-modify-write, a byte store, a bulk string store, a store that begins in the page
+before, a store after the page has lost its mark and got it again) and calls the function
+after each. `s_codemap` runs one physical page at two linear addresses, where the code
+returns its own address, and two physical pages in turn at one linear address. Eleven
+deliberately wrong builds all fail: a 32-bit store or a byte store that does not look at the
+mark, a marked page given a write TLB entry, marking that leaves the write TLB alone, the
+bulk store not looking, only entries that begin at the store emptied, only the first byte's
+page looked at, a page that loses its mark and keeps its entries, and three that confuse
+linear with physical. The first version of `s_codewrite` let two of them pass, and not for
+want of a case: it compared two counters at the end, and a wrong step moved a count from one
+to the other where a later wrong step moved it back. The counters now go into a sum that
+depends on the order after every step. **A self-check that adds up should add up in a way
+that two errors cannot cancel.**
+
+Not covered: a 16-bit store (`set_mem16`) into code has no wrong build of its own. And the
+BIOS's stores into the screen and its data area (`bios.goose`) go straight to RAM without a
+look at the mark; no 32-bit code is there.
+
+**The 16-bit benchmark.** bench.bin, 369,095,178 instructions of real-mode code:
+
+| | Host instructions | Cycles |
+|---|---:|---:|
+| main | 95.64 billion | 14.03 to 14.05 billion |
+| with the write noticed | 98.72 billion (3.2% more) | 14.57 to 14.59 billion (3.8% more) |
+
+By the card that is the fourth branch, but its guess (pages with code and data together) is
+not the reason: no page of the benchmark is ever marked, only 32-bit code marks a page, and
+the cache is hit 369,095,153 times and missed 25 in both builds. The 8.4 host instructions
+more for each guest instruction are the compiler's code for `exec_general`, 139 KB of it,
+after a change of a few lines at its head. Taking the stores' look at the mark out again
+changes nothing, nor does the TLB's; the lookup in `exec_general` alone, put into main,
+brings all of it. The ways of writing those lines that were tried, by the benchmark:
+
+| How the general path's lookup is written | Host instructions | Cycles |
+|---|---:|---:|
+| main: slot and tag from the linear address | 95.64 billion | 14.0 billion |
+| the key chosen by the code's size (first version) | 99.09 | 14.8 |
+| the same, with the slot in a variable set twice | 102.04 | 15.0 |
+| the physical address for both sizes (kept) | 98.72 | 14.6 |
+| a block for each size, the 16-bit one as in main | 96.92 | 17.9 |
+| the same, the 16-bit block first | 96.22 | 17.6 |
+| three small changes to that | 96.11 to 96.85 | 17.4 to 18.0 |
+
+**The benchmark has two states, and which one a build is in is not in the source.** The
+variants with the fewest instructions are a quarter slower. A profile by address of one of
+them has 16.7% of all samples on one instruction, the load of `dc_cur` at the head of the
+ModRM decoder, which comes a few instructions after it is stored; a profile of main has the
+same instructions there with 0.7%. It is not the stack's position (padding the environment
+by 8 to 1,024 bytes moves neither build), not the load's width (a 32-bit `dc_cur` is as
+slow), and the variable is at the same address in every build. E021 met the same step (14.2
+against 17.2 billion) and put it down to a global's alignment; whatever it is, it is older
+than this card. So bench.bin's cycles say which state a build is in, and its host
+instruction count says what a change costs; the two must be read apart. Kept is the best
+variant that is in the fast state. That the 16-bit path is now 3 to 4% slower is the price
+of this card as it stands.
+
+By the card: the first branch for the boot, so the next card is INVLPG for one page. Left
+open, in this order: the 16-bit general path (why eight more instructions, and what the load
+of `dc_cur` waits for; taking `dc_cur` out of memory between the lookup and the decoder
+would answer both); how often a page loses its mark on a boot, which was not counted, and
+whether sixteen is the right number.
