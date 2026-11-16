@@ -3207,3 +3207,96 @@ changes on this card, and nothing in the sources read is measured here.
     end at "generated code or nothing", and the decision is the owner's
 - **Cut-off**: The same day. Two research passes over the sources; each claim carries a file
   or function name or is marked as not verified.
+
+### Result
+
+2026-11-16. **Four candidates, two of them with a size measured on g86m; three things the
+others do that g86m's own numbers say would not pay.** Nothing in `src/` changed. Read, with
+file and function names for each claim, by two research passes: Bochs (`bochs/cpu`: `cpu.cc`,
+`icache.h`, `tlb.h`, `access2.cc`, `stack.cc`, `lazy_flags.h`, `faststring.cc`, its `CHANGES`,
+and the slides of Mihocka and Shwartsman's 2008 paper); QEMU's software TLB
+(`accel/tcg/cputlb.c`, `include/exec/tlb-common.h`, `tcg/aarch64/tcg-target.c.inc`) and lazy
+flags; 86Box (`src/mem/mem.c`, `386_common.h`, `x86_flags.h`); DOSBox-X (`paging.h`,
+`flags.cpp`); Halfix (`mmu.c`, `access.c`, `smc.c`, `eflags.c`); tiny386 (`i386.c`). Not read:
+PCem, the text of the 2008 paper, Bochs's `fetchdecode32.cc`; blink from its README only. None
+of their published figures was checked, and none is for one technique alone except Bochs's
+"10% for chaining, 5 to 10% more for linking traces".
+
+**What they have in common that g86m does not.**
+
+| | g86m | Bochs | QEMU | Halfix, 86Box |
+|---|---|---|---|---|
+| Is the cached instruction still what is in memory? | compare its first eight bytes, every time it runs | a stamp for each physical page, tested by every write (`bxPageWriteStampTable`, `decWriteStamp`) | a page with code has no plain write entry in the TLB (`TLB_NOTDIRTY`, `notdirty_write`) | the same as QEMU (`cpu_smc_page_has_code`; `page_lookup`) |
+| The cache's key | the linear address | the physical address | the physical address | the physical address |
+| One comparison of a TLB entry covers | the page | the page, and that the access does not cross it (the index and tag are taken from the last byte), and that it is RAM | the same, and alignment; the entry holds host address minus guest address | no tag at all: a table with an entry for every page, a byte of permissions for the four modes |
+| Size of the data TLB | 256 for each of read, write, supervisor, user | 2,048, one table, permission bits tested after | 256 and up, resized at a flush by how full it was, and 8 victims | 8,192 live entries of a million |
+| The stack | as any memory | a window: one add and one comparison for a push or pop (`espPageBias`, `espPageWindowSize`, `espHostPtr`) | as any memory | as any memory |
+| A register form and a memory form of one instruction | one executor that tests which | two handlers | (generated code) | - |
+| Flags | at once | lazy, two words, no record of the operation | lazy, with the operation | lazy |
+
+**Measured on g86m, for the first row.** A build made only to be timed, with the comparison
+of the eight bytes taken out of `exec_short` and nothing put in its place. It goes wrong
+before 480 million instructions, as it must; up to 390 million (the decompressor) it ends in
+the same state as main:
+
+| First 390 million instructions | Host instructions | Cycles, two alternating runs |
+|---|---:|---:|
+| main | 40.63, 40.68 billion | 6.53, 6.61 billion |
+| without the comparison | 36.73, 36.72 billion | 6.26, 6.21 billion |
+
+9.7% of the host instructions and **about 5% of the cycles**: that is the most the first row
+can give. What it would cost is what a write to a page with code costs, times how many there
+are. Counted over a boot, with a mark for every physical page an instruction was ever decoded
+from (1,483 pages by the prompt), never taken off: 194.8 million writes by the short path, of
+which **8,406** to a marked page (141 pages); 615,701 pages written by the bulk string
+routine, 11,908 of them marked; 692,024 writes by the general path, 261 to a marked page.
+About twenty thousand in all. The others' way costs g86m next to nothing on the write side.
+
+**Counted on the way: the TLB is refilled far more often than it need be.** 4.26 million page
+walks in a boot (3.68 million for a read, 0.58 million for a write), and 90,277 flushes of
+the whole TLB behind them: 70,855 are INVLPG, which g86m answers by flushing everything
+(70,029 of them in the first 480 million instructions, while the kernel builds its page
+tables: 1.32 million walks, 19 for each flush), and 19,416 are writes of CR3 (after that:
+2.94 million walks, about 145 for each flush). g86m's i686 does not offer global pages in
+CPUID, so a change of address space throws the kernel's own pages out every time. What a
+walk costs was not measured.
+
+**Candidates, in the order the numbers suggest.**
+
+1. **Notice a write to code at the write, not at every instruction.** Key the decode cache by
+   physical address (a run already has it: the place in RAM it reads the bytes from), mark
+   each physical page that has entries, keep marked pages out of the write TLB, and on the
+   slow path that such a write then takes, empty the slots for the fifteen addresses before
+   it and those it covers. Upper bound 5% of the cycles; the write side is twenty thousand
+   slow writes a boot. What has to be right: every way into RAM that is not `seg_write` (the
+   bulk string routine, the one-translation path of E038, the BIOS's disk reads), and a page
+   that held code once and is data now. The largest candidate since E029.
+2. **INVLPG for one page, then global pages.** The first is a few lines and gives what a walk
+   costs (host instructions and cycles for each walk it saves, of at most 1.3 million); that
+   figure times 2.9 million says whether global pages (CPUID, CR4, a bit for each entry) are
+   worth their card.
+3. **Two executors for `mov`, one for a register and one for memory.** `mov r, r/m` and
+   `mov r/m, r` are 27% of all instructions (E040), at 19.6 and 16.7 cycles, and each tests
+   twice at run time which form it is; the host predicts that test by the executor, not by
+   the guest instruction, so alternating forms are the bad case. Bochs gives "reducing
+   misprediction" as the reason for its two handlers. Size unknown; the change is in
+   `classify` and two arms of `run_short`.
+4. **The memory operand itself**: one comparison for page, crossing and RAM, with the tag
+   taken from the access's last byte (Bochs, QEMU), and a window for the stack (Bochs). By
+   E037 (3.6% of the instructions gave 1.8% of the cycles) each is about a point; a build
+   made only to be timed first.
+
+**Not candidates, and why.**
+
+- **Lazy flags** (all of them have it, in three different forms). E040's table has ADD at
+  15.9 cycles and `mov r/m, r` at 16.7: computing the flags at once costs nothing that the
+  next instruction waits for. E024's fifth item said the same in advance.
+- **Linking traces, a successor remembered in the branch** (Bochs). E032: no arrangement of
+  entries can win more than 2 cycles of 10, and a run already goes from instruction to
+  instruction without leaving its function.
+- **A table with an entry for every page, a victim TLB, resizing** (Halfix, 86Box, DOSBox;
+  QEMU). They cure misses where two pages want one slot. g86m's walks follow flushes, 19 and
+  145 at a time; whether any are left over for conflicts is a question for after the second
+  candidate.
+
+By the card: the first branch, for candidates 1 and 2. The next card is the first.
