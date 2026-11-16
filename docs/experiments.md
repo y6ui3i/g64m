@@ -3462,3 +3462,45 @@ whether sixteen is the right number.
     one-entry caches)
 - **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, a self-check
   with a wrong build for each thing that must be forgotten.
+
+### Result
+
+2026-11-16. **Kept: a million page walks fewer, 0.5% of the host instructions of the first
+480 million guest instructions and 0.15% of the boot's; in cycles too small to see, as the
+card said. A walk costs about 230 host instructions, and global pages are off the list.**
+`forget_page` in `state.goose`; `flush_tlb` is now for CR0 and CR3 only.
+
+| | Page walks | Whole flushes | Host instructions | Cycles |
+|---|---:|---:|---:|---:|
+| First 480 million, main | 1,324,343 | 70,044 | 46.99 to 47.00 billion | three runs, 7.94 to 7.95 billion |
+| First 480 million, one page | 314,196 | 15 | 46.76 to 46.77 billion | three runs, 7.91 to 7.94 billion |
+| Boot to the prompt, main | 4,261,127 | 90,277 | 165.69 to 165.71 billion | |
+| Boot to the prompt, one page | 3,195,380 | 19,422 | 165.39 to 165.50 billion | |
+
+The walks that went are 1.01 million in the stretch and 1.07 million in the boot; the
+stretch lost 0.234 billion host instructions, **232 for each walk saved**, the flushes
+themselves included (seventy thousand times 1,024 tags). The cycles moved by 0.2%, inside
+the spread of three runs. At the boot's 5.5 host instructions a cycle a walk is about 40
+cycles.
+
+**Global pages are not worth their card.** After the first 480 million instructions 2.88
+million walks are left, about 148 behind each of 19,407 writes of CR3. If global pages took
+every one of them away, that is 0.67 billion host instructions and about 0.12 billion
+cycles: 0.4% of the boot, under the 1% the card asked for, for a bit in every TLB entry, a
+new control register bit and a feature the kernel then relies on. Off the list, with the
+figure; so are a larger TLB and a table for every page (E043), which could only save walks
+that are not there.
+
+The boot still takes 1,651,240,001 guest instructions; test386 is byte for byte the
+reference; `tools/difftest.sh` is at 76 of 76 with two new tests. `s_invlpg` changes a page
+table entry, names the page and uses it again, for a read, a write, code called from
+elsewhere, and code that names its own page and goes on; `s_invlpgu` does it for a page that
+ring 3 reads and writes. Eight deliberately wrong builds all fail: each of the four TLB
+entries left in place, each of the three one-entry caches left in place, and the slot of the
+wrong page. Two of them passed the first version of the test for the same reason: the thing
+to be forgotten was not there when INVLPG came (the stack's first read had become the last
+page read; the test's own INVLPG had already taken the page of code out of the TLB). **A
+test that something is forgotten has to make sure first that it is remembered.**
+
+By the card: the first branch, and its second half says global pages are off. The next card
+is the two executors for `mov`.

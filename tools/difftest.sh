@@ -55,7 +55,7 @@ done
 # Self-checking tests, for what the oracle cannot judge. A test passes when the console says OK and nothing else.
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu) cpu="--cpu i686" ;; *) cpu="" ;; esac
     for exe in build/g86m-debug build/g86m; do
         out=$("$exe" $cpu --max 2000000 "$bin" 2>/dev/null)
         if [ "$out" = "OK" ]; then

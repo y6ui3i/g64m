@@ -781,7 +781,7 @@ fn two_byte() {
                         7 => {                                       // INVLPG
                             if !i686 || m_mod == 3 { fault(6); }
                             need_ring0();
-                            flush_tlb();
+                            forget_page(cpu.base[ea_seg] + ea_off);
                         },
                         _ => { fault(6); },
                     }
