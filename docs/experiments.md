@@ -3176,3 +3176,34 @@ and DS is emptied on the way to ring 3 and has to be loaded again before real mo
 
 The next card is the other large end of a run: an instruction with no executor, 12.9 million
 ends, by opcode.
+
+## E043: A third survey: what interpreters other than the first three do (2026-11-16)
+
+A survey at the owner's suggestion, like E024, to find the next experiments. Nothing in `src/`
+changes on this card, and nothing in the sources read is measured here.
+
+- **Hypothesis**: E024 read rustx86, v86 and VirtualBox's IEM, two of which lean on a JIT.
+  E040 then found the boot flat: every kind of instruction costs 16 to 20 cycles where a NOP
+  costs 10, and no single site stands out. Emulators that are interpreters and nothing else
+  have had to get under that by design, not by removing a hot spot, and some of what they do
+  is not in E024's table. The candidates sought are those that take work off every
+  instruction or every memory access: how a memory operand is found and checked (the TLB
+  entry and what one comparison of it covers), how code that is written to is noticed (g86m
+  compares eight bytes for every instruction it runs), what an executor is specialised on,
+  and the flags.
+- **What changed since last time**: Different sources: Bochs (an interpreter only, tuned for
+  twenty years, with papers on why), QEMU's software TLB, the interpreters of 86Box and
+  DOSBox, and the small ones (Halfix, tiny386, blink). And a different question: E024 asked
+  what the others have that g86m lacks; since E026 to E032 the ledger knows which work an
+  instruction waits for (E032: blocks are off the list, the load on the chain is 2 cycles of
+  10), so each candidate is judged by whether it shortens that or only lowers a count.
+- **Next move for each result**:
+  - A technique removes work from every memory access or every instruction, and g86m's own
+    code shows the work is there → a card for it, with the cost counted on g86m first (host
+    instructions on the path, and a build made only to be timed, as E032 did for the load)
+  - A technique is what the ledger already tried or measured as not paying (blocks, fusing a
+    compare with its jump, a larger cache) → listed as such with the entry that says so, no card
+  - Nothing of the first kind → say so; with E040's third item that makes two surveys that
+    end at "generated code or nothing", and the decision is the owner's
+- **Cut-off**: The same day. Two research passes over the sources; each claim carries a file
+  or function name or is marked as not verified.
