@@ -3099,3 +3099,34 @@ fails all six; test386 fails five (not the unreduced count).
 The table by kind was a good guide to the size: 2.4% predicted from it, about 2% measured.
 That is the first prediction from a profile in this ledger to come out near its figure
 since E033's search, and the first from samples by kind. The next card is a run's end.
+
+## E042: A run that goes on into a page the TLB already knows (2026-11-16)
+
+- **Hypothesis**: 26.6 million runs in a boot end because the next instruction is on another
+  page of code (E040, 53% of all ends). Each such end leaves `exec_short`, copies the whole CPU
+  into `saved`, enters the general path (39 cycles before the opcode is known), runs the one
+  instruction there by its executor (E034), returns through `step` and the run loop, and
+  enters `exec_short` again. All the general path does for it is translate the new page. If
+  the run looks the page up in the read TLB itself and, on a hit, sets `code_page` and
+  `code_phys` and starts over on the new page, the trip is not made. A miss, or anything else
+  unusual, ends the run as before, so every page fault is still raised by the general path at
+  the moment it is raised today. Expected: 26.6 million times about 39 cycles is 1.0 billion,
+  **about 3% of the boot's cycles**, if nearly all of those pages are in the TLB.
+- **What changed since last time**: E024 translated the new page inside the run and saw 2.6%
+  more host instructions and cycles within a spread of 2 to 3%; why was not found. Three
+  things differ. The loop is not the one of E024 (E026 to E030 rebuilt it, and E034 changed
+  what a page change costs). The inner loop is left exactly as it is: its page, its place in
+  RAM and its bound stay constants, and a change of page leaves it and enters it again from an
+  outer loop that works them out anew, instead of making them variables that the loop carries.
+  And the judgment is by pairs run back to back (E041), which see 1%.
+- **Next move for each result**:
+  - 2% or more → keep; the next card is the other large end, an instruction with no executor
+    (12.9 million), by its opcodes
+  - Under 1%, or more host instructions again → count how many page changes the TLB probe
+    lets through and what the inner loop compiled to; if the count is high and the loop the
+    same, a run's end does not cost what E040's table says, and the entry is timed with a
+    clock before anything else is tried on it
+  - A test fails or the guest instruction count changes → the run went on where the general
+    path would have faulted or taken an interrupt: the probe, or the bound on the new page
+- **Cut-off**: The same day; `tools/difftest.sh` 66 of 66, test386, the boot's count, twelve
+  pairs, and deliberately wrong builds that the tests must fail.
