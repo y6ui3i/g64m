@@ -3504,3 +3504,29 @@ test that something is forgotten has to make sure first that it is remembered.**
 
 By the card: the first branch, and its second half says global pages are off. The next card
 is the two executors for `mov`.
+
+## E046: A `mov` between registers has its own executor (2026-11-16)
+
+- **Hypothesis**: `mov r, r/m` and `mov r/m, r` are 27% of a boot's instructions (E040), at
+  19.6 and 16.7 cycles. Each executor serves both forms of its operand and asks twice which
+  it has (`short_ea`, then `short_read` or `short_write`: is `mm` a register?). The host
+  predicts that test by where it is in `run_short`, not by the guest instruction, so it is
+  right only as often as one `mov` has the form of the one before; Bochs has a handler for
+  each form and gives misprediction as the reason (E043). With an executor for the register
+  form (one for each opcode, a load and a store of `cpu.regs`), and the old two left for
+  memory with the tests gone, a `mov` loses two tests and about four host instructions:
+  about 1% of the boot's host instructions, and **0.5 to 1.5% of its cycles** if the tests
+  were mispredicted often; next to nothing if they were not.
+- **What changed since last time**: E022 gave the arithmetic executors their operation and
+  E033 the shifts theirs; no executor has been split by the form of its operand. E040's
+  dispatch figure (under 2% of samples on the first instruction after the dispatch jump) is
+  about the jump into an executor, not about tests inside one.
+- **Next move for each result**:
+  - Cycles fall by 0.5% or more over pairs → keep, and the same split for the arithmetic
+    executors with a register or memory operand (CMP, ADD, TEST: 12% of instructions)
+  - Instructions fall and cycles do not → the tests were predicted; taken out again, and no
+    split of the others. The next card is then the memory operand itself (E043's fourth)
+  - A test fails or the guest instruction count changes → the two registers of a `mov`
+    taken the wrong way round for one of the opcodes
+- **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, wrong builds,
+  twelve pairs.
