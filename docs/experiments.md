@@ -3435,3 +3435,30 @@ open, in this order: the 16-bit general path (why eight more instructions, and w
 of `dc_cur` waits for; taking `dc_cur` out of memory between the lookup and the decoder
 would answer both); how often a page loses its mark on a boot, which was not counted, and
 whether sixteen is the right number.
+
+## E045: INVLPG forgets one page (2026-11-16)
+
+- **Hypothesis**: g86m answers INVLPG by emptying the whole TLB. A boot has 70,855 of them
+  (E043), 70,029 in the first 480 million instructions while the kernel builds its page
+  tables, and 1.32 million page walks follow in that stretch, 19 for each. Forgetting only
+  the page named (its slot in the read and the write TLB for both privilege levels, and the
+  three one-entry caches if they hold it) leaves the rest of the TLB in place and should take
+  most of those 1.32 million walks away. What a walk costs is not known, which is half the
+  reason for this card: at 100 to 300 host instructions each the saving is 0.1 to 0.25% of
+  the boot's host instructions, **well under 1% of its cycles**, and visible as cycles only
+  on the first 480 million instructions (1 to 2% there).
+- **What changed since last time**: Nothing in the ledger has touched how the TLB is emptied.
+  The count of flushes by cause is E043's.
+- **Next move for each result**:
+  - Walks fall by a million or so and the stretch's instructions and cycles with them → keep.
+    The saving divided by the walks saved is a walk's cost; times the 2.9 million walks that
+    follow a write of CR3, if that is 1% of the boot's cycles or more (a walk at about 100
+    cycles) → a card for global pages (CPUID, CR4.PGE, a bit for each TLB entry); if less,
+    global pages are off the list and the next card is the two executors for `mov`
+  - Walks do not fall → the walks after an INVLPG are of the page itself or of pages not seen
+    before; count walks by whether the page was in the TLB at the last flush
+  - A test fails or the guest instruction count changes → something relied on the whole TLB
+    going: a translation kept somewhere this does not look (a run's page of code, the
+    one-entry caches)
+- **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, a self-check
+  with a wrong build for each thing that must be forgotten.
