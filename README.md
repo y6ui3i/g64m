@@ -32,6 +32,10 @@ the Linux boot twice as fast, in
 [Goose の x86 エミュレータを 2 倍速くする](https://pocraft.net/?p=965); and another day and
 another third, by measuring what the host waits for and not how many instructions it runs, in
 [Goose の x86 エミュレータをさらに 3 割速くする](https://pocraft.net/?p=970).
+A fifth collects what those five days taught about Goose (what to watch for when writing it, what
+its generated code costs, how to tell what a change did) and times the Linux boot against
+rustx86 on one day:
+[Goose で x86 エミュレータを 5 日書いてわかったこと](https://pocraft.net/?p=976).
 
 | Stage | Goal | State |
 |---|---|---|
