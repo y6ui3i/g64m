@@ -781,7 +781,7 @@ fn two_byte() {
                         7 => {                                       // INVLPG
                             if !i686 || m_mod == 3 { fault(6); }
                             need_ring0();
-                            flush_tlb();
+                            forget_page(cpu.base[ea_seg] + ea_off);
                         },
                         _ => { fault(6); },
                     }
@@ -1018,8 +1018,8 @@ fn two_byte() {
 // For these the entry holds, besides the operand: the immediate or branch offset (imm), and in
 // bits 26 to 29 of m the length of the whole instruction, which the mask then covers.
 let K_NONE = 255;
-let K_MOV_R_RM = 1;      // 8B
-let K_MOV_RM_R = 2;      // 89
+let K_MOV_R_RM = 1;      // 8B from memory
+let K_MOV_RM_R = 2;      // 89 to memory
 let K_ALU_RM_R = 3;      // 01 09 11 19 21 29 31 39
 let K_ALU_R_RM = 4;      // 03 0B 13 1B 23 2B 33 3B
 let K_ALU_RM_I = 5;      // 83 and 81
@@ -1056,6 +1056,8 @@ let K_JCC_LE = 34;       // Jcc on LE or G
 let K_SHL_I = 35;        // C1 /4 and /6 with a count from 1 to 31
 let K_SHR_I = 36;        // C1 /5
 let K_SAR_I = 37;        // C1 /7
+let K_MOV_R_R = 38;      // 8B between registers: an executor that does not ask which form it has (E046)
+let K_MOV_R_R_89 = 39;   // 89 between registers
 let K_ALU_RM_R_OP = 40;  // 40 to 47: K_ALU_RM_R for one operation (ADC and SBB stay general)
 let K_ALU_R_RM_OP = 48;  // 48 to 55
 let K_ALU_RM_I_OP = 56;  // 56 to 63
@@ -1139,8 +1141,8 @@ fn classify(slot: i64, raw: u64) {
     let prep = !ins.lock && ins.rep == 2 && ins.asz32 && ins.osz == 32 && ins.seg < 0 && pl == 2;
     if p32 && has_m {
         len = after_m;
-        if op == 0x8B { kind = K_MOV_R_RM; }
-        else if op == 0x89 { kind = K_MOV_RM_R; }
+        if op == 0x8B { kind = if mm & 0x0C == 0x0C { K_MOV_R_R } else { K_MOV_R_RM }; }
+        else if op == 0x89 { kind = if mm & 0x0C == 0x0C { K_MOV_R_R_89 } else { K_MOV_RM_R }; }
         else if op < 0x40 && op & 7 == 1 { kind = if carries(op >> 3) { K_ALU_RM_R } else { K_ALU_RM_R_OP + (op >> 3) }; }
         else if op < 0x40 && op & 7 == 3 { kind = if carries(op >> 3) { K_ALU_R_RM } else { K_ALU_R_RM_OP + (op >> 3) }; }
         else if op == 0x83 { kind = imm_kind(mm); imm = sext8(raw8(raw, after_m)); len = after_m + 1; }
@@ -1358,8 +1360,8 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
     var nx = dc_next[slot];
     cpu.ip = nx - base;
     match kind {
-        1 => { short_ea(mm, slot); cpu.regs[reg] = short_read(mm); },
-        2 => { short_ea(mm, slot); short_write(mm, cpu.regs[reg]); },
+        1 => { ea_short(mm, dc[slot].disp); cpu.regs[reg] = seg_read(ea_seg, ea_off, 32); },
+        2 => { ea_short(mm, dc[slot].disp); seg_write(ea_seg, ea_off, 32, cpu.regs[reg]); },
         3 => {
             let aop = dc[slot].pre.op >> 3;
             short_ea(mm, slot);
@@ -1446,9 +1448,11 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         35 => { short_ea(mm, slot); short_write(mm, shl32(short_read(mm), imm)); },
         36 => { short_ea(mm, slot); short_write(mm, shr32(short_read(mm), imm)); },
         37 => { short_ea(mm, slot); short_write(mm, sar32(short_read(mm), imm)); },
+        38 => { cpu.regs[reg] = cpu.regs[mm >> 7 & 7]; },
+        39 => { cpu.regs[mm >> 7 & 7] = cpu.regs[reg]; },
         // The numbers with no executor are named, so that the kinds are one unbroken range and
         // the compiler makes one jump table of them, not two with a test between.
-        38, 39, 42, 43, 50, 51, 58, 59 => {},
+        42, 43, 50, 51, 58, 59 => {},
         40 => { short_ea(mm, slot); short_alu_rm(mm, 0, cpu.regs[reg]); },
         41 => { short_ea(mm, slot); short_alu_rm(mm, 1, cpu.regs[reg]); },
         44 => { short_ea(mm, slot); short_alu_rm(mm, 4, cpu.regs[reg]); },

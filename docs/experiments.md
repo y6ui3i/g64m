@@ -3435,3 +3435,131 @@ open, in this order: the 16-bit general path (why eight more instructions, and w
 of `dc_cur` waits for; taking `dc_cur` out of memory between the lookup and the decoder
 would answer both); how often a page loses its mark on a boot, which was not counted, and
 whether sixteen is the right number.
+
+## E045: INVLPG forgets one page (2026-11-16)
+
+- **Hypothesis**: g86m answers INVLPG by emptying the whole TLB. A boot has 70,855 of them
+  (E043), 70,029 in the first 480 million instructions while the kernel builds its page
+  tables, and 1.32 million page walks follow in that stretch, 19 for each. Forgetting only
+  the page named (its slot in the read and the write TLB for both privilege levels, and the
+  three one-entry caches if they hold it) leaves the rest of the TLB in place and should take
+  most of those 1.32 million walks away. What a walk costs is not known, which is half the
+  reason for this card: at 100 to 300 host instructions each the saving is 0.1 to 0.25% of
+  the boot's host instructions, **well under 1% of its cycles**, and visible as cycles only
+  on the first 480 million instructions (1 to 2% there).
+- **What changed since last time**: Nothing in the ledger has touched how the TLB is emptied.
+  The count of flushes by cause is E043's.
+- **Next move for each result**:
+  - Walks fall by a million or so and the stretch's instructions and cycles with them → keep.
+    The saving divided by the walks saved is a walk's cost; times the 2.9 million walks that
+    follow a write of CR3, if that is 1% of the boot's cycles or more (a walk at about 100
+    cycles) → a card for global pages (CPUID, CR4.PGE, a bit for each TLB entry); if less,
+    global pages are off the list and the next card is the two executors for `mov`
+  - Walks do not fall → the walks after an INVLPG are of the page itself or of pages not seen
+    before; count walks by whether the page was in the TLB at the last flush
+  - A test fails or the guest instruction count changes → something relied on the whole TLB
+    going: a translation kept somewhere this does not look (a run's page of code, the
+    one-entry caches)
+- **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, a self-check
+  with a wrong build for each thing that must be forgotten.
+
+### Result
+
+2026-11-16. **Kept: a million page walks fewer, 0.5% of the host instructions of the first
+480 million guest instructions and 0.15% of the boot's; in cycles too small to see, as the
+card said. A walk costs about 230 host instructions, and global pages are off the list.**
+`forget_page` in `state.goose`; `flush_tlb` is now for CR0 and CR3 only.
+
+| | Page walks | Whole flushes | Host instructions | Cycles |
+|---|---:|---:|---:|---:|
+| First 480 million, main | 1,324,343 | 70,044 | 46.99 to 47.00 billion | three runs, 7.94 to 7.95 billion |
+| First 480 million, one page | 314,196 | 15 | 46.76 to 46.77 billion | three runs, 7.91 to 7.94 billion |
+| Boot to the prompt, main | 4,261,127 | 90,277 | 165.69 to 165.71 billion | |
+| Boot to the prompt, one page | 3,195,380 | 19,422 | 165.39 to 165.50 billion | |
+
+The walks that went are 1.01 million in the stretch and 1.07 million in the boot; the
+stretch lost 0.234 billion host instructions, **232 for each walk saved**, the flushes
+themselves included (seventy thousand times 1,024 tags). The cycles moved by 0.2%, inside
+the spread of three runs. At the boot's 5.5 host instructions a cycle a walk is about 40
+cycles.
+
+**Global pages are not worth their card.** After the first 480 million instructions 2.88
+million walks are left, about 148 behind each of 19,407 writes of CR3. If global pages took
+every one of them away, that is 0.67 billion host instructions and about 0.12 billion
+cycles: 0.4% of the boot, under the 1% the card asked for, for a bit in every TLB entry, a
+new control register bit and a feature the kernel then relies on. Off the list, with the
+figure; so are a larger TLB and a table for every page (E043), which could only save walks
+that are not there.
+
+The boot still takes 1,651,240,001 guest instructions; test386 is byte for byte the
+reference; `tools/difftest.sh` is at 76 of 76 with two new tests. `s_invlpg` changes a page
+table entry, names the page and uses it again, for a read, a write, code called from
+elsewhere, and code that names its own page and goes on; `s_invlpgu` does it for a page that
+ring 3 reads and writes. Eight deliberately wrong builds all fail: each of the four TLB
+entries left in place, each of the three one-entry caches left in place, and the slot of the
+wrong page. Two of them passed the first version of the test for the same reason: the thing
+to be forgotten was not there when INVLPG came (the stack's first read had become the last
+page read; the test's own INVLPG had already taken the page of code out of the TLB). **A
+test that something is forgotten has to make sure first that it is remembered.**
+
+By the card: the first branch, and its second half says global pages are off. The next card
+is the two executors for `mov`.
+
+## E046: A `mov` between registers has its own executor (2026-11-16)
+
+- **Hypothesis**: `mov r, r/m` and `mov r/m, r` are 27% of a boot's instructions (E040), at
+  19.6 and 16.7 cycles. Each executor serves both forms of its operand and asks twice which
+  it has (`short_ea`, then `short_read` or `short_write`: is `mm` a register?). The host
+  predicts that test by where it is in `run_short`, not by the guest instruction, so it is
+  right only as often as one `mov` has the form of the one before; Bochs has a handler for
+  each form and gives misprediction as the reason (E043). With an executor for the register
+  form (one for each opcode, a load and a store of `cpu.regs`), and the old two left for
+  memory with the tests gone, a `mov` loses two tests and about four host instructions:
+  about 1% of the boot's host instructions, and **0.5 to 1.5% of its cycles** if the tests
+  were mispredicted often; next to nothing if they were not.
+- **What changed since last time**: E022 gave the arithmetic executors their operation and
+  E033 the shifts theirs; no executor has been split by the form of its operand. E040's
+  dispatch figure (under 2% of samples on the first instruction after the dispatch jump) is
+  about the jump into an executor, not about tests inside one.
+- **Next move for each result**:
+  - Cycles fall by 0.5% or more over pairs → keep, and the same split for the arithmetic
+    executors with a register or memory operand (CMP, ADD, TEST: 12% of instructions)
+  - Instructions fall and cycles do not → the tests were predicted; taken out again, and no
+    split of the others. The next card is then the memory operand itself (E043's fourth)
+  - A test fails or the guest instruction count changes → the two registers of a `mov`
+    taken the wrong way round for one of the opcodes
+- **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, wrong builds,
+  twelve pairs.
+
+### Result
+
+2026-11-16. **Kept: about 2% of the boot's cycles for 0.85% of its host instructions; more
+than the card said, and the first branch.** Kinds 38 and 39 are `mov` between registers by
+opcode 8B and by 89; kinds 1 and 2 are for memory only and ask nothing.
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main (with E045) | 165.41 to 165.62 billion | twelve runs, 29.83 to 30.43 billion |
+| with the register form apart | 164.02 to 164.11 billion | twelve runs, 29.29 to 29.84 billion |
+
+Twelve pairs run back to back, the order alternating: the new build is the faster in all
+twelve, by 0.65 to 3.1%, 1.9% on average. The cycles fell by more than twice what the
+instructions did, which is what a test that was mispredicted looks like; the card's upper
+figure was 1.5%. test386 (18.02 to 18.06 billion host instructions, 2.86 to 2.90 billion
+cycles) and bench.bin (98.71 to 98.73 billion, 14.53 to 14.66 billion) are as they were.
+
+The boot still takes 1,651,240,001 guest instructions; test386 is byte for byte the
+reference; `tools/difftest.sh` is at 78 of 78 with one new test. Four deliberately wrong
+builds all fail: each register form the wrong way round, 8B from memory taken for registers,
+89 between registers taken for memory. The first of them passed every test there was: an
+assembler writes a move between registers with opcode 89, so 8B with a register operand was
+in no test, and a compiler seldom writes it either. `s_movrr` has both, as bytes.
+
+One slip on the way: the first build of this did not compile (kinds 38 and 39 were in the
+arm for kinds that do nothing), the command's output was cut to its last lines, and three
+pairs were timed against the old binary under the new name before the equal instruction
+counts gave it away. **A build whose output is not read in full is not known to have
+happened.**
+
+By the card: the next is the same split for the arithmetic executors that take a register or
+memory (CMP, ADD, TEST and the rest of that grid).

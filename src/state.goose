@@ -128,11 +128,25 @@ fn forget_last() {
     write_page = 0xFFFFFFFF;
 }
 
-// Forgets every cached translation. Called when the page tables are switched, paging or write
-// protection is turned on or off, or a page is invalidated.
+// Forgets every cached translation. Called when the page tables are switched, or paging or
+// write protection is turned on or off.
 fn flush_tlb() {
     forget_last();
     for i in TLB_SIZE { tlb_rtag[i] = 0xFFFFFFFF; tlb_wtag[i] = 0xFFFFFFFF; }
+}
+
+// Forgets the translation of the page that holds linear address a, for both privilege levels:
+// what INVLPG asks for. The rest of the TLB stays (E045).
+fn forget_page(a: u32) {
+    let page = a >> 12;
+    let i: i64 = page & 0xFF;
+    if tlb_rtag[i] == page { tlb_rtag[i] = 0xFFFFFFFF; }
+    if tlb_wtag[i] == page { tlb_wtag[i] = 0xFFFFFFFF; }
+    if tlb_rtag[i + 0x100] == page { tlb_rtag[i + 0x100] = 0xFFFFFFFF; }
+    if tlb_wtag[i + 0x100] == page { tlb_wtag[i + 0x100] = 0xFFFFFFFF; }
+    if code_page == page { code_page = 0xFFFFFFFF; }
+    if read_page == page { read_page = 0xFFFFFFFF; }
+    if write_page == page { write_page = 0xFFFFFFFF; }
 }
 
 fn set_cpl(level: u8) {
