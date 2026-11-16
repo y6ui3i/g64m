@@ -164,7 +164,7 @@ struct Decoded {
     bytes: u64,          // the first eight bytes of the instruction, as they were when it was decoded
     mask: u64,           // which of those bytes the entry depends on
     pre: Pre,
-    tag: u32,            // the instruction's linear address; FFFFFFFFh for an empty entry
+    tag: u32,            // the instruction's physical address; FFFFFFFFh for an empty entry
     m: u32,              // the operand, once the instruction has asked for it
     disp: u32,           // the operand's displacement
     imm: u32,            // for an instruction with a short executor: its immediate or its branch offset
@@ -213,9 +213,64 @@ inline fn mem8(a: u32) -> u8 {
     return 0xFF;
 }
 
+// ---- Writes to code ----
+//
+// An entry of the decode cache for 32-bit code is found by the instruction's physical address
+// and is trusted without a look at the bytes (E044). So a store into RAM must take away the
+// entries it makes untrue. A physical page in which such an entry begins is marked. A marked
+// page has no entry in the write TLB (tlb_fill_write makes none, code_mark_page takes away
+// those there are), so the short paths that store through the write TLB never touch one;
+// every other store into RAM looks at the mark and, where it is set, comes here.
+
+// A store of n bytes at physical address p has been or is about to be made, and p's page or
+// the page of its last byte is marked. An instruction is at most 15 bytes, so the entries to
+// go are those that begin in the 15 bytes before p or in the n bytes at p. A page that is
+// stored into again and again is data now, whatever it was: after sixteen stores all its
+// entries go, and its mark, and it is written by the short paths again.
+fn code_written(p: u32, n: u32) {
+    let page: i64 = p >> 12;
+    code_hits[page] += 1;
+    if code_hits[page] >= 16 {
+        code_forget(p >> 12);
+        // The last bytes may lie in the page after this one, which keeps its mark.
+        if (p + n - 1) >> 12 == p >> 12 { return; }
+    }
+    var x = p - 15;
+    if p < 15 { x = 0; }
+    while x < p + n {
+        let s: i64 = x & (DC_HALF - 1) | DC_HALF;
+        if dc[s].tag == x { dc[s].tag = 0xFFFFFFFF; }
+        x += 1;
+    }
+}
+
+// Empties every entry that begins in this physical page, and takes its mark away.
+fn code_forget(page: u32) {
+    var x = page << 12;
+    for k in 4096 {
+        let s: i64 = x & (DC_HALF - 1) | DC_HALF;
+        if dc[s].tag == x { dc[s].tag = 0xFFFFFFFF; }
+        x += 1;
+    }
+    code_mark[page] = 0;
+    code_hits[page] = 0;
+}
+
+// Marks a physical page as holding entries, and takes it out of the write TLB.
+fn code_mark_page(page: u32) {
+    code_mark[page] = 1;
+    code_hits[page] = 0;
+    for i in TLB_SIZE {
+        if tlb_wphys[i] == page << 12 { tlb_wtag[i] = 0xFFFFFFFF; }
+    }
+}
+
 inline fn set_mem8(a: u32, v: u8) {
     let p = a & phys_mask;
-    if p < RAM_SIZE { ram[p] = v; }
+    if p < RAM_SIZE {
+        if code_mark[p >> 12] != 0 { code_written(p, 1); }
+        ram[p] = v;
+    }
 }
 
 // The wider accesses take all their bytes at once when they lie inside RAM and do not run past
@@ -237,6 +292,7 @@ inline fn set_mem16(a: u32, v: u16) {
     let p = a & phys_mask;
     if p < RAM_SIZE - 1 && p < phys_mask {
         let q: i64 = p;
+        if code_mark[q >> 12] | code_mark[(q + 1) >> 12] != 0 { code_written(p, 2); }
         ram[q] = v as! u8;
         ram[q + 1] = (v >> 8) as! u8;
         return;
@@ -264,6 +320,7 @@ inline fn set_mem32(a: u32, v: u32) {
     let p = a & phys_mask;
     if p < RAM_SIZE - 3 && p + 3 <= phys_mask {
         let q: i64 = p;
+        if code_mark[q >> 12] | code_mark[(q + 3) >> 12] != 0 { code_written(p, 4); }
         ram[q] = v as! u8;
         ram[q + 1] = (v >> 8) as! u8;
         ram[q + 2] = (v >> 16) as! u8;
@@ -404,7 +461,9 @@ fn tlb_fill_write(a: u32) -> u32 {
     let page = a >> 12;
     let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
     let phys = translate(a, true, cpu.cpl == 3) & 0xFFFFF000;
-    if phys < RAM_SIZE - 4096 && phys <= phys_mask - 0xFFF {
+    // Not for a page the decode cache has instructions from: a store there must go the long
+    // way, which looks for them (see code_written).
+    if phys < RAM_SIZE - 4096 && phys <= phys_mask - 0xFFF && code_mark[phys >> 12] == 0 {
         tlb_wphys[i] = phys;
         tlb_wtag[i] = page;
     }

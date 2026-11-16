@@ -376,6 +376,7 @@ fn string_bulk(movs: bool, src: i64, w: u8) {
         let dpage = page_write(dl);
         if dpage >= RAM_SIZE - 4096 || dpage > phys_mask - 0xFFF { return; }
         let dp: i64 = dpage | dl & 0xFFF;
+        if code_mark[dpage >> 12] != 0 { code_written(dpage | dl & 0xFFF, n << sh); }
         let v = cpu.regs[AX];
         if movs {
             let spage = page_read(sl);
@@ -1622,11 +1623,9 @@ fn exec_short() -> bool {
         // page number that is not one (nothing translated yet) is no page to run on.
         if code_page > 0xFFFFF || !code_ok { break; }
         let page_at = code_page << 12;
-        // code_ok says the whole page is in RAM. Said again here as a test of the address
-        // itself, it lets the compiler see that every fetch below is inside `ram`, with no
-        // test of its own.
-        let phys_at: i64 = code_phys;
-        if phys_at >= RAM_SIZE - 4096 { break; }
+        // code_ok says the whole page is in RAM; said again here as a test of the address
+        // itself.
+        if code_phys >= RAM_SIZE - 4096 { break; }
         // A run stays on that page, off its last 15 bytes, and within the code segment's
         // limit less 15. All three are one bound on the offset from the start of the page
         // (E030): the instruction pointer at the start of the page is ip_lo, and it rises
@@ -1637,14 +1636,24 @@ fn exec_short() -> bool {
         var off_max: u32 = 0xFF0;
         if ip_max - ip_lo < off_max { off_max = ip_max - ip_lo; }
         var moved = false;
+        // Inside the page the run reckons in physical addresses, which is what an entry is
+        // found by (E044): p is where the next instruction is in RAM. A linear address is
+        // lin_of above it, the same for the whole page, so the executors are given the code
+        // segment's base less that, and what they work out with it (the instruction pointer
+        // to store, a return address to push, where a RET goes) comes out as before.
+        let phys32: u32 = code_phys;
+        let lin_of = page_at - phys32;
+        let pbase = base - lin_of;
+        var p = a - lin_of;
         loop {
-            let off = a - page_at;
+            let off = p - phys32;
             if off > off_max {
                 // Off this page, or too near its end. If it is another page and the TLB has
                 // it, that is the page of code from here on, as the general path would make
                 // it, and the run starts over there. A TLB entry says the page is in RAM.
                 // Without one the general path translates it, and raises the page fault if
                 // there is to be one.
+                a = p + lin_of;
                 let page = a >> 12;
                 if page != code_page {
                     let t = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
@@ -1657,19 +1666,8 @@ fn exec_short() -> bool {
                 }
                 break;
             }
-            let slot: i64 = a & (DC_HALF - 1) | DC_HALF;
-            if dc[slot].tag != a { break; }
-            let q = phys_at + off;
-            let b0: u64 = ram[q];
-            let b1: u64 = ram[q + 1];
-            let b2: u64 = ram[q + 2];
-            let b3: u64 = ram[q + 3];
-            let b4: u64 = ram[q + 4];
-            let b5: u64 = ram[q + 5];
-            let b6: u64 = ram[q + 6];
-            let b7: u64 = ram[q + 7];
-            let raw = b0 | b1 << 8 | b2 << 16 | b3 << 24 | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56;
-            if (raw ^ dc[slot].bytes) & dc[slot].mask != 0 { break; }
+            let slot: i64 = p & (DC_HALF - 1) | DC_HALF;
+            if dc[slot].tag != p { break; }
             var kind = dc[slot].pre.kind;
             // One test for the usual case, a kind with an executor (1 to K_LAST). What is left
             // is 0, an instruction met for the second time, whose first, general, execution
@@ -1678,17 +1676,17 @@ fn exec_short() -> bool {
             if kind - 1 >= K_LAST {
                 if kind != 0 { break; }
                 ins = dc[slot].pre;
-                classify(slot, raw);
+                classify(slot, code64(p));
                 kind = dc[slot].pre.kind;
                 if kind == K_NONE { break; }
             }
             shadow = false;
-            a = run_short(kind, slot, base);
+            p = run_short(kind, slot, pbase);
             if left <= 1 { light_save = 0; return true; }
             left -= 1;
             vt += 1;
             vtime = vt;
-            saved.ip = a - base;
+            saved.ip = p - pbase;
             saved.flags = cpu.flags;
             ran = true;
         }
@@ -1752,7 +1750,11 @@ fn exec_general() -> bool {
     }
     let usable = dc_on && a >> 12 == code_page && code_ok && a & 0xFFF <= 0xFF0 && lim >= 15 && cpu.ip <= lim - 15
         && (c32 || cpu.ip <= 0xFFF0);
-    let slot: i64 = a & (DC_HALF - 1) | (if c32 { DC_HALF } else { 0 });
+    // An entry is found by the instruction's physical address. For 32-bit code the entry is
+    // then good as it stands, because a store into its bytes would have emptied it (E044);
+    // for 16-bit code, where code and data share pages as a rule, its bytes are compared.
+    let key = code_phys | a & 0xFFF;
+    let slot: i64 = key & (DC_HALF - 1) | (if c32 { DC_HALF } else { 0 });
     var op: u8 = 0;
     var raw: u64 = 0;
     var hit = false;
@@ -1760,7 +1762,7 @@ fn exec_general() -> bool {
     dc_ip0 = cpu.ip;
     if usable {
         raw = code64(code_phys | a & 0xFFF);
-        if dc[slot].tag == a && (raw ^ dc[slot].bytes) & dc[slot].mask == 0 {
+        if dc[slot].tag == key && (c32 || (raw ^ dc[slot].bytes) & dc[slot].mask == 0) {
             hit = true;
             dc_cur = slot;
             ins = dc[slot].pre;
@@ -1768,7 +1770,9 @@ fn exec_general() -> bool {
             // An instruction with a short executor is run here and now, and that is all of it.
             let kind = ins.kind;
             if kind < K_NONE {
-                if kind != 0 { run_short(kind, slot, cpu.base[CS]); return true; }
+                // The executor reckons in physical addresses: the base it is given is the
+                // code segment's, less what a linear address is above the physical one.
+                if kind != 0 { run_short(kind, slot, cpu.base[CS] - (a - key)); return true; }
                 classify(slot, raw);
             }
             cpu.ip += ins.plen;
@@ -1813,7 +1817,8 @@ fn exec_general() -> bool {
             dc[slot].mask = byte_mask(plen);
             ins.kind = 0;
             dc[slot].pre = ins;
-            dc[slot].tag = a;
+            dc[slot].tag = key;
+            if c32 && code_mark[key >> 12] == 0 { code_mark_page(key >> 12); }
             dc[slot].m = 0;
             dc[slot].disp = 0;
             dc_cur = slot;

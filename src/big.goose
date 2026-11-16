@@ -14,11 +14,17 @@ var ram: u8[RAM_SIZE];
 var dc: Decoded[DC_SIZE] = [Decoded { bytes: 0, mask: 0, pre: Pre { op: 0, plen: 0, osz: 16, asz32: false, lock: false, rep: 0, seg: -1, kind: 0 },
                                      tag: 0xFFFFFFFF, m: 0, disp: 0, imm: 0 }; DC_SIZE];
 
-// For each entry with a short executor, the linear address of the instruction after it. It is
+// For each entry with a short executor, the physical address of the instruction after it. It is
 // apart from the entry so that a run gets from one instruction to the next by one load indexed
 // by the slot, and does not wait for the entry itself (E028). Meaningful only when the entry's
-// tag and bytes have matched.
+// tag has matched.
 var dc_next: u32[DC_SIZE];
+
+// For each physical page of RAM: whether the decode cache holds an instruction of 32-bit code
+// that begins in it (code_mark), and how many stores have had to look for such instructions
+// since it was marked (code_hits). See code_written in state.goose.
+var code_mark: u8[RAM_SIZE >> 12] = [0; RAM_SIZE >> 12];
+var code_hits: u8[RAM_SIZE >> 12] = [0; RAM_SIZE >> 12];
 
 // Ports nothing answers: counted per port so a run can report what the guest probed.
 var unknown_ports: u8[65536] = [0; 65536];

@@ -3176,3 +3176,262 @@ and DS is emptied on the way to ring 3 and has to be loaded again before real mo
 
 The next card is the other large end of a run: an instruction with no executor, 12.9 million
 ends, by opcode.
+
+## E043: A third survey: what interpreters other than the first three do (2026-11-16)
+
+A survey at the owner's suggestion, like E024, to find the next experiments. Nothing in `src/`
+changes on this card, and nothing in the sources read is measured here.
+
+- **Hypothesis**: E024 read rustx86, v86 and VirtualBox's IEM, two of which lean on a JIT.
+  E040 then found the boot flat: every kind of instruction costs 16 to 20 cycles where a NOP
+  costs 10, and no single site stands out. Emulators that are interpreters and nothing else
+  have had to get under that by design, not by removing a hot spot, and some of what they do
+  is not in E024's table. The candidates sought are those that take work off every
+  instruction or every memory access: how a memory operand is found and checked (the TLB
+  entry and what one comparison of it covers), how code that is written to is noticed (g86m
+  compares eight bytes for every instruction it runs), what an executor is specialised on,
+  and the flags.
+- **What changed since last time**: Different sources: Bochs (an interpreter only, tuned for
+  twenty years, with papers on why), QEMU's software TLB, the interpreters of 86Box and
+  DOSBox, and the small ones (Halfix, tiny386, blink). And a different question: E024 asked
+  what the others have that g86m lacks; since E026 to E032 the ledger knows which work an
+  instruction waits for (E032: blocks are off the list, the load on the chain is 2 cycles of
+  10), so each candidate is judged by whether it shortens that or only lowers a count.
+- **Next move for each result**:
+  - A technique removes work from every memory access or every instruction, and g86m's own
+    code shows the work is there → a card for it, with the cost counted on g86m first (host
+    instructions on the path, and a build made only to be timed, as E032 did for the load)
+  - A technique is what the ledger already tried or measured as not paying (blocks, fusing a
+    compare with its jump, a larger cache) → listed as such with the entry that says so, no card
+  - Nothing of the first kind → say so; with E040's third item that makes two surveys that
+    end at "generated code or nothing", and the decision is the owner's
+- **Cut-off**: The same day. Two research passes over the sources; each claim carries a file
+  or function name or is marked as not verified.
+
+### Result
+
+2026-11-16. **Four candidates, two of them with a size measured on g86m; three things the
+others do that g86m's own numbers say would not pay.** Nothing in `src/` changed. Read, with
+file and function names for each claim, by two research passes: Bochs (`bochs/cpu`: `cpu.cc`,
+`icache.h`, `tlb.h`, `access2.cc`, `stack.cc`, `lazy_flags.h`, `faststring.cc`, its `CHANGES`,
+and the slides of Mihocka and Shwartsman's 2008 paper); QEMU's software TLB
+(`accel/tcg/cputlb.c`, `include/exec/tlb-common.h`, `tcg/aarch64/tcg-target.c.inc`) and lazy
+flags; 86Box (`src/mem/mem.c`, `386_common.h`, `x86_flags.h`); DOSBox-X (`paging.h`,
+`flags.cpp`); Halfix (`mmu.c`, `access.c`, `smc.c`, `eflags.c`); tiny386 (`i386.c`). Not read:
+PCem, the text of the 2008 paper, Bochs's `fetchdecode32.cc`; blink from its README only. None
+of their published figures was checked, and none is for one technique alone except Bochs's
+"10% for chaining, 5 to 10% more for linking traces".
+
+**What they have in common that g86m does not.**
+
+| | g86m | Bochs | QEMU | Halfix, 86Box |
+|---|---|---|---|---|
+| Is the cached instruction still what is in memory? | compare its first eight bytes, every time it runs | a stamp for each physical page, tested by every write (`bxPageWriteStampTable`, `decWriteStamp`) | a page with code has no plain write entry in the TLB (`TLB_NOTDIRTY`, `notdirty_write`) | the same as QEMU (`cpu_smc_page_has_code`; `page_lookup`) |
+| The cache's key | the linear address | the physical address | the physical address | the physical address |
+| One comparison of a TLB entry covers | the page | the page, and that the access does not cross it (the index and tag are taken from the last byte), and that it is RAM | the same, and alignment; the entry holds host address minus guest address | no tag at all: a table with an entry for every page, a byte of permissions for the four modes |
+| Size of the data TLB | 256 for each of read, write, supervisor, user | 2,048, one table, permission bits tested after | 256 and up, resized at a flush by how full it was, and 8 victims | 8,192 live entries of a million |
+| The stack | as any memory | a window: one add and one comparison for a push or pop (`espPageBias`, `espPageWindowSize`, `espHostPtr`) | as any memory | as any memory |
+| A register form and a memory form of one instruction | one executor that tests which | two handlers | (generated code) | - |
+| Flags | at once | lazy, two words, no record of the operation | lazy, with the operation | lazy |
+
+**Measured on g86m, for the first row.** A build made only to be timed, with the comparison
+of the eight bytes taken out of `exec_short` and nothing put in its place. It goes wrong
+before 480 million instructions, as it must; up to 390 million (the decompressor) it ends in
+the same state as main:
+
+| First 390 million instructions | Host instructions | Cycles, two alternating runs |
+|---|---:|---:|
+| main | 40.63, 40.68 billion | 6.53, 6.61 billion |
+| without the comparison | 36.73, 36.72 billion | 6.26, 6.21 billion |
+
+9.7% of the host instructions and **about 5% of the cycles**: that is the most the first row
+can give. What it would cost is what a write to a page with code costs, times how many there
+are. Counted over a boot, with a mark for every physical page an instruction was ever decoded
+from (1,483 pages by the prompt), never taken off: 194.8 million writes by the short path, of
+which **8,406** to a marked page (141 pages); 615,701 pages written by the bulk string
+routine, 11,908 of them marked; 692,024 writes by the general path, 261 to a marked page.
+About twenty thousand in all. The others' way costs g86m next to nothing on the write side.
+
+**Counted on the way: the TLB is refilled far more often than it need be.** 4.26 million page
+walks in a boot (3.68 million for a read, 0.58 million for a write), and 90,277 flushes of
+the whole TLB behind them: 70,855 are INVLPG, which g86m answers by flushing everything
+(70,029 of them in the first 480 million instructions, while the kernel builds its page
+tables: 1.32 million walks, 19 for each flush), and 19,416 are writes of CR3 (after that:
+2.94 million walks, about 145 for each flush). g86m's i686 does not offer global pages in
+CPUID, so a change of address space throws the kernel's own pages out every time. What a
+walk costs was not measured.
+
+**Candidates, in the order the numbers suggest.**
+
+1. **Notice a write to code at the write, not at every instruction.** Key the decode cache by
+   physical address (a run already has it: the place in RAM it reads the bytes from), mark
+   each physical page that has entries, keep marked pages out of the write TLB, and on the
+   slow path that such a write then takes, empty the slots for the fifteen addresses before
+   it and those it covers. Upper bound 5% of the cycles; the write side is twenty thousand
+   slow writes a boot. What has to be right: every way into RAM that is not `seg_write` (the
+   bulk string routine, the one-translation path of E038, the BIOS's disk reads), and a page
+   that held code once and is data now. The largest candidate since E029.
+2. **INVLPG for one page, then global pages.** The first is a few lines and gives what a walk
+   costs (host instructions and cycles for each walk it saves, of at most 1.3 million); that
+   figure times 2.9 million says whether global pages (CPUID, CR4, a bit for each entry) are
+   worth their card.
+3. **Two executors for `mov`, one for a register and one for memory.** `mov r, r/m` and
+   `mov r/m, r` are 27% of all instructions (E040), at 19.6 and 16.7 cycles, and each tests
+   twice at run time which form it is; the host predicts that test by the executor, not by
+   the guest instruction, so alternating forms are the bad case. Bochs gives "reducing
+   misprediction" as the reason for its two handlers. Size unknown; the change is in
+   `classify` and two arms of `run_short`.
+4. **The memory operand itself**: one comparison for page, crossing and RAM, with the tag
+   taken from the access's last byte (Bochs, QEMU), and a window for the stack (Bochs). By
+   E037 (3.6% of the instructions gave 1.8% of the cycles) each is about a point; a build
+   made only to be timed first.
+
+**Not candidates, and why.**
+
+- **Lazy flags** (all of them have it, in three different forms). E040's table has ADD at
+  15.9 cycles and `mov r/m, r` at 16.7: computing the flags at once costs nothing that the
+  next instruction waits for. E024's fifth item said the same in advance.
+- **Linking traces, a successor remembered in the branch** (Bochs). E032: no arrangement of
+  entries can win more than 2 cycles of 10, and a run already goes from instruction to
+  instruction without leaving its function.
+- **A table with an entry for every page, a victim TLB, resizing** (Halfix, 86Box, DOSBox;
+  QEMU). They cure misses where two pages want one slot. g86m's walks follow flushes, 19 and
+  145 at a time; whether any are left over for conflicts is a question for after the second
+  candidate.
+
+By the card: the first branch, for candidates 1 and 2. The next card is the first.
+
+## E044: A write to code is noticed at the write, not at every instruction (2026-11-16)
+
+- **Hypothesis**: Every instruction of a run loads eight bytes of guest memory and compares
+  them, under a mask, with the bytes its entry was decoded from. Taken out and replaced by
+  nothing, that is 9.7% of the host instructions and about 5% of the cycles on the first 390
+  million instructions of the boot (E043). Bochs, QEMU, Halfix and 86Box do without it by
+  noticing the write instead, and on g86m the writes that would have to be noticed are about
+  twenty thousand in a boot of 195 million (E043). So, for 32-bit code:
+  - an entry is found by the instruction's **physical** address and is good for as long as it
+    is there: the same bytes at another linear address, or other bytes at the same one, are
+    then no question at all. A run carries the physical address of the next instruction and
+    the page's difference to linear addresses, so the load from one instruction to the next
+    is the same one load (E028);
+  - a physical page with entries is **marked**, and a marked page gets no entry in the write
+    TLB, so the short paths for a write never see it and cost what they cost now;
+  - every other store into RAM (`set_mem8/16/32`, the bulk string routine) looks at the mark,
+    and for a marked page empties the entries that begin in the fifteen bytes before the
+    write or inside it. After sixteen such writes the page is taken to be data now: all its
+    entries go, and the mark with them.
+
+  16-bit code keeps the comparison: it runs on the general path only, and there code and
+  data share pages as a rule. Expected: **3 to 4% of the boot's cycles** and about 8% of its
+  host instructions.
+- **What changed since last time**: E030 made the comparison cheaper (8% of the instructions,
+  1% of the cycles); this removes it, together with the load of the code bytes that feeds it,
+  and E043 measured what that is worth before anything was built. Nothing in the ledger has
+  changed how an entry is known to be valid since E016.
+- **Next move for each result**:
+  - 2.5% or more of the boot's cycles → keep; the next card is INVLPG for one page
+  - 1 to 2.5% → keep, and say that the bound of the decompressor does not carry to the
+    kernel; count slow writes and emptied entries on the boot before the next card
+  - Under 1% → not kept: the loop waits on something the comparison was hiding behind
+  - test386 or bench.bin slower by 2% or more → pages that hold code and data together;
+    count their slow writes, and try a mark for a part of a page (Bochs: 128 bytes)
+  - A test fails or the guest instruction count changes → a way into RAM that does not look
+    at the mark, or an address carried in a run that is linear where it should be physical
+- **Cut-off**: The same day; `tools/difftest.sh`, test386, the boot's count, bench.bin, a
+  self-check for each way of writing to code and for one page at two addresses, deliberately
+  wrong builds, twelve pairs.
+
+### Result
+
+2026-11-16. **Kept: about 3.5% of the boot's cycles and 8.5% of its host instructions, as the
+card said; the first branch. And the fourth: the 16-bit benchmark is 3.8% slower, for a
+reason that is not the card's.** A run no longer loads the bytes of the instruction it is
+about to execute.
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main | 181.04 to 181.05 billion | twelve runs, 30.96 to 32.42 billion |
+| with the write noticed | 165.65 billion | twelve runs, 29.87 to 30.62 billion |
+
+Twelve pairs run back to back, the order alternating: the new build is the faster in all
+twelve, by 3.1 to 4.8% in ten of them (6.2 and 7.2% in the two where main's run was
+disturbed); the median is 3.6%. Three earlier rounds on a quiet machine gave 30.88 to 30.95
+billion against 29.78 to 29.93. test386 takes 3.2% fewer host instructions (18.03 billion
+against 18.62) and about 1% fewer cycles (2.88 billion against 2.90 to 2.93).
+
+What was built is the card's design with one difference: the physical address finds an entry
+for 16-bit code as well (and there its bytes are still compared), because one kind of key for
+both cost the 16-bit path least; see below. `exec_short` reckons in physical addresses inside
+a page and hands the executors the code segment's base less the page's distance from linear
+to physical, so what the guest sees (a return address, the instruction pointer of a fault) is
+linear as before. A page of RAM is marked when an entry of 32-bit code is made in it;
+`tlb_fill_write` makes no entry for a marked page; `set_mem8/16/32` and the bulk string
+routine look at the mark and call `code_written`, which empties the entries that begin in the
+fifteen bytes before the store or inside it, and after sixteen stores empties the page's
+entries and takes the mark away.
+
+The boot still takes 1,651,240,001 guest instructions; test386 is byte for byte the
+reference; `tools/difftest.sh` is at 72 of 72 with two new tests.
+
+**Tests.** `s_codewrite` changes a function's second byte in six ways (a plain 32-bit store,
+a read-modify-write, a byte store, a bulk string store, a store that begins in the page
+before, a store after the page has lost its mark and got it again) and calls the function
+after each. `s_codemap` runs one physical page at two linear addresses, where the code
+returns its own address, and two physical pages in turn at one linear address. Eleven
+deliberately wrong builds all fail: a 32-bit store or a byte store that does not look at the
+mark, a marked page given a write TLB entry, marking that leaves the write TLB alone, the
+bulk store not looking, only entries that begin at the store emptied, only the first byte's
+page looked at, a page that loses its mark and keeps its entries, and three that confuse
+linear with physical. The first version of `s_codewrite` let two of them pass, and not for
+want of a case: it compared two counters at the end, and a wrong step moved a count from one
+to the other where a later wrong step moved it back. The counters now go into a sum that
+depends on the order after every step. **A self-check that adds up should add up in a way
+that two errors cannot cancel.**
+
+Not covered: a 16-bit store (`set_mem16`) into code has no wrong build of its own. And the
+BIOS's stores into the screen and its data area (`bios.goose`) go straight to RAM without a
+look at the mark; no 32-bit code is there.
+
+**The 16-bit benchmark.** bench.bin, 369,095,178 instructions of real-mode code:
+
+| | Host instructions | Cycles |
+|---|---:|---:|
+| main | 95.64 billion | 14.03 to 14.05 billion |
+| with the write noticed | 98.72 billion (3.2% more) | 14.57 to 14.59 billion (3.8% more) |
+
+By the card that is the fourth branch, but its guess (pages with code and data together) is
+not the reason: no page of the benchmark is ever marked, only 32-bit code marks a page, and
+the cache is hit 369,095,153 times and missed 25 in both builds. The 8.4 host instructions
+more for each guest instruction are the compiler's code for `exec_general`, 139 KB of it,
+after a change of a few lines at its head. Taking the stores' look at the mark out again
+changes nothing, nor does the TLB's; the lookup in `exec_general` alone, put into main,
+brings all of it. The ways of writing those lines that were tried, by the benchmark:
+
+| How the general path's lookup is written | Host instructions | Cycles |
+|---|---:|---:|
+| main: slot and tag from the linear address | 95.64 billion | 14.0 billion |
+| the key chosen by the code's size (first version) | 99.09 | 14.8 |
+| the same, with the slot in a variable set twice | 102.04 | 15.0 |
+| the physical address for both sizes (kept) | 98.72 | 14.6 |
+| a block for each size, the 16-bit one as in main | 96.92 | 17.9 |
+| the same, the 16-bit block first | 96.22 | 17.6 |
+| three small changes to that | 96.11 to 96.85 | 17.4 to 18.0 |
+
+**The benchmark has two states, and which one a build is in is not in the source.** The
+variants with the fewest instructions are a quarter slower. A profile by address of one of
+them has 16.7% of all samples on one instruction, the load of `dc_cur` at the head of the
+ModRM decoder, which comes a few instructions after it is stored; a profile of main has the
+same instructions there with 0.7%. It is not the stack's position (padding the environment
+by 8 to 1,024 bytes moves neither build), not the load's width (a 32-bit `dc_cur` is as
+slow), and the variable is at the same address in every build. E021 met the same step (14.2
+against 17.2 billion) and put it down to a global's alignment; whatever it is, it is older
+than this card. So bench.bin's cycles say which state a build is in, and its host
+instruction count says what a change costs; the two must be read apart. Kept is the best
+variant that is in the fast state. That the 16-bit path is now 3 to 4% slower is the price
+of this card as it stands.
+
+By the card: the first branch for the boot, so the next card is INVLPG for one page. Left
+open, in this order: the 16-bit general path (why eight more instructions, and what the load
+of `dc_cur` waits for; taking `dc_cur` out of memory between the lookup and the decoder
+would answer both); how often a page loses its mark on a boot, which was not counted, and
+whether sixteen is the right number.
