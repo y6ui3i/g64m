@@ -3047,3 +3047,55 @@ By the card: (a) no; (c) no; (b) partly. So, in order of what the numbers promis
 3. **The floor.** `mov` at 17 to 20 cycles and a NOP in a row at 10 says the executors'
    own work is about half of each instruction and the loop the other half. Nothing in this
    survey points at a way under that short of generated code.
+
+## E041: Rotates in one step (2026-11-16)
+
+- **Hypothesis**: E040's table by kind has one kind out of line: the executor for shifts and
+  rotates by a constant that the one-step shifts of E022 do not cover, 43.7 cycles each where
+  its neighbours take 14 to 20. After E022 those are the rotates, 29.5 million in a boot.
+  `shift()` does a rotate one bit for each pass of a loop with a `match` in it. ROL and ROR in
+  one step (two shifts and an OR, CF from the result's lowest or highest bit, OF by the
+  formula the loop's end already uses) should bring the kind to about 17 cycles: 29.5 million
+  times 27 cycles is 0.8 billion, **about 2.4% of the boot**, and `shift` should fall from
+  2.8% of the samples to well under 1%. RCL and RCR keep the loop: a rotate through CF is 33
+  bits wide, and nothing counted says the boot uses them.
+- **What changed since last time**: E033 took the shifts by CL out of `shift()` and got 0.9%
+  where the biased sampler said 3%. This is chosen from a table of time by kind made with a
+  sampler that agrees with a clock (E040), and it is the rotates, which E033 left alone.
+- **Next move for each result**:
+  - About 2% or more → keep; the table is a good guide, and the next card is a run's end
+  - Under 1% → the kind's 44 cycles were not the loop (the call, or the memory forms); time
+    the executor with a clock as E040 did before anything else
+  - A test fails or the guest instruction count changes → CF or OF of a rotate, most likely
+    for a count that is a multiple of the width (8-bit and 16-bit rotates by 8, 16 or 24)
+- **Cut-off**: The same day; `tools/difftest.sh` 66 of 66, test386 (which has the flags of
+  rotates from real hardware), the boot's count, and deliberately wrong builds that the tests
+  must fail.
+
+### Result
+
+2026-11-16. **Kept: about 2% of the boot's cycles and 1.6% of its host instructions; the
+first branch.** ROL and ROR are one step in `shift()` for every width, so the general path and
+the executor for a count in CL have it too. RCL and RCR keep the loop.
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| main | 185.8 to 186.0 billion | twelve runs, 32.91 to 34.60 billion |
+| with rotates in one step | 182.9 billion | twelve runs, 32.81 to 33.55 billion |
+
+The machine was busier than yesterday and main's runs spread by 5%, so the pairs decide:
+twelve pairs run back to back, eight with main first and four with it second. The new build
+is the faster in eleven. The differences average 2.5% with main first and 1.7% with it
+second; **about 2%**, where the card said 2.4%. `shift` fell from 2.8% of the samples to 0.8%
+as predicted. test386 is unchanged in cost (18.37 billion instructions, 2.88 billion cycles
+both ways); it has few rotates.
+
+The boot still takes 1,651,240,001 guest instructions; `tools/difftest.sh` is at 66 of 66;
+test386 is byte for byte the reference. Six deliberately wrong builds all fail: CF taken from
+the wrong end for ROL and for ROR, ROR turning left, the count not reduced by the width, CF
+left alone when the count is a multiple of the width, and ROL by one bit too few. `t_shift`
+fails all six; test386 fails five (not the unreduced count).
+
+The table by kind was a good guide to the size: 2.4% predicted from it, about 2% measured.
+That is the first prediction from a profile in this ledger to come out near its figure
+since E033's search, and the first from samples by kind. The next card is a run's end.

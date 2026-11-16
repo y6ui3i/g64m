@@ -136,6 +136,20 @@ fn shift(kind: u8, v0: u32, count: u8, w: u8) -> u32 {
             v = v << n & m;
         }
         n = 0;
+    } else if kind < 2 {
+        // ROL and ROR, in one step too. The count is not reduced for these two, so an 8-bit
+        // rotate by 9 is one of 1, and one by 8 leaves the value as it was; either way the
+        // loop below would leave in CF the last bit that went round, which is the lowest bit
+        // of a left rotate's result and the highest of a right rotate's.
+        let r = n % bits;
+        if kind == 0 {
+            if r != 0 { v = (v << r | v >> (bits - r)) & m; }
+            cf = v & 1 != 0;
+        } else {
+            if r != 0 { v = (v >> r | v << (bits - r)) & m; }
+            cf = v & s != 0;
+        }
+        n = 0;
     }
     for i in n {
         match kind {
