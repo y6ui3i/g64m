@@ -48,15 +48,23 @@ rustx86 on one day:
 
 ## Technology choices
 
-Goose is the only new technology in the project. The rest is a C compiler (clang) and, once a screen
-is needed, SDL2.
+Goose was the only new technology in the project until E059; there is now a second, behind an
+option: code generated at run time (below). The rest is a C compiler (clang) and, once a screen is
+needed, SDL2.
 
 Choosing Goose decides three things:
 
 - **It does not run in a browser.** Goose's wasm output is a proposal and is not implemented. For now
   g86m runs natively in a terminal.
-- **There is no JIT.** Goose has no function pointers, so code generated at run time cannot be called.
-  Speed has to come from the interpreter.
+- **Goose by itself cannot run code it generates.** It has no function pointers. The interpreter is
+  therefore where the speed first came from (E015 to E057 in the ledger), and it is the default.
+- **With forty lines of C it can** (E058). `--jit` turns on a translator for arm64, written in Goose
+  ([src/jit.goose](src/jit.goose)), that makes host code of runs of 32-bit guest instructions; the C
+  ([src/jit.c](src/jit.c)) maps executable memory, copies code into it and calls it. The dull
+  alternative, which is what was chosen first and kept, is the interpreter with fused pairs; the JIT
+  was taken up when that was down to fractions of a percent a card (E052, E056), and it takes a
+  fifth off the Linux boot's cycles (E062). Without `--jit` nothing of it runs. It is for arm64
+  hosts only; on any other, do not pass `--jit`.
 - **Dispatch and the device bus are `enum` and `match`.** There is nothing like a trait or a vtable.
 
 ## Build
@@ -153,6 +161,7 @@ To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 | [src/dev.goose](src/dev.goose) | Interrupt controllers, timer, keyboard controller, I/O port dispatch |
 | [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs) |
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
+| [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |
 | [src/g86m.goose](src/g86m.goose) | The run loop, interrupt delivery, pacing, the serial console, the session script, the command line |
 | [src/big.goose](src/big.goose) | The large arrays (RAM and three others), in a file of their own so they come last in memory |
 
