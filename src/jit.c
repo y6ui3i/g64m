@@ -66,3 +66,5 @@ int64_t jit_slot(void) { return jit_slot_was; }
 typedef struct { const uint32_t *data; int64_t len; } jit_words;
 int64_t jit_addr8(jit_bytes a) { return (int64_t)a.data; }
 int64_t jit_addr32(jit_words a) { return (int64_t)a.data; }
+typedef struct { const int64_t *data; int64_t len; } jit_quads;
+int64_t jit_addr64(jit_quads a) { return (int64_t)a.data; }

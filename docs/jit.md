@@ -21,7 +21,7 @@ handful of instructions is not testing them (it has happened three times; see "T
 `--jit-off N` tells the translator to leave groups of instruction kinds to the interpreter; N
 is a sum of the bits in `jit_plain` (jit.goose). It is for finding a wrong translation: see
 "Finding a wrong translation". `--jit-size N` makes the room for code N bytes (70,000 at least,
-32 MB by default), so that a test can see it fill up.
+64 MB by default), so that a test can see it fill up.
 
 On a host that is not arm64, `--jit` says so and the run goes on without it.
 
@@ -68,6 +68,17 @@ are only made inside a page: a store into the page makes every block in it stale
 and a stale block is entered only from Goose, which checks. Where the code segment's limit
 cuts into the page, generated code is given time for one block at a time and nothing is
 linked.
+
+**To another page, and from a RET.** A block that ends at a RET, or at a fixed address in
+another page, branches to *the far way*: code after the way out that is given an address
+and does what a run of the interpreter does when it changes page, then what Goose does
+before it enters a block. The page has to be whole inside the code segment's limit
+(`jit_ctx[0]`, set before each call); the TLB has to have it for reading at this privilege
+level; `jit_head` and `jit_gen` of the address's slot have to say a block begins there that
+was made under the page's present `code_gen`. Then w22 becomes the new page's and the block
+is entered. Otherwise the way out. Nothing is remembered between arrivals, so a store into
+either page, a change of the paging and a new limit are all seen. `--jit-off 32768` turns
+it off.
 
 **Flags.** The translator knows which instruction set the flags last. The generated code
 keeps that instruction's operands and result in w1 to w3 (the record); EFLAGS is written out
@@ -122,7 +133,7 @@ without the JIT. The self-checks written for the JIT: `s_jit` (blocks without me
 `s_jitseg` (a segment's limit), `s_jitring` (the privilege level), `s_jitops` (8-bit
 operations, shifts, rotates, the arithmetic to memory, ADC, SBB, SETCC), `s_jitslot` (a block
 whose decode-cache entry goes and comes back), `s_jitchain` (blocks that lead to one another;
-the stops are taken here), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
+the stops are taken here), `s_jitfar` (the far way's four tests), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
 (RDTSC), and `s_cslimit` (blocks at the code segment's limit). The JIT's self-checks are
 also run with room for 70,000 bytes of code, so that it fills up while they run.
 
@@ -134,27 +145,24 @@ before the eighth arrival anywhere (the first stop sweep). The count of instruct
 blocks, printed with `--jit`, shows the last. A fourth: an instruction the assembler encodes
 another way than the one meant (`test al, imm` and `mov cx, dx` have two encodings each).
 
-## Where it stands (2026-11-17, after E066)
+## Where it stands (2026-11-18, after E069)
 
-Linux boot to the shell prompt, Apple M1, medians of six:
+Linux boot to the shell prompt, Apple M1:
 
 | | Host instructions | Cycles |
 |---|---:|---:|
 | Interpreter (main before the JIT) | 145.7 billion | 29.0 billion |
-| This source without `--jit` | 147.4 billion | 28.8 billion |
 | `--jit` after E063 | 94.9 billion | 18.2 billion |
 | `--jit` after E065 (linked) | 74.7 billion | 15.0 billion |
-| `--jit` | 58.0 billion | 12.95 billion |
+| `--jit` after E066 (kinds) | 58.0 billion | 12.95 billion |
+| `--jit` after E069 (the far way) | 48.6 billion | 5 to 8% under E066 the same hour |
 
-- 95.4% of the guest instructions run in blocks (1,576 of 1,651 million).
-- Generated code is entered 34.5 million times in a boot; 25 thousand link slots are filled.
-- 47 thousand blocks are translated, 26.6 MB of code, no flush.
-- A guest instruction costs 35 host instructions over the whole boot, where the
-  interpreter's costs 88.
-
-Not counted since E066: what generated code now comes back for 34.5 million times, and how
-the 58 billion divide between the bodies, the flags written out at each block's end, and
-the trips back to Goose. That count is the first step of the next task.
+- 97.7% of the guest instructions run in blocks (1,613 of 1,651 million).
+- Generated code is entered 16.5 million times in a boot; the far way finds a block 25.2
+  million times; 34 thousand link slots are filled.
+- 65.7 thousand blocks are translated, 31.8 MB of code, no flush (the room is 64 MB).
+- A sample of the boot: generated code 63%, `exec_short` 11%, `exec_general` 9%,
+  `exec_one` (with `jit_blocks`) 7%.
 
 ## Tasks
 
@@ -167,7 +175,8 @@ started; this list is updated when one is done.
 | 2 | `--jit` refused on a host that is not arm64 | It would run arm64 code on any other | done, E063 |
 | 3 | The kinds still unknown: `mov` with a 16-bit operand, IMUL, the string instructions without REP, RDTSC | 31 of the 66 million chain stops | done, E066: 55% under the interpreter |
 | 4 | From block to block inside generated code: the guest registers stay in host registers, the time left is counted down there, and Goose is returned to only where a block cannot go on | Most of the 57 host instructions a guest instruction cost | done, E065 |
-| 4b | A link to a block in another page | 15 million chain stops before E065; needs the generation of two pages to be right | |
+| 4b | From a block to a block in another page, and from a RET | 16 million of 34.5 million trips (E067) | done, E069: the far way looks the block up at every arrival; nothing is linked across pages |
+| 4c | A block of one instruction where that is a jump | 4.5 million trips (E067) | done, E068 |
 | 5 | The flags' record kept across the end of a block where the next block sets the flags before anything can read them | Up to thirty instructions at most block ends | |
 | 6 | The interpreter's cost of carrying the JIT, measured over layouts again | E062 read 1.1% in one layout; E060 0.1% in three; E063 0.1% in one | |
 | 7 | The code cache full: drop everything and start again | The Linux boot fills 32 MB once | done, E063 |

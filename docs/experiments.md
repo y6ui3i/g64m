@@ -5035,3 +5035,126 @@ read; a 16-bit move between registers that moves 32 bits shows only if the upper
 differ, and, for the opcode an assembler does not use, only if the test has that opcode.
 The test script ran the JIT's self-checks with little room for code on the default
 machine, where RDTSC is no instruction; it now picks the machine for that one.
+
+## E067: What generated code comes back for (2026-11-18)
+
+The count `docs/jit.md` left open after E066, before choosing among tasks 4b, 5, 11 and 12.
+
+- **Hypothesis**: Generated code is entered 34.5 million times in a boot. If the trips are
+  what the time is, a profile shows the interpreter's functions with a share far above the
+  4.6% of the instructions they execute, and the count says which trips there are most of.
+- **What changed since last time**: E063's count was of chain stops in Goose; since E065 a
+  block is left through a link slot, a way out, a RET or for want of time, and the count
+  tells them apart (the way out's second value: 0, 1 short, 2 RET, a slot's address).
+- **Next move for each result**:
+  - Trips cost a third of the time or more → the tasks that remove trips first (4b, RET,
+    the kinds blocks stop at), the flags (5) after
+  - Generated code itself is nine tenths of the time → task 5 first
+- **Cut-off**: One counting build (`build/jitcount2.py`), one `sample` of a boot.
+
+### Result
+
+2026-11-18. **The trips are half the time.** A sample of the boot (3,302 samples): generated
+code about 52%; `exec_short` 21.5%, `exec_general` 8.6%, `exec_one` with `jit_blocks` in it
+8.5%, the rest of Goose about 9%. The interpreter executes 4.6% of the instructions; what
+it costs is the start of a run after each trip. By the card: the first branch.
+
+| Generated code came back, millions | All | To another page | To an address with no entry | To an entry that heads no block | To a block |
+|---|---:|---:|---:|---:|---:|
+| Through a link slot | 23.76 | 8.93 | 0.63 | 14.18 | 0.03 |
+| At a RET | 8.21 | 7.12 | 0.01 | 0.19 | 0.88 |
+| At a way out (a memory operand off the short path) | 2.43 | 0.00 | 0.02 | 0.15 | 2.26 |
+| For want of time | 0.09 | | | | 0.09 |
+
+Of the 14.18 million slots that led to an entry heading no block: 8.27 million were at an
+instruction with no executor, 3.49 million at a lone CALL and 0.96 at a lone JMP (a block of
+one instruction is not made, E059), the rest at a plain instruction followed by one of
+those. The instructions with no executor, by opcode, in millions: `mov eax, moffs` 1.31,
+group 83 with a prefix 0.74, MUL 0.34 and DIV 0.18, REPE CMPSB 0.52, `push r/m` 0.35, LEAVE
+0.41, PUSHF 0.36, CMPXCHG 0.35, `push imm8` 0.23, BSWAP 0.21, SHRD 0.33, REP MOVSD 0.20,
+`mov moffs, eax` 0.17, and a tail of thirty more below 0.2 each. 4.88 million entries
+executed nothing: a way out taken at an instruction that heads a block enters that block,
+which leaves at once.
+
+## E068: A block of one instruction, where that is a jump (2026-11-18)
+
+- **Hypothesis**: E067: 4.5 million link slots lead to a lone CALL or JMP, which heads no
+  block because a block of one instruction was not worth a trip from Goose (E059). Reached
+  through a link it costs no trip. Made a block when the one instruction is a JMP, a
+  conditional jump, a CALL or a RET: **generated code entered 3 million times fewer.**
+- **What changed since last time**: E059's rule was made when every block was entered from
+  Goose. Since E065 a block's cost of entry through a link is two instructions.
+- **Next move for each result**:
+  - 3 million fewer → keep, on to E069
+  - Fewer than 1 million fewer → the lone jumps are reached some other way; count again
+- **Cut-off**: The suite, the boot's count.
+
+## E069: Out of the page inside generated code (2026-11-18)
+
+Task 4b of `docs/jit.md`, and the RET with it.
+
+- **Hypothesis**: E067: 8.93 million link slots and 7.12 million RETs lead to another page,
+  and 0.88 million RETs to a block in the same page. A run of the interpreter changes page
+  when the TLB has the new page for reading at this privilege level (E042); generated code
+  can make the same test. One piece of code after the way in ("the far way"), given an
+  instruction pointer: the page's linear address, the page whole inside the code segment's
+  limit, the TLB's tag, the address in RAM, the slot's `jit_head` and `jit_gen` against the
+  page's `code_gen`, then w22 for the new page and a branch to the block. Anything else
+  goes to the way out as now. A RET and a link slot to another page go there. No slot is
+  patched to another page, so nothing depends on a second page staying as it was: the far
+  way looks every time. **Generated code entered 12 million times fewer, and the boot's
+  cycles 10% or more under E066's.**
+- **What changed since last time**: E065 linked inside a page because a store into a page
+  makes all its blocks stale together. The far way does not link; it checks the generation
+  where Goose does, at every arrival. The way out returns the instruction pointer, since
+  w22 may no longer be the run's.
+- **Next move for each result**:
+  - 10% or more → keep; then the instructions with no executor (task 12), by E067's list
+  - Entries fall as said and the cycles less than 5% → keep; the trips were not the time,
+    sample again
+  - A test fails with `--jit` only → a new bit of `--jit-off` turns the far way off; halve
+- **Cut-off**: The suite with `--jit`, the boot's count and time, wrong builds for each test
+  the far way makes (limit, TLB tag, head, generation).
+
+### Result (E068 and E069, measured together)
+
+2026-11-18. **Kept: generated code is entered 16.5 million times in a boot (34.5 before),
+25.2 million arrivals are taken by the far way, and the boot takes 48.6 billion host
+instructions (58.1) and 5 to 8% fewer cycles.** `tools/difftest.sh` has 119 lines, all ok.
+
+| Linux boot to the shell prompt | Host instructions | Cycles, median of 4 | Cycles, least of 5 (a busier hour) |
+|---|---:|---:|---:|
+| `--jit`, E066 | 58.1 billion | 13.3 billion | 13.08 billion |
+| `--jit`, E068 and E069 | 48.6 billion | 12.17 billion | 12.42 billion |
+
+By E069's card: the entries fell as said (18 million fewer; the card said 12 with E068's 3),
+the cycles by less than the 10% it said: its second branch is the nearest, and a second
+sample was taken. Generated code is now about 63% of the samples (52), `exec_short` 11%
+(21.5), `exec_general` 9%, `exec_one` 7%. What is left of the trips, in millions: a link
+slot to an instruction with no executor 6.95, a way out 2.5, the far way finding nothing
+1.96, a slot to an address with no entry 0.46. E068 by itself cannot be told from the count:
+with the far way off (`--jit-off 32768`) there are 41.7 million entries, more than before,
+because the lone jumps are blocks now and each leaves for another page.
+
+**What was built.** The far way is fifty instructions after the way out, with the addresses
+of `jit_head`, `jit_gen`, `code_gen`, `jit_code` and two words of the Goose program's
+(`jit_ctx`) beside it. A block that ends at a RET or at a fixed address in another page
+branches to it. The way out now returns the instruction pointer (w16 less w22), because w22
+may be another page's than the run's; `jit_blocks` adds the run's own. Two more things
+found by the count: a link slot of a block in a page the far way went to is linked from
+Goose by looking the address up in the TLB (the run is still on its first page then), and a
+way out taken before an instruction that heads a block no longer enters that block to have
+it leave at once (4.9 million entries that executed nothing): `jit_blocks` says so and
+`exec_one` goes to the general path. The room for code is 64 MB: the boot's 65.7 thousand
+blocks take 31.8 MB.
+
+**Tests.** `s_jitfar`: a loop calls a function in another page, forty passes four times:
+as it is; after a store into the function through another address; after the page is
+mapped elsewhere and the TLB's place for it is taken by another page that maps to the old
+code; and from a code segment whose limit is inside the function, where the RET faults.
+Five wrong builds (each of the four tests of the far way made to pass always, and w22 not
+changed), each caught by it. The first four wrong builds were themselves wrong (a NOP where
+the branch was is later patched as a branch: an illegal instruction), which a return code
+showed; and the tag's test was not reached until the CALL was put in a block of its own,
+because a block that reads memory left by its way out first and the interpreter made the
+call.
