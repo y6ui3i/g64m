@@ -4009,3 +4009,154 @@ card, because a fused pair has to stay a branch on its taken path for the same r
 
 `tools/difftest.sh` on the source as it stands has 87 lines, all ok (four self-checks more
 than this morning, each run on the debug and the release build, and the layout check).
+
+## E053: Which pairs of instructions follow each other in a run (2026-11-17)
+
+- **Hypothesis**: A NOP in a row costs 10 cycles and a `mov` 17 to 20 (E031, E040): about
+  half of an instruction is the loop, not the executor. An executor for two instructions
+  pays the loop once. The first candidates are a flag-setting instruction and the
+  conditional jump after it: conditional jumps are 11.7% of the boot's instructions (E040),
+  the jump's entry is always the one after the compare's, and a fused pair can branch on the
+  comparison itself. Whether that is worth building depends on how the pairs are spread: if
+  the instruction before a conditional jump is one of a few kinds (CMP and TEST in their
+  register and immediate forms), six or fewer pairs cover most of the jumps; if it is any of
+  thirty, each pair is too rare to pay for its executor. A count, over a boot, of every
+  (kind, next kind) that a run executes one after the other.
+- **What changed since last time**: E024 and E043 rejected linking and traces from other
+  emulators' figures; nothing has counted pairs in g86m. E047 warns that more kinds can move
+  the compiler's code for the whole loop, so the count has to promise more than a point.
+- **Next move for each result**:
+  - Six or fewer pairs ending in a conditional jump cover 6% or more of all instructions →
+    a build made only to be timed that fuses the commonest one, to learn what a fused pair
+    saves in cycles; then the card for the fusion itself
+  - The jumps' predecessors are spread (the top six under 4%) → look at the commonest pairs
+    of any kind (two MOVs, PUSH and PUSH); if those are under 4% too, fusion is not built
+- **Cut-off**: The same day; one counting build (a copy), one boot.
+
+### Result
+
+2026-11-17. **Five pairs ending in a conditional jump are 7.8% of all instructions, and a
+fused pair saves about 49 host instructions; but the first four ways of building it lost
+more in the loop than the pairs gave.** The count, one boot of a counting copy:
+
+| Before a conditional jump | Share of all instructions |
+|---|---:|
+| CMP `r/m, r` | 3.24% |
+| CMP `r/m, imm` | 1.47% |
+| TEST `r/m, r` | 1.22% |
+| TEST `r/m8, imm8` | 1.01% |
+| TEST `r/m8, r8` | 0.88% |
+| the 8-bit arithmetic with an immediate, DEC, the others | 0.66%, 0.47%, under 0.45% each |
+
+Conditional jumps are 11.75% of all instructions, 98.4% of all instructions are executed in
+runs, and nearly every jump is of the kind that tests a mask of flags. By the card: the
+first branch (six pairs, 8.4%). Of pairs of any kind the commonest are a conditional jump
+and the `mov` after it (3.25%), which is not a pair in the code (the jump may be taken), and
+two `mov`s from memory (2.9%).
+
+**The builds made to be timed** fused CMP `r/m, r` and its jump first, then all five. What
+each one cost the instructions that are not pairs is the finding:
+
+| How the run learns that an executor ran two instructions | Linux boot, host instructions | |
+|---|---:|---|
+| main | 151.4 billion | |
+| The kind is changed before the dispatch when there is time for one only | 172.1 billion | the compiler split the dispatch into two jump tables |
+| A flag worked out before every dispatch and passed to the executor | 161.5 billion | four instructions before every dispatch, and a register short |
+| The executor returns two values | 158.9 billion | an inline function that returns two values gets a test of the fault flag after it, every time |
+| The count in the upper half of a 64-bit return value (one pair; five pairs) | 154.2; 150.6 billion | one constant to set before every dispatch, and the loop's end test no longer joined to its subtraction |
+| A mark above the address, found where the run tests the address anyway | 151.3 billion | no better: the loop was out of registers |
+| The same, and the run counts with one counter in place of two | **146.6 billion** | |
+
+A pair saves 49 host instructions (from the difference between one pair and five), so 128
+million pairs are 6.3 billion, 4.1% of the boot; the builds that did worse than main were
+paying three to thirteen instructions on each of 1.5 billion dispatches. The loop of
+`exec_short` had no register to spare (`pbase` and `off_max` already live on the stack), and
+each of these designs asked for one more. What made room was not in the pairs at all: the
+run kept two counters that move together, the virtual time and the instructions left, and
+now keeps one (the time is put right when the run ends). The next card is the fusion as
+built on that.
+
+## E054: A compare and the conditional jump after it as one executor (2026-11-17)
+
+- **Hypothesis**: With the design E053 ended on, the five pairs save 49 host instructions
+  each on 128 million pairs and cost the other executors nothing: **3% of the boot's host
+  instructions and 1.5% or more of its cycles** (the cycles of a loop trip that is not made
+  are mostly off the path the host waits on, so less than the instructions).
+- **What changed since last time**: E053's last timing build, made into the real thing.
+  - `classify` looks at the bytes after a CMP `r/m, r`, CMP `r/m, imm`, TEST `r/m, r`, TEST
+    `r/m8, imm8` or TEST `r/m8, r8`; if they are a conditional jump with no prefix, the
+    entry becomes a pair: its next address is the one after the jump, and the jump's
+    condition and offset go into the entry's `bytes`, which a 32-bit entry has not used
+    since E044. The pair is at most 14 bytes, inside the 15 that a store into code looks
+    back over and inside the 16 that an entry has before its page ends.
+  - A pair counts as two instructions. A run now stops one instruction short of the time it
+    has, and the instruction it stops at is the general path's, so a pair is run only when
+    there is time for two and the run can never go past its limit; with time for one, and
+    from the general path, the executor runs the first instruction alone. The executor says
+    that it ran both with a bit above the 32-bit address it returns, and the run finds the
+    bit where it already tests whether the address is on the page.
+  - The run counts with one counter: `run_left`, stored after each instruction; the virtual
+    time stands still during a run and is put right at its end, after a fault, and for RDTSC.
+  - `exec_short` no longer returns a value: it never ends a step.
+- **Next move for each result**:
+  - Cycles down by 0.6% or more over padded layouts → keep; then count again what precedes
+    the jumps that are left (the 8-bit arithmetic, DEC) and what a jump is followed by
+  - Instructions down, cycles within 0.6% → keep if no layout is slower, and stop there
+  - A test fails or the boot's count changes → the count of a pair, or the stop one short
+- **Cut-off**: The same day. `tools/difftest.sh`; the boot's count; `s_pairs` (every
+  condition, each kind of pair, a near jump, the jump rewritten in place), `s_pairfault` (a
+  fault in a pair's first instruction; the time across pairs, by RDTSC), a stop after each of
+  400 instruction counts compared with the trace; wrong builds; four layouts, six rounds.
+
+### Result
+
+2026-11-17. **Kept: 3.2% fewer host instructions and about 1.5% fewer cycles on the boot, in
+every layout.** `tools/difftest.sh` has 93 lines, all ok; the boot stops at 1,651,240,001
+instructions as before; test386 byte for byte.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of four layouts |
+|---|---:|---:|
+| main (E050) | 151.4 billion | 28.30, 28.26, 28.36, 28.42 billion |
+| E054 | 146.5 billion | 27.92, 27.88, 27.98, 27.86 billion |
+| E054 with `classify` making no pairs (one layout) | 150.3 billion | 28.61 billion |
+
+The slowest layout of E054 is under the fastest of main. The third row is the new loop
+without what it was built for: 0.8% fewer instructions than main and **1% more cycles**, so
+against its own loop the fusion is worth 2.5% of the instructions and 2.4% of the cycles,
+and the loop as rebuilt gives a point of that back. Where that point goes was not looked
+for (candidates: the address test in 64 bits against two values on the stack; the copy of
+the address into the register the executors return in). bench.bin and test386, which run no
+pairs: 92.1 against 91.4 billion instructions and 14.3 against 14.5 billion cycles; 17.0
+against 16.9 and 2.80 against 2.80.
+
+By the card: the first branch.
+
+**Tests.** `s_pairs`: CMP `r/m, r` with all sixteen conditions and the other four pairs with
+two each, a near jump after a CMP from memory, and that jump's condition rewritten in place
+half way; the sum expected is a trace run's, which goes one instruction at a time and makes
+no pairs. `s_pairfault`: a pair of each kind whose first instruction faults (address and
+flags in the handler's frame), and RDTSC round the whole of it, against a trace run's count.
+And in `tools/difftest.sh`, `s_pairs` stopped after each of 400 instruction counts, where
+it must be at the address the trace has for that count.
+
+Seventeen wrong builds, each caught: three in how a condition is kept (L and GE swapped, LE
+without ZF, SF xor OF left out), two in reading the jump (offset not sign-extended, the
+condition from the wrong byte), a pair run with time for one, the lone instruction's next
+address, a pair counted once, the mark not seen, four pairs with the wrong first instruction,
+the time not put right after a fault or at a run's end, RDTSC without the run's count, and a
+run that goes on to its limit. Three passed at first. Two were the test's: `test al, 4` is
+assembled in the short form for AL, which is not one of the pairs, so that pair was never
+run; and an 8-bit TEST of the whole register gives the same flags as of its low byte, until
+the register is DH. The third (a pair with time for one) is what the stops are for, and they
+catch it, as they do the run that goes on to its limit; nothing else does.
+
+**What the day's cards add up to**, Linux boot to the shell prompt:
+
+| | Host instructions | Cycles |
+|---|---:|---:|
+| Main this morning (E046) | 164.1 billion | 29.4 to 29.7 billion |
+| After E049 and E050 | 151.4 billion | 28.3 to 28.5 billion |
+| After E054 | 146.5 billion | 27.9 to 28.0 billion |
+
+Next, by the card: a count of what precedes the conditional jumps that are still by
+themselves, and what the rebuilt loop lost.

@@ -109,6 +109,19 @@ for the total, a debugger stepping one instruction for the detail). See E010 and
   (`tools/layout.sh`). One thing the layout shows that the source does not: a growable array
   (`u8[>..]`) is aligned to 8 inside the packed struct, so alignment starts again behind each
   one
+- **An `inline fn` that returns two values is followed by a test of the fault flag; one that
+  returns one value is not.** g86m's executors are one inline function called from the loop
+  of a run. Returning the next address and a count as `-> u32, i64` put a load and a test
+  after every call, 4 host instructions on each of 1.5 billion (E053). Packing both into one
+  `u64` (the count in the upper half) costs nothing
+- **Changing the value a `match` is on, just before the `match`, can split its jump table.**
+  `if short_of_time { kind += 5; }` in front of the dispatch on `kind` made the C compiler
+  thread the two paths apart and build two tables with a test between; every dispatch paid
+  for it (E053). Pass what the arm needs to know as a parameter and leave the value alone
+- **A hot loop that is out of registers pays for one more variable on every iteration, in
+  spills that have nothing to do with the variable.** Look at what the loop already carries
+  before adding to it: g86m's run kept two counters that always moved together, and making
+  them one is what let a third thing in (E053)
 - **`if c { x += n; }` becomes a conditional select, and a select is data.** Where `x` is what
   the next iteration of a loop starts from (in g86m, the address of the next guest instruction
   after a conditional jump), a select makes the next iteration wait for `c`, which a branch
