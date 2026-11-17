@@ -67,7 +67,7 @@ done
 # Self-checking tests, for what the oracle cannot judge. A test passes when the console says OK and nothing else.
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault) cpu="--cpu i686" ;; *) cpu="" ;; esac
     for exe in build/g86m-debug build/g86m; do
         out=$("$exe" $cpu --max 2000000 "$bin" 2>/dev/null)
         if [ "$out" = "OK" ]; then
@@ -78,6 +78,35 @@ for bin in build/s_*.bin; do
         fi
     done
 done
+
+# Stopping after any number of instructions. A run of short executors counts a fused pair as two
+# instructions and stops one short of the limit; wherever the limit falls, also between the two
+# of a pair, the machine must be where the trace, which goes one instruction at a time, says it
+# is after that many (E054). s_pairs, stopped at each of 400 counts inside its cached passes.
+if [ -f build/s_pairs.bin ]; then
+    build/g86m --trace --max 2000000 build/s_pairs.bin 2>/dev/null | cut -c1-13 > build/s_pairs.ips
+    for exe in build/g86m-debug build/g86m; do
+        bad=0
+        k=1200
+        while [ $k -lt 1600 ]; do
+            want=$(sed -n "$((k + 1))p" build/s_pairs.ips)
+            at=$("$exe" --max $k build/s_pairs.bin 2>&1 | sed -n 's/^steps \([0-9]*\) .* at \([0-9a-f]*\):\([0-9a-f]*\) .*/\1 \2 \3/p')
+            set -- $at
+            got=$(printf '%s:%08X' "$(echo "${2:-}" | tr a-f A-F)" "0x${3:-0}")
+            if [ "${1:-}" != "$k" ] || [ "$got" != "$want" ]; then
+                bad=$((bad + 1))
+                [ $bad -le 3 ] && echo "  after $k: at $got (counted ${1:-?}), the trace says $want"
+            fi
+            k=$((k + 1))
+        done
+        if [ $bad -eq 0 ]; then
+            echo "ok    stops at 400 counts in s_pairs ($(basename "$exe"))"
+        else
+            fail=1
+            echo "FAIL  stops in s_pairs ($(basename "$exe")): $bad of 400 counts are not where the trace is"
+        fi
+    done
+fi
 
 # Operating-system boots. The disk images are not in the repository; a missing image is skipped
 # and reported, never counted as a pass.

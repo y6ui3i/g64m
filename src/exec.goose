@@ -1084,7 +1084,17 @@ let K_LODSB = 80;        // AC
 let K_SCASB = 81;        // AE
 let K_STOSB = 82;        // AA
 let K_STOS = 83;         // AB: STOSD
-let K_LAST = 83;         // the largest kind with an executor
+// A flag-setting instruction and the conditional jump after it, as one executor (E053). The
+// entry is the first instruction's; imm is the jump's offset, bytes what jcc_fused keeps of
+// its condition, and dc_next the address after the jump. A pair counts as two instructions,
+// so it is run only when there is time for two; otherwise, and from the general path, the
+// executor is told to run the first instruction by itself.
+let K_CMP_RM_R_J = 84;   // CMP r/m, r and Jcc
+let K_CMP_RM_I_J = 85;   // CMP r/m, imm and Jcc
+let K_TEST_J = 86;       // TEST r/m, r and Jcc
+let K_TEST8_I_J = 87;    // TEST r/m8, imm8 and Jcc
+let K_TEST8_J = 88;      // TEST r/m8, r8 and Jcc
+let K_LAST = 88;         // the largest kind with an executor
 
 // Byte k of the instruction, from its first eight.
 inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32; }
@@ -1108,6 +1118,33 @@ fn jcc_kind(cc: u8) -> u8 {
     if cc >> 1 <= 5 { return K_JCC_MASK; }
     if cc >> 1 == 6 { return K_JCC_L; }
     return K_JCC_LE;
+}
+
+// A condition code as a fused pair keeps it: the flags to test, with bit 31 set when the jump
+// is taken on none of them being set. Bit 1, which EFLAGS does not use, stands for "SF and OF
+// differ"; jcc_fused puts that there before it tests.
+fn fuse_data(cc: u8) -> u32 {
+    let neg: u32 = cc & 1;
+    if cc >> 1 == 6 { return 2 | neg << 31; }
+    if cc >> 1 == 7 { return 2 | ZF | neg << 31; }
+    return jcc_data(cc);
+}
+
+// The pair's kind for an instruction that a conditional jump can be fused to; K_NONE for
+// any other.
+fn fuse_kind(kind: u8) -> u8 {
+    if kind == K_ALU_RM_R_OP + 7 { return K_CMP_RM_R_J; }
+    if kind == K_ALU_RM_I_OP + 7 { return K_CMP_RM_I_J; }
+    if kind == K_TEST { return K_TEST_J; }
+    if kind == K_TEST8_I { return K_TEST8_I_J; }
+    if kind == K_TEST8 { return K_TEST8_J; }
+    return K_NONE;
+}
+
+inline fn jcc_fused(d: u32) -> bool {
+    let f = cpu.flags;
+    let g = f & 0xFFFFFFFD | ((f ^ f >> 4) >> 6 & 2);
+    return (g & d & 0xFFF != 0) != (d >> 31 != 0);
 }
 
 fn jcc_data(cc: u8) -> u32 {
@@ -1227,6 +1264,19 @@ fn classify(slot: i64, raw: u64) {
         if op == 0xC3 { kind = K_RET; len = pl; }
         else if op == 0x90 { kind = K_NOP; len = pl; }
     }
+    var jl: u32 = 0;                         // the length of a conditional jump fused to this one
+    var fd: u64 = 0;                         // its condition, and its offset in the upper half
+    if fuse_kind(kind) != K_NONE && len <= 8 {
+        // Is the next instruction a conditional jump with no prefix? Its bytes are in this
+        // page: an entry begins at least sixteen bytes before the page's end.
+        let r2 = code64(dc[slot].tag + len);
+        let b0 = raw8(r2, 0);
+        let b1 = raw8(r2, 1);
+        var jo: u64 = 0;
+        if b0 >= 0x70 && b0 <= 0x7F { jl = 2; fd = fuse_data((b0 & 15) as! u8); jo = sext8(b1); }
+        else if b0 == 0x0F && b1 >= 0x80 && b1 <= 0x8F { jl = 6; fd = fuse_data((b1 & 15) as! u8); jo = raw32(r2, 2); }
+        if jl != 0 { kind = fuse_kind(kind); fd |= jo << 32; }
+    }
     if kind != K_NONE && len >= 1 && len <= 8 {
         // The segment of the memory operand, resolved now: an override if there is one, else
         // SS for an address based on ESP or EBP, else DS.
@@ -1238,8 +1288,9 @@ fn classify(slot: i64, raw: u64) {
         dc[slot].imm = imm;
         if kind == K_JCC || (kind >= K_JCC_MASK && kind <= K_JCC_LE) { dc[slot].disp = cc; }
         dc[slot].m = mm | (len - 1) << 26 | sg << 29;
-        dc_next[slot] = dc[slot].tag + len;
+        dc_next[slot] = dc[slot].tag + len + jl;
         dc[slot].mask = byte_mask(len);
+        if jl != 0 { dc[slot].bytes = fd; }
         dc[slot].pre.kind = kind;
     } else {
         dc[slot].pre.kind = K_NONE;
@@ -1379,6 +1430,25 @@ inline fn short_write16(mm: u32, v: u32) {
     else { seg_write(ea_seg, ea_off, 16, v); }
 }
 
+// The second half of a pair, once the first instruction has set the flags: the conditional
+// jump, if there is time for two instructions; if not, nothing, and the next instruction is
+// the jump itself. Gives back the next address, as run_short does, with PAIR_RAN set above
+// it when both instructions were run. The run counts one instruction for each executor; it
+// finds that bit where it tests the address anyway, as an address that is not on the page,
+// and counts the second there, so that an executor that is not a pair pays nothing for there
+// being pairs. nx is the address after the jump. The store of cpu.ip on the taken path is
+// what keeps the jump a branch for the host (see run_short).
+let PAIR_RAN = 0x100000000;
+
+inline fn pair_end(slot: i64, mm: u32, nx: u32, base: u32, room: i64) -> u64 {
+    if room < 2 { return dc[slot].tag + (mm >> 26 & 7) + 1; }
+    let b = dc[slot].bytes;
+    var to = nx;
+    if jcc_fused(b as! u32) { to += (b >> 32) as! u32; cpu.ip = to - base; }
+    let both: u64 = to;
+    return both | PAIR_RAN;
+}
+
 // Returns the linear address at which the next instruction begins; base is the code segment's.
 // The caller keeps that in a local for the whole run, so that finding the next instruction does
 // not wait on a load of cpu.ip that this one has just stored (E026), nor on this instruction's
@@ -1392,7 +1462,7 @@ inline fn short_write16(mm: u32, v: u32) {
 // flags, where a branch is predicted and the host runs ahead. Without the store the Linux
 // boot takes 14% more cycles (E049; E031 looked for this and could not see it, because the
 // store was there).
-inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
+inline fn run_short(kind: u8, slot: i64, base: u32, room: i64) -> u64 {
     let mm = dc[slot].m;
     let imm = dc[slot].imm;
     let reg = mm >> 4 & 7;
@@ -1526,7 +1596,7 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         73 => { let aop = dc[slot].pre.op >> 3; let a: u32 = r8(0); let r = alu(aop, a, imm, 8); if aop != 7 { set_r8(0, r as! u8); } },
         74 => { alu(4, cpu.regs[0], imm, 32); },
         75 => { let a: u32 = r8(0); alu(4, a, imm, 8); },
-        76 => { cpu.regs[0] = vtime as! u32; cpu.regs[2] = (vtime >> 32) as! u32; },
+        76 => { let t = vtime + run_from - run_left; cpu.regs[0] = t as! u32; cpu.regs[2] = (t >> 32) as! u32; },
         // The string instructions without REP. Each reads before it writes memory and moves
         // ESI and EDI last, so a fault leaves the registers as they were. The source's segment
         // is the entry's (DS, or an override); the destination's is always ES.
@@ -1568,6 +1638,11 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
             seg_write(ES, cpu.regs[DI], 32, cpu.regs[0]);
             cpu.regs[DI] += if flag(DF) { 0xFFFFFFFC } else { 4 };
         },
+        84 => { short_ea(mm, slot); alu(7, short_read(mm), cpu.regs[reg], 32); return pair_end(slot, mm, nx, base, room); },
+        85 => { short_ea(mm, slot); alu(7, short_read(mm), imm, 32); return pair_end(slot, mm, nx, base, room); },
+        86 => { short_ea(mm, slot); alu(4, short_read(mm), cpu.regs[reg], 32); return pair_end(slot, mm, nx, base, room); },
+        87 => { short_ea(mm, slot); alu(4, short_read8(mm), imm, 8); return pair_end(slot, mm, nx, base, room); },
+        88 => { short_ea(mm, slot); let b: u32 = r8(reg as! u8); alu(4, short_read8(mm), b, 8); return pair_end(slot, mm, nx, base, room); },
         _ => {},
     }
     return nx;
@@ -1621,16 +1696,26 @@ var pending_has_err = false;
 // same way: it counts the one just done, notes where the next begins, and goes on. Short
 // executors touch no device and change no segment, so nothing that the run loop watches for can
 // happen in between, except that virtual time reaches chain_until, the moment the run loop
-// worked out that something else is due. The last instruction of a run is left for the caller to
-// count, as a single instruction would be.
+// worked out that something else is due. A run stops one instruction short of that moment, and
+// the instruction it stops at is the general path's, as is any instruction a run cannot take:
+// so a run never ends the step, and what it executed is counted here, not by the caller.
 // Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
 // tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
 var pad_chain: u8[4] = [0; 4];
 var chain_until = 0;
+var run_from = 0;        // how many instructions the current run could execute when it began,
+var run_left = 0;        // and how many it still can; both zero outside a run (see exec_short)
 
-// Runs short executors for as long as it can. True when it ran at least one instruction and the
-// last one is still to be counted by the caller; false when the instruction at hand is not one
-// of them, and nothing has been done about it.
+// Adds to the virtual time the instructions the current run has executed, and closes the
+// run's count.
+fn run_time() {
+    vtime += run_from - run_left;
+    run_from = 0;
+    run_left = 0;
+}
+
+// Runs short executors for as long as it can, and adds what it ran to the virtual time. It
+// leaves the instruction it could not run, or would not for want of time, to exec_general.
 // Within a run only the instruction pointer is noted at the start of each instruction, in
 // saved.ip, and cpu.ip is left behind until the run ends (E049). Nothing else needs putting
 // back: a short executor changes nothing before the last point at which it can fault. It reads
@@ -1645,23 +1730,29 @@ var chain_until = 0;
 // 16-bit code (E021). Eight bytes leave everything behind where it was.
 var light_save = 0;
 
-fn exec_short() -> bool {
+fn exec_short() {
     var ran = false;
     // What does not change during a run is worked out once. No short executor loads the code
-    // segment, so its base and limit stand; only the first instruction can have interrupts held
-    // off for it (the instruction before it set that, and it was not part of this run); and the
-    // run may go on for as many instructions as there is virtual time before the next event.
+    // segment, so its base and limit stand; and the run may go on for one instruction less
+    // than there is virtual time before the next event.
     let base = cpu.base[CS];
     let lim = cpu.limit[CS];
-    if lim < 15 { return false; }
+    if lim < 15 { return; }
     let ip_max = lim - 15;
-    // If interrupts are being held off for the first instruction, one may be due straight
-    // after it: that is a run with time for one instruction.
     var left = chain_until - vtime;
-    if shadow { left = 1; }
+    // With time for one instruction only, or with interrupts held off for one (after which
+    // one may be due), the general path runs that one.
+    if shadow || left < 2 { return; }
+    // From here on `left` is how many instructions the run itself may execute: one less,
+    // because the last instruction before the time is up is the general path's.
+    left -= 1;
     var a = base + cpu.ip;
-    // The virtual time is counted in a local too, and the global only stored (E027).
-    var vt = vtime;
+    // The virtual time stands still during a run. What the run keeps up is how many
+    // instructions it may still execute, in a local, and stored in run_left after each one;
+    // run_from is what that was at the start. The time is put right when the run ends, by
+    // run_time(), and by whoever wants it in between (RDTSC) or after a fault (step).
+    run_from = left;
+    run_left = left;
     // From here until this function returns, `saved` is good for the instruction pointer
     // only: a short executor that faults has changed nothing else (see light_save).
     light_save = 1;
@@ -1695,9 +1786,23 @@ fn exec_short() -> bool {
         let lin_of = page_at - phys32;
         let pbase = base - lin_of;
         var p = a - lin_of;
+        // The same address as the executor gave it, which for a pair has PAIR_RAN above it.
+        var pr: u64 = p;
+        let phys64: u64 = phys32;
+        let off_max64: u64 = off_max;
         loop {
-            let off = p - phys32;
-            if off > off_max {
+            let off = pr - phys64;
+            if off > off_max64 {
+                if pr >= PAIR_RAN {
+                    // Not an address off the page: a pair was run, and its second
+                    // instruction is still to be counted.
+                    pr = p;
+                    left -= 1;
+                    run_left = left;
+                    saved.ip = p - pbase;
+                    if left <= 0 { break; }
+                    continue;
+                }
                 // Off this page, or too near its end. If it is another page and the TLB has
                 // it, that is the page of code from here on, as the general path would make
                 // it, and the run starts over there. A TLB entry says the page is in RAM.
@@ -1730,29 +1835,29 @@ fn exec_short() -> bool {
                 kind = dc[slot].pre.kind;
                 if kind == K_NONE { break; }
             }
-            p = run_short(kind, slot, pbase);
-            // Only a run's first instruction can have had interrupts held off for it, and
-            // that run is one instruction long: this is where it ends.
-            if left <= 1 { cpu.ip = p - pbase; shadow = false; light_save = 0; return true; }
-            saved.ip = p - pbase;
+            pr = run_short(kind, slot, pbase, left);
+            p = pr as! u32;
             left -= 1;
-            vt += 1;
-            vtime = vt;
+            run_left = left;
+            saved.ip = p - pbase;
             ran = true;
+            // No time left: the run ends, and the general path runs the next one. (Not after
+            // a pair: that is run only with time for two.)
+            if left <= 0 { break; }
         }
         if !moved { break; }
     }
     // The instruction at hand is for the general path, which wants the whole CPU saved.
     light_save = 0;
+    run_time();
     if ran { cpu.ip = saved.ip; saved = cpu; }
-    return false;
 }
 
 // This function only chooses, so that it needs no registers of its own and costs next to nothing
 // to enter: 16-bit code goes straight to exec_general.
 fn exec_one() -> bool {
     if code32() && dc_on && !pending && !(irq_line && flag(IF) && !shadow) {
-        if exec_short() { return true; }
+        exec_short();
     }
     return exec_general();
 }
@@ -1824,7 +1929,8 @@ fn exec_general() -> bool {
                 // code segment's, less what a linear address is above the physical one.
                 if kind != 0 {
                     let pb = cpu.base[CS] - (a - key);
-                    cpu.ip = run_short(kind, slot, pb) - pb;
+                    // One instruction is wanted here: of a pair, the first.
+                    cpu.ip = (run_short(kind, slot, pb, 0) as! u32) - pb;
                     return true;
                 }
                 classify(slot, raw);
@@ -2249,6 +2355,7 @@ fn step() {
             // changed nothing yet, so there is only the instruction pointer to set, which a
             // run does not keep up. `saved` is made whole again.
             cpu.ip = saved.ip;
+            run_time();
             shadow = false;
             saved = cpu;
             light_save = 0;
