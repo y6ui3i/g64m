@@ -36,6 +36,9 @@ A fifth collects what those five days taught about Goose (what to watch for when
 its generated code costs, how to tell what a change did) and times the Linux boot against
 rustx86 on one day:
 [Goose で x86 エミュレータを 5 日書いてわかったこと](https://pocraft.net/?p=976).
+A sixth counts where g86m's code is smaller than rustx86's (mostly what is not built yet;
+about a fifth is the language) and gives the reasons behind the [roadmap](docs/roadmap.md):
+[Goose の x86 エミュレータは Rust 版よりなぜ小さいのか](https://pocraft.net/?p=979).
 
 | Stage | Goal | State |
 |---|---|---|
