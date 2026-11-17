@@ -76,6 +76,7 @@ pass:
     mov  ebx, .r6
     cmp  esi, esi
     add  byte [esi], 0x7F           ; #PF: 8-bit r/m, imm
+    jz   .r6                         ; (the two are a pair, E057)
 .r6:
     mov  ebx, .r7
     cmp  esi, esi
@@ -104,6 +105,7 @@ pass:
     mov  ebx, .r13
     cmp  esi, esi
     sub  dword [esi], 1             ; #PF: SUB r/m, imm
+    jb   .r13                        ; (a pair too)
 .r13:
     dec  ebp
     jnz  pass
@@ -137,7 +139,7 @@ real:
     mov  ds, ax
     mov  ss, ax
     lidt [ridtr]
-    cmp  edx, 52 + (4*34 << 20)         ; thirteen faults a pass, 34 bytes of instructions, no wrong flags
+    cmp  edx, 52 + (4*38 << 20)         ; thirteen faults a pass, 38 bytes of instructions and pairs, no wrong flags
     jne  .no
     mov  ax, 0x0E4F                     ; 'O'
     int  0x10

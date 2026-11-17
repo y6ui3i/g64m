@@ -1094,7 +1094,14 @@ let K_CMP_RM_I_J = 85;   // CMP r/m, imm and Jcc
 let K_TEST_J = 86;       // TEST r/m, r and Jcc
 let K_TEST8_I_J = 87;    // TEST r/m8, imm8 and Jcc
 let K_TEST8_J = 88;      // TEST r/m8, r8 and Jcc
-let K_LAST = 88;         // the largest kind with an executor
+let K_DEC_J = 89;        // DEC of a register and Jcc
+let K_DEC_RM_J = 90;     // DEC r/m and Jcc
+let K_ALU8_RM_I_J = 91;  // 80 and Jcc
+let K_AND_RM_I_J = 92;   // AND r/m, imm and Jcc
+let K_SUB_RM_I_J = 93;   // SUB r/m, imm and Jcc
+let K_ALU8_A_I_J = 94;   // 8-bit arithmetic on AL and Jcc
+let K_TEST_I_J = 95;     // TEST r/m, imm32 and Jcc
+let K_LAST = 95;         // the largest kind with an executor
 
 // Byte k of the instruction, from its first eight.
 inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32; }
@@ -1138,6 +1145,13 @@ fn fuse_kind(kind: u8) -> u8 {
     if kind == K_TEST { return K_TEST_J; }
     if kind == K_TEST8_I { return K_TEST8_I_J; }
     if kind == K_TEST8 { return K_TEST8_J; }
+    if kind == K_DEC { return K_DEC_J; }
+    if kind == K_DEC_RM { return K_DEC_RM_J; }
+    if kind == K_ALU8_RM_I { return K_ALU8_RM_I_J; }
+    if kind == K_ALU_RM_I_OP + 4 { return K_AND_RM_I_J; }
+    if kind == K_ALU_RM_I_OP + 5 { return K_SUB_RM_I_J; }
+    if kind == K_ALU8_A_I { return K_ALU8_A_I_J; }
+    if kind == K_TEST_I { return K_TEST_I_J; }
     return K_NONE;
 }
 
@@ -1643,6 +1657,26 @@ inline fn run_short(kind: u8, slot: i64, base: u32, room: i64) -> u64 {
         86 => { short_ea(mm, slot); alu(4, short_read(mm), cpu.regs[reg], 32); return pair_end(slot, mm, nx, base, room); },
         87 => { short_ea(mm, slot); alu(4, short_read8(mm), imm, 8); return pair_end(slot, mm, nx, base, room); },
         88 => { short_ea(mm, slot); let b: u32 = r8(reg as! u8); alu(4, short_read8(mm), b, 8); return pair_end(slot, mm, nx, base, room); },
+        89 => { cpu.regs[dc[slot].pre.op & 7] = dec(cpu.regs[dc[slot].pre.op & 7], 32); return pair_end(slot, mm, nx, base, room); },
+        90 => { short_ea(mm, slot); short_step_rm(mm, false); return pair_end(slot, mm, nx, base, room); },
+        91 => {
+            let aop = reg as! u8;
+            short_ea(mm, slot);
+            let f0 = cpu.flags;
+            let r = alu(aop, short_read8(mm), imm, 8);
+            if aop != 7 { short_write8_fl(mm, r, f0); }
+            return pair_end(slot, mm, nx, base, room);
+        },
+        92 => { short_ea(mm, slot); short_alu_rm(mm, 4, imm); return pair_end(slot, mm, nx, base, room); },
+        93 => { short_ea(mm, slot); short_alu_rm(mm, 5, imm); return pair_end(slot, mm, nx, base, room); },
+        94 => {
+            let aop = dc[slot].pre.op >> 3;
+            let a: u32 = r8(0);
+            let r = alu(aop, a, imm, 8);
+            if aop != 7 { set_r8(0, r as! u8); }
+            return pair_end(slot, mm, nx, base, room);
+        },
+        95 => { short_ea(mm, slot); alu(4, short_read(mm), imm, 32); return pair_end(slot, mm, nx, base, room); },
         _ => {},
     }
     return nx;

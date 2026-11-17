@@ -1,6 +1,8 @@
 ; Self-check for a flag-setting instruction and the conditional jump after it run as one
-; executor (E054). CMP r/m, r with each of the sixteen conditions; CMP r/m, imm, TEST r/m, r,
-; TEST r/m8, imm8 and TEST r/m8, r8 with two each; CMP from memory with a near jump. Every
+; executor (E054, E057). CMP r/m, r with each of the sixteen conditions; CMP r/m, imm, TEST
+; r/m, r, TEST r/m8, imm8 and TEST r/m8, r8 with two each; the pairs whose first instruction
+; also writes a result (arithmetic on AL, DEC, AND, SUB, 8-bit arithmetic, DEC of memory)
+; and TEST r/m, imm32 with one each; CMP from memory with a near jump. Every
 ; jump that is not taken sets a bit in EBX, and the bits are summed in EDI over four pairs of
 ; operands and four passes, so that the last passes run from the decode cache as pairs. The
 ; sum expected is what the instructions give one at a time (a trace run, which never fuses).
@@ -64,6 +66,14 @@ each:
     PAIR p,   test dl, 4
     PAIR z,   test al, dh
     PAIR ns,  test al, dh
+    PAIR z,   cmp al, 0x85                ; arithmetic on AL, the short form
+    PAIR s,   dec edx
+    PAIR z,   and edx, 0x41
+    PAIR b,   sub edx, 0x40
+    PAIR s,   test edx, 0x80000000
+    PAIR s,   add dl, 0x7F
+    PAIR nz,  dec dword [0x6000]
+    PAIR s,   add al, 0x7B
     cmp  [esi-8], eax                   ; from memory, and a near jump
 patch:
     jne  near .over
@@ -90,7 +100,7 @@ real:
     xor  ax, ax
     mov  ds, ax
     mov  ss, ax
-    cmp  edi, 0xA66C3110                ; from a trace run, one instruction at a time
+    cmp  edi, 0xB295F480                ; from a trace run, one instruction at a time
     jne  .no
     mov  ax, 0x0E4F                     ; 'O'
     int  0x10
