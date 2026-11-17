@@ -1,6 +1,6 @@
 // A JIT for arm64 (E059, E061). With --jit, runs of 32-bit instructions are translated into
-// host code, block by block. See docs/experiments.md, E059 and E061, for the design; this file
-// is the translator, and jit.c the C it needs.
+// host code, block by block. See docs/jit.md for the design and docs/experiments.md (E059 on)
+// for how it came about; this file is the translator, and jit.c the C it needs.
 //
 // Host registers in generated code:
 //   x0        the address of cpu.regs (the rest of the CPU state is at fixed places from it)
@@ -10,6 +10,8 @@
 //   w22       what a physical address of the page of code is above the instruction pointer
 //   w8..w15   EAX ECX EDX EBX ESP EBP ESI EDI, loaded on entry, stored back where changed
 //   w1 w2 w3  the operands and the result of the last instruction that set the flags
+//   w26       where a block ends: that record's kind, or 0 if EFLAGS in memory is right (E070)
+//   x27       scratch for the far way
 //   w4        which half of the TLB the current privilege level uses: 0 or 100h
 //   w16 w17 w6 w5 w7  scratch
 //   x23       the time left: how many instructions may still be executed before control has
@@ -22,7 +24,8 @@
 // guest's eight registers and returns the address with the count of instructions executed
 // above it. In between, a block that ends at a known address in its page branches through a
 // link slot, which goes to the way out until jit_blocks has seen where it leads and makes it
-// a branch to the next block (E065).
+// a branch to the next block (E065). A block that ends at an address in another page, or at a
+// RET, goes to the far way, which finds the block there if there is one (E069).
 
 import state;
 
@@ -32,12 +35,13 @@ extern fn jit_call(enter: i64, regs: u32[:], ram: i64, tlb: i64, seg: i64, pbase
 extern fn jit_slot() -> i64;
 extern fn jit_addr8(a: const u8[:]) -> i64;
 extern fn jit_addr32(a: const u32[:]) -> i64;
+extern fn jit_addr64(a: const i64[:]) -> i64;
 
 var jit_on = false;
 var jit_mem = 0;             // where the code is mapped
 var jit_used = 0;            // how much of it holds code
 var jit_blocks_made = 0;     // blocks translated
-var jit_room = 33554432;     // how much of the mapping is used before the code is dropped: --jit-size makes it
+var jit_room = 67108864;     // how much of the mapping is used before the code is dropped: --jit-size makes it
                              // small, so that a test can see the code fill up
 var jit_flushes = 0;         // times the code filled up and was dropped
 var jit_calls = 0;           // times generated code was entered
@@ -47,12 +51,18 @@ var jit_links = 0;           // link slots filled in
 var jit_off: u32 = 0;            // times a block left before its end
 var jit_ran = 0;             // guest instructions executed in blocks
 var run_pmax: u32 = 0;       // the highest address the current run may execute at (exec_short)
-let JIT_SIZE = 33554432;     // 32 MB
+let JIT_SIZE = 67108864;     // 64 MB
 let JIT_HOT = 8;             // arrivals at a jump's target before it is translated
 let JIT_MAX = 60;            // instructions in a block at most
 let FLAGS_AT = 0x78;         // cpu.flags from cpu.regs
 
 var jit_out_at = 0;          // where in the mapping the way out is
+var jit_far_at = 0;          // and the far way: to the block at an address that may be in another page
+var jit_settle_at = 0;       // and the flags' code
+// What generated code reads and writes of the Goose program's besides the guest: [0] one more
+// than the highest instruction pointer a page of code may begin at for the far way to go
+// there (0: never), [1] how many times the far way found a block.
+var jit_ctx: i64[2] = [0; 2];
 var jit_keep = 0;            // how much of the mapping is the way in and out, which a flush keeps
 var jit_ram = 0;             // where RAM, the TLB and seg_top are, for generated code
 var jit_tlb = 0;
@@ -80,11 +90,13 @@ fn jit_init() {
         || jit_addr32(tlb_wphys[..]) != jit_tlb + 6144 { return; }
     // The way in: x0 the registers, x1 RAM, x2 the TLB, x3 seg_top, x4 pbase, x5 the block,
     // x6 the time, x7 the virtual time.
-    e(0xA9BB7BFD);           // stp x29, x30, [sp, #-80]!
+    e(0xA9BA7BFD);           // stp x29, x30, [sp, #-96]!
     e(0xA90153F3);           // stp x19, x20, [sp, #16]
     e(0xA9025BF5);           // stp x21, x22, [sp, #32]
     e(0xA90363F7);           // stp x23, x24, [sp, #48]
     e(0xF90023F9);           // str x25, [sp, #64]
+    e(0xA9056FFA);           // stp x26, x27, [sp, #80]
+    e(0x5280001A);           // mov w26, #0: EFLAGS is right
     e(0xAA0103F3);           // mov x19, x1
     e(0xAA0203F4);           // mov x20, x2
     e(0xAA0303F5);           // mov x21, x3
@@ -103,6 +115,15 @@ fn jit_init() {
     e(0xD61F00A0);           // br x5
     // The way out: w16 the next address, x17 the link slot or 0.
     jit_out_at = jc.len;
+    // EFLAGS written out, if a record is waiting (that code uses w16 and w17).
+    e(0x340000DA);           // cbz w26, over the next five
+    e(0xAA1003FB);           // mov x27, x16
+    e(0xAA1103E7);           // mov x7, x17
+    let settle_from = jc.len;
+    e(0x94000000);           // bl the flags' code
+    e(0xAA1B03F0);           // mov x16, x27
+    e(0xAA0703F1);           // mov x17, x7
+    e(0x4B160210);           // sub w16, w16, w22: the instruction pointer, whatever page this is
     e(0x29002408);           // stp w8, w9, [x0]
     e(0x29012C0A);           // stp w10, w11, [x0, #8]
     e(0x2902340C);           // stp w12, w13, [x0, #16]
@@ -110,12 +131,97 @@ fn jit_init() {
     e(0xCB170301);           // sub x1, x24, x23: the instructions executed
     e(0xAA018200);           // orr x0, x16, x1, lsl #32
     e(0xAA1103E1);           // mov x1, x17
+    e(0xA9456FFA);           // ldp x26, x27, [sp, #80]
     e(0xF94023F9);           // ldr x25, [sp, #64]
     e(0xA94363F7);           // ldp x23, x24, [sp, #48]
     e(0xA9425BF5);           // ldp x21, x22, [sp, #32]
     e(0xA94153F3);           // ldp x19, x20, [sp, #16]
-    e(0xA8C57BFD);           // ldp x29, x30, [sp], #80
+    e(0xA8C67BFD);           // ldp x29, x30, [sp], #96
     e(0xD65F03C0);           // ret
+    // The far way (E069): w16 is where to go, as an address in this page's terms (it may be
+    // off the page). A run of the interpreter goes on into another page when the page is
+    // whole inside the code segment's limit and the TLB has it for reading at this privilege
+    // level; here the same, and then the block that begins there, if there is a good one:
+    // w22 is made the new page's and the block is entered. Anything else goes to the way out.
+    // Nothing is remembered: every arrival is checked, so a store into either page, or a
+    // change of the paging, is seen as Goose would see it.
+    let lit = jc.len;
+    e64(jit_addr32(jit_head[..]));
+    e64(jit_addr32(jit_gen[..]));
+    e64(jit_addr32(code_gen[..]));
+    e64(jit_addr64(jit_code[..]));
+    e64(jit_addr64(jit_ctx[..]));
+    jit_far_at = jc.len;
+    e(0x4B160210);                                       // sub w16, w16, w22: the instruction pointer
+    a_ldr(T2, BASE_AT + CS * 4);                         // the code segment's base
+    a_op(0, T3, T1, T2, 0);                              // w6: the linear address
+    e(0x12144C00 | T3 << 5 | 7);                         // and w7, w6, #0xFFFFF000
+    a_op(2, 7, 7, T2, 0);                                // w7: the instruction pointer the page begins at
+    a_lit(27, lit + 32);                                 // x27: jit_ctx
+    e(0xF9400365);                                       // ldr x5, [x27]
+    e(0xEB0500FF);                                       // cmp x7, x5
+    let m1 = jc.len;
+    e(0x54000000 | C_HS);
+    e(0x53000000 | 12 << 16 | 19 << 10 | T3 << 5 | T2);  // ubfx w17, w6, #12, #8
+    a_op(5, T2, T2, R_MODE, 0);
+    e(0x8B000000 | T2 << 16 | 2 << 10 | 20 << 5 | T2);   // add x17, x20, x17, lsl #2
+    a_ldrn(T4, T2, 0);                                   // the TLB's tag for a read
+    e(0x6B400000 | T3 << 16 | 12 << 10 | T4 << 5 | 31);  // cmp w5, w6, lsr #12
+    let m2 = jc.len;
+    e(0x54000000 | C_NE);
+    a_ldrn(T4, T2, 2048);                                // the page in RAM
+    e(0x12002C00 | T3 << 5 | 7);                         // and w7, w6, #0xFFF
+    a_op(5, T4, T4, 7, 0);                               // w5: the address in RAM
+    e(0x12004000 | T4 << 5 | 7);                         // and w7, w5, #0x1FFFF: the slot
+    a_lit(T2, lit);
+    e(0xB8607800 | 7 << 16 | T2 << 5 | T3);              // ldr w6, [x17, x7, lsl #2]: jit_head
+    a_op(3, 31, T3, T4, 0);
+    let m3 = jc.len;
+    e(0x54000000 | C_NE);
+    a_lit(T2, lit + 8);
+    e(0xB8607800 | 7 << 16 | T2 << 5 | T3);              // ldr w6, [x17, x7, lsl #2]: jit_gen
+    a_lit(T2, lit + 16);
+    a_lsr(27, T4, 12);
+    e(0xB8607800 | 27 << 16 | T2 << 5 | 27);             // ldr w27, [x17, x27, lsl #2]: code_gen
+    a_op(3, 31, T3, 27, 0);
+    let m4 = jc.len;
+    e(0x54000000 | C_NE);
+    a_lit(T2, lit + 24);
+    e(0xF8607800 | 7 << 16 | T2 << 5 | T2);              // ldr x17, [x17, x7, lsl #3]: jit_code
+    a_lit(27, lit + 32);
+    e(0xF9400766);                                       // ldr x6, [x27, #8]: counted
+    e(0x910004C6);                                       // add x6, x6, #1
+    e(0xF9000766);                                       // str x6, [x27, #8]
+    a_op(2, 22, T4, T1, 0);                              // w22 for the new page
+    e(0xD61F0220);                                       // br x17
+    a_patch(m1, jc.len);
+    a_patch(m2, jc.len);
+    a_patch(m3, jc.len);
+    a_patch(m4, jc.len);
+    a_op(0, T1, T1, 22, 0);                              // not there: out, as the address it was
+    e(0xD2800011);
+    a_out();
+    // The flags' code (E070): EFLAGS written out from the record of the kind in w26. Called
+    // (bl) where a block needs EFLAGS and does not know what is waiting, and by the way out.
+    // It uses w16, w17 and w6. (w26 is left: the block that called knows EFLAGS is right
+    // from here on, and says so where it ends.)
+    jit_settle_at = jc.len;
+    a_patch(settle_from, jc.len);
+    e(0x10000071);                                       // adr x17, the table below
+    e(0x8B3A4A31);                                       // add x17, x17, w26, uxtw #2
+    e(0xD61F0220);                                       // br x17
+    let table = jc.len;
+    for k in 10 { e(0x14000000); }
+    let fin = jc.len;
+    e(0xD65F03C0);                                       // ret
+    a_patch(table, fin);
+    for ft: u8 in 1..10 {
+        a_patch(table + 4 * ft, jc.len);
+        jit_flags(ft);
+        let at = jc.len;
+        e(0x14000000);
+        a_patch(at, fin);
+    }
     jit_write(jit_mem, jc[..]);
     jit_used = jc.len;
     jit_keep = jc.len;
@@ -131,6 +237,21 @@ fn e(w: u32) {
     jc.push((w >> 8) as! u8);
     jc.push((w >> 16) as! u8);
     jc.push((w >> 24) as! u8);
+}
+
+fn e64(v: i64) {
+    e(v as! u32);
+    e((v >> 32) as! u32);
+}
+// ldr xt from the 64-bit value at `at` in the code being generated.
+fn a_lit(rt: u32, at: i64) {
+    let d: u32 = ((at - jc.len) >> 2) as! u32;
+    e(0x58000000 | (d & 0x7FFFF) << 5 | rt);
+}
+// A branch from here to the far way.
+fn a_far() {
+    let d: u32 = ((jit_far_at - (jb + jc.len)) >> 2) as! u32;
+    e(0x14000000 | d & 0x3FFFFFF);
 }
 
 fn g(i: u32) -> u32 { return 8 + (i & 7); }                          // a guest register's host register
@@ -229,6 +350,7 @@ let F_ADD8 = 6;      // an 8-bit ADD: a and b are the operands shifted up 24 bit
 let F_SUB8 = 7;      // an 8-bit SUB or CMP, the same way
 let F_SH = 8;        // a shift by more than one: the result, and CF in a; OF and AF are not touched
 let F_SH1 = 9;       // a shift by one: OF in b as well
+let F_ANY = 255;     // not known to the translator: the kind is in w26, as the block before left it
 
 // ZF, SF and PF of the result in host register r, ORed into the flags in f; sc is scratch.
 // With high set, the result is an 8-bit one in r's top byte.
@@ -292,7 +414,7 @@ fn jit_flags(ft: u8) {
 // The host condition for x86 condition cc after an instruction of kind ft, once jit_compare
 // has set the host's flags; C_NONE where there is none.
 fn jit_cond(ft: u8, cc: u8) -> u8 {
-    if ft == F_MEM || cc == 10 || cc == 11 { return C_NONE; }
+    if ft == F_MEM || ft == F_ANY || cc == 10 || cc == 11 { return C_NONE; }
     if ft == F_SH || ft == F_SH1 {
         // Of a shift, the result's zero and sign only.
         if cc == 4 { return C_EQ; }
@@ -347,6 +469,7 @@ fn jit_compare(ft: u8) {
 var jf: u8 = 0;              // which instruction set the flags last, so far in the block
 var jd: u32 = 0;             // (which guest registers the block has written: no longer used)
 var jb = 0;                  // where in the mapping the block being generated will be
+var jp0: u32 = 0;            // the address it begins at
 
 // The ways out of a block before an instruction whose memory operand is not on the short
 // path. Each is a few instructions after the block's body: the time the block took for the
@@ -377,7 +500,13 @@ fn a_next(rd: u32, v: u32) {
 
 // Leaves the block for the instruction at `next`: the flags written out, then a link slot.
 fn jit_leave(next: u32) {
-    jit_flags(jf);
+    j_pass(jf);
+    if next >> 12 != jp0 >> 12 {
+        // In another page: by the far way, which looks every time (E069).
+        a_next(T1, next);
+        a_far();
+        return;
+    }
     lk_at[lk_n] = jc.len;
     lk_next[lk_n] = next;
     lk_n += 1;
@@ -413,27 +542,15 @@ fn jit_exits(n: u32, p0: u32, short_at: i64) {
         a_out();
     }
     var at: i64[SX_MAX] = [0; SX_MAX];
-    var tail_from: i64[SX_MAX] = [0; SX_MAX];
     for k in sx_n {
         at[k] = jc.len;
         e(0x91000000 | (n - sx_cnt[k]) << 10 | 23 << 5 | 23);              // add x23, x23, #(n - cnt)
-        // The address waits in w7 while the flags are written out: that code uses w16.
-        if sx_jf[k] == F_MEM { a_next(T1, sx_next[k]); e(0xD2800011); a_out(); }
-        else { a_next(7, sx_next[k]); tail_from[k] = jc.len; e(0x14000000); }
+        a_next(T1, sx_next[k]);
+        j_pass(sx_jf[k]);
+        e(0xD2800031);                       // mov x17, #1: a way out
+        a_out();
     }
     for k in st_n { a_patch(st_at[k], at[st_sx[k]]); }
-    for ft: u8 in 1..10 {
-        var used = false;
-        for k in sx_n { if sx_jf[k] == ft { used = true; } }
-        if used {
-            let here = jc.len;
-            jit_flags(ft);
-            e(0x2A0703F0);                   // mov w16, w7
-            e(0xD2800011);                   // mov x17, #0
-            a_out();
-            for k in sx_n { if sx_jf[k] == ft { a_patch(tail_from[k], here); } }
-        }
-    }
     // No time for the block: its length back on the time, and out, at its own address.
     a_patch(short_at, jc.len);
     e(0x91000000 | n << 10 | 23 << 5 | 23);
@@ -457,23 +574,27 @@ fn j_ea(mm: u32, disp: u32) {
 // The short path of seg_read and seg_write (state.goose), for n bytes at the offset in w16 in
 // segment sg: the offset below seg_top, the access inside one page, the TLB's tag for a read
 // or for a write at this privilege level. Leaves in x6 where the bytes are in RAM; anything
-// else goes to the way out made last. An entry in the TLB says the page is in RAM.
+// else goes to the way out made last. An entry in the TLB says the page is in RAM. Uses w17
+// and w7.
 fn j_mem(sg: u32, n: u32, write: bool) {
     a_ldrn(T2, 21, sg * 4);                              // seg_top[sg]
     a_op(3, 31, T1, T2, 0);
     j_out(C_HS);
     a_ldr(T2, BASE_AT + sg * 4);                         // the linear address
     a_op(0, T1, T1, T2, 0);
-    if n > 1 {
-        e(0x12002C00 | T1 << 5 | T2);                    // and w17, w16, #0xFFF
-        a_subsi(31, T2, 0x1000 - n);
-        j_out(C_HI);
-    }
     e(0x53000000 | 12 << 16 | 19 << 10 | T1 << 5 | T2);  // ubfx w17, w16, #12, #8
     a_op(5, T2, T2, R_MODE, 0);
     e(0x8B000000 | T2 << 16 | 2 << 10 | 20 << 5 | T2);   // add x17, x20, x17, lsl #2
     a_ldrn(T3, T2, if write { 4096 } else { 0 });        // the tag
-    e(0x6B400000 | T1 << 16 | 12 << 10 | T3 << 5 | 31);  // cmp w6, w16, lsr #12
+    if n > 1 {
+        // Against the page of the access's last byte: where that is the next page, the tag
+        // cannot be it (a tag has its index's low eight bits), so an access across two
+        // pages leaves here too (E072).
+        a_addi(7, T1, n - 1);
+        e(0x6B400000 | 7 << 16 | 12 << 10 | T3 << 5 | 31);   // cmp w6, w7, lsr #12
+    } else {
+        e(0x6B400000 | T1 << 16 | 12 << 10 | T3 << 5 | 31);  // cmp w6, w16, lsr #12
+    }
     j_out(C_NE);
     a_ldrn(T3, T2, if write { 6144 } else { 2048 });     // the page in RAM
     e(0x12002C00 | T1 << 5 | T2);                        // and w17, w16, #0xFFF
@@ -517,7 +638,19 @@ fn j_cond_mem(cc: u8) {
 
 // Writes the record out, after which EFLAGS in memory is right and there is no record.
 fn j_settle() {
-    if jf != F_MEM { jit_flags(jf); jf = F_MEM; }
+    if jf == F_ANY {
+        // Whatever the block before left: written out by the flags' code, if anything is.
+        e(0x3400005A);                       // cbz w26, over the call
+        let d: u32 = ((jit_settle_at - (jb + jc.len)) >> 2) as! u32;
+        e(0x94000000 | d & 0x3FFFFFF);       // bl
+    } else if jf != F_MEM { jit_flags(jf); }
+    jf = F_MEM;
+}
+
+// Where a block is left: what the translator knows of the flags goes into w26, for the next
+// block or the way out. (Not knowing, it leaves w26 as it found it.)
+fn j_pass(ft: u8) {
+    if ft != F_ANY { e(0x52800000 | (ft as u32) << 5 | 26); }
 }
 
 // Puts 1 or 0 in w5 as x86 condition cc holds or not: from the record with the host's flags
@@ -546,10 +679,7 @@ fn jit_jcc(cc: u8, fall: u32, to: u32) {
         at = jc.len;
         e(0x54000000 | c);
     }
-    // Both ways write the same record out: jf is as it was for the second.
-    let f = jf;
     jit_leave(fall);
-    jf = f;
     a_patch(at, jc.len);
     jit_leave(to);
 }
@@ -561,6 +691,73 @@ fn j_get8(rd: u32, i: u32) {
 fn j_set8(i: u32, rs: u32) {
     if i < 4 { e(0x33001C00 | rs << 5 | g(i)); jd |= 1 << i; }
     else { e(0x33181C00 | rs << 5 | g(i - 4)); jd |= 1 << (i - 4); }
+}
+
+// Are the flags as they are after the instruction before address `from` never seen? True if
+// the instructions from there on, which the block will hold, set all six flags before any
+// reads one, with no way out between (so with no memory operand) and no end of the block.
+// `cnt` is how many instructions the block has before `from`. (E071.)
+fn j_dead(from: u32, cnt: u32) -> bool {
+    if jit_off & 65536 != 0 || j_pairing { return false; }
+    // The block must not be cut short before those instructions for want of room for ways
+    // out (jit_translate); they add none, the instruction at hand a few at most.
+    if sx_n + 4 >= SX_MAX - 2 || st_n + 12 >= ST_MAX - 8 { return false; }
+    var p = from;
+    for k: u32 in 12 {
+        if cnt + k >= JIT_MAX || p >> 12 != jp0 >> 12 { return false; }
+        let slot: i64 = p & (DC_HALF - 1) | DC_HALF;
+        if dc[slot].tag != p { return false; }
+        var kind = dc[slot].pre.kind;
+        if kind == K_BLOCK { kind = jit_kind[slot - DC_HALF]; }
+        let mm = dc[slot].m;
+        let op = dc[slot].pre.op;
+        if mm & 0x0C != 0x0C && kind != K_MOV_R_I && kind != K_NOP && kind != K_LEA && kind != K_ALU_A_I
+            && kind != K_TEST_A_I && kind != K_ALU8_A_I && kind != K_TEST8_A_I && kind != K_INC && kind != K_DEC { return false; }
+        if kind - 1 >= K_LAST || !jit_plain(kind, mm, op) { return false; }
+        // Sets all six, reads none.
+        if kind >= K_ALU_RM_R_OP && kind < K_ALU_RM_I_OP + 8 { return true; }
+        if kind == K_TEST || kind == K_TEST_I || kind == K_ALU_A_I || kind == K_TEST_A_I || kind == K_NEG { return true; }
+        if kind == K_ALU8_RM_R || kind == K_ALU8_R_RM || kind == K_ALU8_RM_I || kind == K_ALU8_A_I { return true; }
+        if kind == K_TEST8 || kind == K_TEST8_I || kind == K_TEST8_A_I { return true; }
+        // Touches no flag; or keeps some and reads none into its result (INC, DEC, a shift,
+        // a rotate, IMUL, between registers): those will find their own flags never seen,
+        // by the same look ahead, and make none.
+        if !(kind == K_MOV_R_R || kind == K_MOV_R_R_89 || kind == K_MOV_R_I || kind == K_NOP || kind == K_LEA
+            || kind == K_MOV_RM_I || kind == K_MOVZX8 || kind == K_MOVZX16 || kind == K_MOV8_R_RM
+            || kind == K_MOV8_RM_R || kind == K_MOV8_RM_I || kind == K_MOV16_R_RM || kind == K_MOV16_RM_R
+            || kind == K_NOT || kind == K_INC || kind == K_DEC || kind == K_INC_RM || kind == K_DEC_RM
+            || kind == K_SHL_I || kind == K_SHR_I || kind == K_SAR_I || kind == K_SHIFT_CL || kind == K_SHIFT_I
+            || kind == K_IMUL) { return false; }
+        p = dc_next[slot];
+    }
+    return false;
+}
+var j_pairing = false;       // the instruction being generated is the first of a pair: a jump reads its flags
+
+// The carry of the record the block made, into EFLAGS: all an INC or a DEC keeps of the old
+// flags. (What else of EFLAGS is stale is what the INC or DEC sets.) A record the block
+// inherited is written out whole, by the flags' code.
+fn j_settle_cf() {
+    if jf == F_ANY { j_settle(); return; }
+    if jf != F_MEM && jf != F_INC && jf != F_DEC {
+        a_ldr(T1, FLAGS_AT);
+        e(0x121F7800 | T1 << 5 | T1);        // and w16, w16, #0xFFFFFFFE
+        if jf != F_LOGIC {
+            j_carry(T2);
+            a_op(5, T1, T1, T2, 0);
+        }
+        a_str(T1, FLAGS_AT);
+    }
+    jf = F_MEM;
+}
+
+// The carry flag as 0 or 1 into rd, from the record the block made (not for F_ANY).
+fn j_carry(rd: u32) {
+    if jf == F_MEM || jf == F_INC || jf == F_DEC { a_ldr(rd, FLAGS_AT); e(0x12000000 | rd << 5 | rd); }
+    else if jf == F_LOGIC { a_movi(rd, 0); }
+    else if jf == F_ADD || jf == F_ADD8 { a_op(3, 31, R_R, R_A, 0); a_cset(rd, C_LO); }
+    else if jf == F_SUB || jf == F_SUB8 { a_op(3, 31, R_A, R_B, 0); a_cset(rd, C_LO); }
+    else { a_mov(rd, R_A); }
 }
 
 // Can this entry's instruction go into a block, as anything but its last?
@@ -670,15 +867,18 @@ fn j_alu8(aop: u8, test: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, t
 }
 
 // ADC and SBB, 32-bit. The carry comes from EFLAGS and the flags go straight back to it.
-fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool, b_imm: bool, imm: u32) {
+fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool, b_imm: bool, imm: u32, dead: bool) {
     let regs = mm & 0x0C == 0x0C;
     let rm = mm >> 7 & 7;
     let store = to_rm && !regs;
-    j_settle();
+    // A record the block inherited is written out; of one it made, only the carry is
+    // wanted, since all six flags are set here (E071).
+    if jf == F_ANY { j_settle(); }
     if !regs {
         j_operand(mm, disp, p, cnt, 4, store);
         a_load(4, T4);
     }
+    j_carry(7);
     if to_rm {
         if regs { a_mov(R_A, g(rm)); } else { a_mov(R_A, T4); }
         if b_imm { a_movi(R_B, imm); } else { a_mov(R_B, g(reg)); }
@@ -686,20 +886,25 @@ fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool,
         a_mov(R_A, g(reg));
         if regs { a_mov(R_B, g(rm)); } else { a_mov(R_B, T4); }
     }
-    a_ldr(T1, FLAGS_AT);
-    e(0x12000000 | T1 << 5 | T2);            // and w17, w16, #1: CF
     if sbb {
-        a_op(3, 31, 31, T2, 0);              // the host's carry is the opposite of a borrow
+        a_op(3, 31, 31, 7, 0);               // the host's carry is the opposite of a borrow
         e(0x7A000000 | R_B << 16 | R_A << 5 | R_R);      // sbcs
     } else {
-        a_subsi(31, T2, 1);                  // the host's carry is CF
+        a_subsi(31, 7, 1);                   // the host's carry is CF
         e(0x3A000000 | R_B << 16 | R_A << 5 | R_R);      // adcs
     }
     // The result to memory now: its place is in x6, which the flags below use as scratch.
     // (A store leaves the host's flags alone.)
     if store { a_store(4, R_R); }
+    if dead {
+        // Its flags are never seen; nor are the old ones, which the record no longer gives.
+        jf = F_MEM;
+        if !store { if to_rm { a_mov(g(rm), R_R); } else { a_mov(g(reg), R_R); } }
+        return;
+    }
     a_cset(T2, if sbb { C_LO } else { C_HS });
     a_cset(T3, C_VS);
+    a_ldr(T1, FLAGS_AT);
     a_movi(T4, 0xFFFFF72A);
     a_op(4, T1, T1, T4, 0);
     a_op(5, T1, T1, T2, 0);                  // CF
@@ -710,6 +915,7 @@ fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool,
     a_op(5, T1, T1, T2, 0);
     j_szp(T1, R_R, T2, false);
     a_str(T1, FLAGS_AT);
+    jf = F_MEM;
     if store { return; }
     if to_rm { a_mov(g(rm), R_R); jd |= 1 << rm; }
     else { a_mov(g(reg), R_R); jd |= 1 << reg; }
@@ -718,15 +924,24 @@ fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool,
 // A shift of a 32-bit operand by a constant from 1 to 31: which is 4 or 6 SHL, 5 SHR, 7 SAR.
 // AF, and OF unless the count is one, stay as they were, so what was in the record is
 // written out first.
-fn j_shift(which: u32, n: u32, mm: u32, disp: u32, p: u32, cnt: u32) {
+fn j_shift(which: u32, n: u32, mm: u32, disp: u32, p: u32, cnt: u32, nx: u32) {
     let regs = mm & 0x0C == 0x0C;
     let rm = mm >> 7 & 7;
-    j_settle();
     var v = g(rm);
+    let dead = j_dead(nx, cnt + 1);
+    if !dead { j_settle(); }
     if !regs {
         j_operand(mm, disp, p, cnt, 4, true);
         a_load(4, T4);
         v = T4;
+    }
+    if dead {
+        // Its flags are never seen.
+        if which == 5 { a_lsr(v, v, n); }
+        else if which == 7 { e(0x13007C00 | n << 16 | v << 5 | v); }
+        else { a_lsl(v, v, n); }
+        if !regs { a_store(4, T4); }
+        return;
     }
     if which == 5 { a_lsr(R_R, v, n); }
     else if which == 7 { e(0x13007C00 | n << 16 | v << 5 | R_R); }      // asr
@@ -746,13 +961,18 @@ fn j_shift(which: u32, n: u32, mm: u32, disp: u32, p: u32, cnt: u32) {
 
 // A shift of a register by CL. The count is known only when it runs: nothing changes for a
 // count of zero, and OF only for a count of one. So the flags go straight to EFLAGS.
-fn j_shift_cl(which: u32, rm: u32) {
+fn j_shift_cl(which: u32, rm: u32, dead: bool) {
+    let shv: u32 = if which == 5 { 0x1AC02400 } else if which == 7 { 0x1AC02800 } else { 0x1AC02000 };
+    if dead {
+        // Its flags are never seen. (The host takes the count modulo 32, as the guest does.)
+        e(shv | g(1) << 16 | g(rm) << 5 | g(rm));
+        return;
+    }
     j_settle();
     e(0x12001000 | g(1) << 5 | T1);          // and w16, w9, #31: the count
     let skip = jc.len;
     e(0x34000000 | T1);                      // cbz w16
     a_mov(7, g(rm));
-    let shv: u32 = if which == 5 { 0x1AC02400 } else if which == 7 { 0x1AC02800 } else { 0x1AC02000 };
     e(shv | T1 << 16 | 7 << 5 | R_R);
     // CF: the last bit shifted out. (A shift by a register takes its count modulo 32.)
     if which == 5 || which == 7 { a_subi(T2, T1, 1); } else { e(0x4B0003E0 | T1 << 16 | T2); }
@@ -779,9 +999,14 @@ fn j_shift_cl(which: u32, rm: u32) {
 
 // ROL (left) or ROR of a register by a constant from 1 to 31. CF, and OF for ROL at every
 // count and for ROR at a count of one; the rest of EFLAGS stays.
-fn j_rotate(left: bool, n: u32, rm: u32) {
-    j_settle();
+fn j_rotate(left: bool, n: u32, rm: u32, dead: bool) {
     let by = if left { 32 - n } else { n };
+    if dead {
+        // Its flags are never seen.
+        e(0x13800000 | g(rm) << 16 | by << 10 | g(rm) << 5 | g(rm));
+        return;
+    }
+    j_settle();
     e(0x13800000 | g(rm) << 16 | by << 10 | g(rm) << 5 | R_R);          // ror
     a_mov(g(rm), R_R);
     jd |= 1 << rm;
@@ -914,15 +1139,29 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
         jd |= 1 << SP | 1 << (op & 7);
     }
     else if kind == K_INC || kind == K_DEC || kind == K_INC_RM || kind == K_DEC_RM {
-        // CF is the one before: what is in the record is written out first.
-        j_settle();
         let up = kind == K_INC || kind == K_INC_RM;
         let in_mem = (kind == K_INC_RM || kind == K_DEC_RM) && !regs;
         let r = if kind == K_INC || kind == K_DEC { (op & 7) as! u32 } else { rm };
-        if in_mem { j_operand(mm, disp, p, cnt, 4, true); a_load(4, R_A); } else { a_mov(R_A, g(r)); }
-        a_movi(R_B, 1);
-        if up { a_addi(R_R, R_A, 1); jf = F_INC; } else { a_subi(R_R, R_A, 1); jf = F_DEC; }
-        if in_mem { a_store(4, R_R); } else { a_mov(g(r), R_R); jd |= 1 << r; }
+        let dead = j_dead(dc_next[slot], cnt + 1);
+        // A record the block inherited is written out whole, before the place in memory is
+        // worked out (the flags' code uses the register that holds it).
+        if !dead && jf == F_ANY { j_settle(); }
+        if in_mem { j_operand(mm, disp, p, cnt, 4, true); a_load(4, T4); }
+        if dead {
+            // Its flags are never seen: the old ones stay as they are, wherever they are.
+            if in_mem {
+                if up { a_addi(T4, T4, 1); } else { a_subi(T4, T4, 1); }
+                a_store(4, T4);
+            } else if up { a_addi(g(r), g(r), 1); } else { a_subi(g(r), g(r), 1); }
+        } else {
+            // CF is the one before: of what is in the record, that is written out first.
+            // (After the way out, which leaves with the record as it is.)
+            j_settle_cf();
+            if in_mem { a_mov(R_A, T4); } else { a_mov(R_A, g(r)); }
+            a_movi(R_B, 1);
+            if up { a_addi(R_R, R_A, 1); jf = F_INC; } else { a_subi(R_R, R_A, 1); jf = F_DEC; }
+            if in_mem { a_store(4, R_R); } else { a_mov(g(r), R_R); jd |= 1 << r; }
+        }
     }
     else if kind == K_NOT {
         if regs { e(0x2A2003E0 | g(rm) << 16 | g(rm)); jd |= 1 << rm; }                     // mvn
@@ -943,9 +1182,9 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     else if kind == K_TEST_I { j_alu32(4, true, mm, disp, p, cnt, reg, true, true, imm); }
     else if kind == K_ALU_A_I { j_alu32(op >> 3, false, 0x0C, 0, p, cnt, 0, true, true, imm); }
     else if kind == K_TEST_A_I { j_alu32(4, true, 0x0C, 0, p, cnt, 0, true, true, imm); }
-    else if kind == K_ALU_RM_R { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, true, false, 0); }
-    else if kind == K_ALU_R_RM { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, false, false, 0); }
-    else if kind == K_ALU_RM_I { j_adc(reg == 3, mm, disp, p, cnt, reg, true, true, imm); }
+    else if kind == K_ALU_RM_R { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, true, false, 0, j_dead(dc_next[slot], cnt + 1)); }
+    else if kind == K_ALU_R_RM { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, false, false, 0, j_dead(dc_next[slot], cnt + 1)); }
+    else if kind == K_ALU_RM_I { j_adc(reg == 3, mm, disp, p, cnt, reg, true, true, imm, j_dead(dc_next[slot], cnt + 1)); }
     else if kind == K_ALU8_RM_R { j_alu8(op >> 3, false, mm, disp, p, cnt, reg, true, false, 0, false); }
     else if kind == K_ALU8_R_RM { j_alu8(op >> 3, false, mm, disp, p, cnt, reg, false, false, 0, false); }
     else if kind == K_ALU8_RM_I { j_alu8(reg as! u8, false, mm, disp, p, cnt, reg, true, true, imm, false); }
@@ -953,11 +1192,11 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     else if kind == K_TEST8 { j_alu8(4, true, mm, disp, p, cnt, reg, true, false, 0, false); }
     else if kind == K_TEST8_I { j_alu8(4, true, mm, disp, p, cnt, reg, true, true, imm, false); }
     else if kind == K_TEST8_A_I { j_alu8(4, true, mm, disp, p, cnt, 0, true, true, imm, true); }
-    else if kind == K_SHL_I { j_shift(4, imm, mm, disp, p, cnt); }
-    else if kind == K_SHR_I { j_shift(5, imm, mm, disp, p, cnt); }
-    else if kind == K_SAR_I { j_shift(7, imm, mm, disp, p, cnt); }
-    else if kind == K_SHIFT_CL { j_shift_cl(reg, rm); }
-    else if kind == K_SHIFT_I { if imm & 31 != 0 { j_rotate(reg == 0, imm & 31, rm); } }
+    else if kind == K_SHL_I { j_shift(4, imm, mm, disp, p, cnt, dc_next[slot]); }
+    else if kind == K_SHR_I { j_shift(5, imm, mm, disp, p, cnt, dc_next[slot]); }
+    else if kind == K_SAR_I { j_shift(7, imm, mm, disp, p, cnt, dc_next[slot]); }
+    else if kind == K_SHIFT_CL { j_shift_cl(reg, rm, j_dead(dc_next[slot], cnt + 1)); }
+    else if kind == K_SHIFT_I { if imm & 31 != 0 { j_rotate(reg == 0, imm & 31, rm, j_dead(dc_next[slot], cnt + 1)); } }
     else if kind == K_MOV16_R_RM {
         // The low half of a register from a register or from memory; the high half stays.
         if regs { e(0x33003C00 | g(rm) << 5 | g(reg)); }
@@ -970,8 +1209,12 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     else if kind == K_IMUL {
         // The product's low half; CF and OF say whether the whole product is more than that,
         // and the other flags stay, so the record is written out first.
-        j_settle();
         if regs { a_mov(T4, g(rm)); } else { j_operand(mm, disp, p, cnt, 4, false); a_load(4, T4); }
+        if j_dead(dc_next[slot], cnt + 1) {
+            e(0x1B007C00 | T4 << 16 | g(reg) << 5 | g(reg));     // mul wreg, wreg, w5
+            return;
+        }
+        j_settle();
         e(0x9B207C00 | T4 << 16 | g(reg) << 5 | R_R);    // smull x3, wreg, w5
         a_mov(g(reg), R_R);
         e(0x93407C00 | R_R << 5 | T1);                   // sxtw x16, w3
@@ -1032,7 +1275,8 @@ fn jit_translate(p0: u32, slot0: i64) {
     if jit_used + 65536 > jit_room { jit_flush(); }
     jc = [];
     jb = jit_used;
-    jf = F_MEM;
+    jp0 = p0;
+    jf = F_ANY;
     jd = 0;
     sx_n = 0;
     st_n = 0;
@@ -1084,16 +1328,17 @@ fn jit_translate(p0: u32, slot0: i64) {
             j_mem(SS, 4, false);
             a_load(4, T4);
             a_addi(g(SP), g(SP), 4);
-            jit_flags(jf);
+            j_pass(jf);
             a_op(0, T1, T4, 22, 0);                      // where it returns to, as an address
-            e(0xD2800011);                               // mov x17, #0: no link slot
-            a_out();
+            a_far();
             last = p; n += 1; done = true;
         } else if jit_unpair(kind) != K_NONE {
             let first = jit_unpair(kind);
             if !jit_plain(first, mm, dc[slot].pre.op) { break; }
             let b = dc[slot].bytes;
+            j_pairing = true;
             jit_one(first, slot, p, n);
+            j_pairing = false;
             jit_jcc(jit_cc(K_JCC_MASK, b as! u32), nx, nx + (b >> 32) as! u32);
             last = p; n += 2; done = true;
         } else if kind - 1 < K_LAST && jit_plain(kind, mm, dc[slot].pre.op) {
@@ -1105,8 +1350,9 @@ fn jit_translate(p0: u32, slot0: i64) {
             break;
         }
     }
-    if n < 2 {
-        // One instruction is not worth a block. If what follows it may be translated later,
+    if n < 2 && !done {
+        // One instruction is not worth a block unless it is a jump, which is reached through
+        // a link and goes on through one (E068). If what follows it may be translated later,
         // this address is counted afresh and tried again.
         if again { dc_hot[s0] = 0; }
         return;
@@ -1170,6 +1416,18 @@ fn jit_arrive(p: u32) {
 // taken by jit_blocks.
 var jit_at: i64 = -1;
 
+// Set by jit_blocks when what it leaves at is for the general path, not for a run.
+var jit_stop = false;
+
+// The link slot at `from` becomes a branch to the block whose code is at `to`.
+fn jit_link(from: i64, to: i64) {
+    let d: u32 = ((to - from) >> 2) as! u32;
+    let w: u32 = 0x14000000 | d & 0x3FFFFFF;
+    let b: u8[4] = [w as! u8, (w >> 8) as! u8, (w >> 16) as! u8, (w >> 24) as! u8];
+    jit_write(from, b[..]);
+    jit_links += 1;
+}
+
 // Runs the block that the run came to and whatever it leads to, for as long as generated code
 // can go on. True if anything was executed: the virtual time and the instruction pointer are
 // then moved on, and the interpreter goes on from there. False if nothing was: the first
@@ -1185,11 +1443,21 @@ var jit_at: i64 = -1;
 fn jit_blocks() -> bool {
     var slot = jit_at;
     jit_at = -1;
+    jit_stop = false;
     if !stack32() { return false; }
     let pbase: i64 = cpu.base[CS] - (code_page << 12) + code_phys;
     // Where the code segment's limit cuts into this page, a chain could run past what the
     // run may execute: there, one block at a time, each checked here.
     let whole = run_pmax == code_phys + 0xFF0;
+    // The far way goes to a page that is whole inside the code segment's limit, as a run does
+    // (exec_short): the instruction pointer the page begins at is at most the limit less FFFh.
+    let lim = cpu.limit[CS];
+    var far_lim: i64 = 0;
+    if lim >= 0xFFF && jit_off & 32768 == 0 {
+        far_lim = lim - 0xFFF;
+        if far_lim > 0xFFFFF000 { far_lim = 0xFFFFF000; }
+        far_lim += 1;
+    }
     var ran = false;
     var next: u32 = 0;
     loop {
@@ -1206,28 +1474,39 @@ fn jit_blocks() -> bool {
         var time = chain_until - vtime - 1;
         if time < n || jit_last[s] > run_pmax { break; }
         if !whole || jit_off & 1024 != 0 { time = n; }
+        jit_ctx[0] = far_lim;
         let r = jit_call(jit_mem, cpu.regs[..], jit_ram, jit_tlb, jit_seg, pbase, jit_code[s], time, vtime);
         let k = r >> 32;
         if k == 0 { break; }                 // nothing was executed
-        next = r as! u32;
+        next = (r as! u32) + (pbase as! u32);     // what comes back is an instruction pointer
         vtime += k;
         jit_ran += k;
         jit_calls += 1;
         ran = true;
+        let from = jit_slot();
         // On to the next block, if that is what is there.
-        if next < code_phys || next > run_pmax { break; }
+        if next < code_phys || next > run_pmax {
+            // The far way has taken generated code to another page, and it left a block
+            // there through a slot. A run will begin at that address; if the TLB says where
+            // it is in RAM and a good block begins there, the slot is linked first.
+            if from > 1 && far_lim != 0 && jit_off & 1024 == 0 {
+                let a = cpu.base[CS] + (r as! u32);
+                let t = a >> 12 & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+                if tlb_rtag[t] == a >> 12 {
+                    let q = tlb_rphys[t] | a & 0xFFF;
+                    let s3: i64 = q & (DC_HALF - 1);
+                    if jit_head[s3] == q && jit_gen[s3] == code_gen[q >> 12] { jit_link(from, jit_code[s3]); }
+                }
+            }
+            break;
+        }
         slot = next & (DC_HALF - 1) | DC_HALF;
         if dc[slot].tag != next || dc[slot].pre.kind != K_BLOCK { jit_arrive(next); break; }
+        // A way out was taken before an instruction that heads a block: the block would
+        // leave by the same way at once. The general path runs that instruction.
+        if from == 1 { jit_stop = true; break; }
         let s2 = slot - DC_HALF;
-        let from = jit_slot();
-        if from != 0 && whole && jit_off & 1024 == 0 && jit_gen[s2] == code_gen[next >> 12] {
-            // The slot it left through becomes a branch to that block.
-            let d: u32 = ((jit_code[s2] - from) >> 2) as! u32;
-            let w: u32 = 0x14000000 | d & 0x3FFFFFF;
-            let b: u8[4] = [w as! u8, (w >> 8) as! u8, (w >> 16) as! u8, (w >> 24) as! u8];
-            jit_write(from, b[..]);
-            jit_links += 1;
-        }
+        if from > 1 && whole && jit_off & 1024 == 0 && jit_gen[s2] == code_gen[next >> 12] { jit_link(from, jit_code[s2]); }
     }
     if ran {
         cpu.ip = next + (code_page << 12) - code_phys - cpu.base[CS];

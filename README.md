@@ -72,8 +72,8 @@ Choosing Goose decides three things:
   ([src/jit.goose](src/jit.goose)), that makes host code of runs of 32-bit guest instructions; the C
   ([src/jit.c](src/jit.c)) maps executable memory, copies code into it and calls it. The dull
   alternative, which is what was chosen first and kept, is the interpreter with fused pairs; the JIT
-  was taken up when that was down to fractions of a percent a card (E052, E056), and it takes a
-  fifth off the Linux boot's cycles (E062). Without `--jit` nothing of it runs. It is for arm64
+  was taken up when that was down to fractions of a percent a card (E052, E056), and it takes
+  two thirds off the Linux boot's cycles (E072; [docs/jit.md](docs/jit.md)). Without `--jit` nothing of it runs. It is for arm64
   hosts only; on any other, do not pass `--jit`.
 - **Dispatch and the device bus are `enum` and `match`.** There is nothing like a trait or a vtable.
 

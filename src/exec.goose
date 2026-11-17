@@ -1909,7 +1909,10 @@ fn exec_one() -> bool {
         exec_short();
         // The run ended at a block: the blocks are run, and then a run again, for as long
         // as that goes on.
-        while jit_at >= 0 && jit_blocks() { exec_short(); }
+        while jit_at >= 0 && jit_blocks() {
+            if jit_stop { break; }
+            exec_short();
+        }
     }
     return exec_general();
 }
