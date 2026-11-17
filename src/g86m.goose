@@ -326,7 +326,8 @@ fn main() {
     var show_screen = false;
     var show_ports = false;
     var headless = false;
-    var paced_arg = 0;           // 1 --paced, 2 --unpaced, 0 neither: a kernel is unpaced, the rest paced
+    var paced_arg = 0;           // 1 --paced, 2 --unpaced
+    var speed = 1;               // --speed: how many times the instructions in a second of guest time
     var dump_arg = 0;
     var com_arg = 0;
     var cpu_arg = 0;
@@ -347,6 +348,11 @@ fn main() {
         else if a[i] == "--ports" { show_ports = true; }
         else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--paced" { paced_arg = 1; }
+        else if a[i] == "--speed" && i + 1 < a.len {
+            i++;
+            let n, ok = parse_int(a[i]);
+            if ok && n >= 1 && n <= 64 { speed = n; }
+        }
         else if a[i] == "--unpaced" { paced_arg = 2; }
         else if a[i] == "--cpu" && i + 1 < a.len { i++; cpu_arg = i; }
         else if a[i] == "--faults" { log_faults = true; }
@@ -389,7 +395,7 @@ fn main() {
     guard read_file(path, img) else { write_stderr("g86m: cannot read image\n"); exit(2); }
     let rom = img.len == 65536 || img.len == 131072;
     let kernel = is_bzimage(img);
-    unpaced = if paced_arg == 1 { false } else if paced_arg == 2 { true } else { kernel };
+    unpaced = paced_arg == 2;
     if kernel {
         var initrd: u8[>..] = [];
         if initrd_arg > 0 {
@@ -456,6 +462,9 @@ fn main() {
     }
     let t0 = clock_ns();
     if trace { trace_line(); }
+    // --speed N: a second of guest time is N times as many instructions, which is a CPU N
+    // times as fast under the same clock.
+    tick_insns = tick_insns * speed;
     let result = if interactive { run_console(max) } else if serial_console { run_serial(max) } else { run_until(max) };
     com_flush();
     let ms = (clock_ns() - t0) / 1000000;
