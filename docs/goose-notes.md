@@ -100,8 +100,22 @@ for the total, a debugger stepping one instruction for the detail). See E010 and
   Declaring it as an `i64` left the rest where it was (E021). When a change slows something it
   does not touch, try padding before believing anything else
 - **Globals and struct fields are packed, with no alignment.** A 32-bit field can sit at an odd
-  address. On arm64 that costs one extra instruction per access, which turned out not to matter
-  (1.5%, E015)
+  address. On arm64 that costs one extra instruction per access. It was 1.5% when g86m was slow
+  (E015) and 3.7% of the host instructions and 3.4% of the cycles once it was fast (E050): the
+  extra instruction does not shrink with the rest. Ordering declarations widest first does not
+  last, because every global added later moves the ones behind it; pad with a `u8` array in
+  front of what matters and check the result. The generated C (under `GOOSE_HOME`) has the
+  globals as one struct, so the C compiler's `offsetof` says where each one is
+  (`tools/layout.sh`). One thing the layout shows that the source does not: a growable array
+  (`u8[>..]`) is aligned to 8 inside the packed struct, so alignment starts again behind each
+  one
+- **`if c { x += n; }` becomes a conditional select, and a select is data.** Where `x` is what
+  the next iteration of a loop starts from (in g86m, the address of the next guest instruction
+  after a conditional jump), a select makes the next iteration wait for `c`, which a branch
+  would have predicted. A store to a global on the taken path keeps it a branch. In g86m that
+  store was there for another reason, was removed as redundant, and the Linux boot took 14%
+  more cycles with 4% fewer instructions (E049). When a change that removes work makes the
+  program slower by more than a few percent, look for a branch that turned into a select
 - **A global that a loop both stores and loads each time round is a chain through memory.** The
   compiler cannot keep it in a register across a call that might change it, so each iteration
   waits for the store before it to be forwarded to its load. For g86m's instruction pointer that

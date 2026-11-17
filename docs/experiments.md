@@ -3945,3 +3945,67 @@ that faults after CS is loaded, then a store from ring 3 into the page of ring 0
 wrong build that did not put the level's global back failed only this, and only once the
 test aimed at the pushes of the fault's own delivery (every later change of level repairs
 the global, so the window is those three pushes).
+
+## E052: What still takes the general path (2026-11-17)
+
+- **Hypothesis**: E040 counted 49.7 million runs in a boot, each ended by a trip through the
+  general path at 39 cycles of entry before the instruction itself, and 12.9 million of them
+  ended by an instruction with no executor. E042 has since taken away most of the ends at a
+  page of code, so what ends a run now is mostly such an instruction, and each one costs its
+  own general execution, the entry, and the start of a new run. E025 was the last card to
+  ask which instructions these are, twenty-seven cards ago. If a handful of opcodes make up
+  most of them, executors for those are worth a card; if they are spread over the opcode
+  map, this line of work is finished. A count by opcode (with the operand-size prefix and
+  REP told apart) of every instruction of 32-bit code that the general path executes in a
+  boot, and of how many times it is entered at all.
+- **What changed since last time**: E025 chose from a count made before runs crossed pages,
+  before the string executors and before the code-write change. Nothing has counted since.
+- **Next move for each result**:
+  - A few opcodes (five or fewer) are 60% or more of the general path's instructions, and
+    those are 1% or more of all guest instructions → executors for them, next card, sized at
+    the count times 40 cycles
+  - Spread out, or under 1% of all instructions → no card; the optimizations that can be
+    done without changing the unit of execution are done, and the next one is the fusion of
+    pairs or nothing
+- **Cut-off**: The same day; one counting build, one boot. The counting build is a copy and
+  `src/` is not touched.
+
+### Result
+
+2026-11-17. **Spread out, and small: no card.** One counting build (a copy; `src/` untouched),
+one boot, the same 1,651,240,001 instructions.
+
+- The general path is entered 24.7 million times in a boot (49.7 million in E040, before runs
+  crossed pages). 1.0 million of those run a short executor singly, and 23.8 million execute
+  an instruction of 32-bit code the long way: **1.44% of all guest instructions**.
+- No opcode stands out. The first five are 30% of them and it takes nineteen to reach 60%:
+
+  | Opcode | Times | Share of the general path's instructions | Share of all |
+  |---|---:|---:|---:|
+  | A1 (`mov eax, [addr]`) | 2.11 million | 8.9% | 0.13% |
+  | 89 (`mov r/m, r`) | 1.91 million | 8.0% | 0.12% |
+  | 8B (`mov r, r/m`) | 1.26 million | 5.3% | 0.08% |
+  | FF (the group: indirect CALL and JMP, PUSH) | 1.01 million | 4.2% | 0.06% |
+  | 83 with a 16-bit operand | 0.93 million | 3.9% | 0.06% |
+  | C9 (LEAVE), F7, 31, 96 (XCHG), REPE CMPSB, 8D, 6A, C7, 9C (PUSHF), 0F B1 (CMPXCHG), ... | 0.2 to 0.8 million each | under 3.5% each | under 0.05% each |
+
+  Several in the list have executors (89, 8B, 31, 8D): those are first executions, which
+  always go the long way, and forms the executors leave out (a segment override, 16-bit
+  addressing).
+- At E040's 39 cycles an entry, all 24.7 million entries are 1.0 billion cycles, 3.4% of the
+  boot, and the largest single opcode is a tenth of that.
+
+By the card: the second branch. **What can be done without changing the unit of execution
+is done.** Today's three cards against main at the start of the day:
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| Main this morning (E046) | 164.1 billion | 29.4 to 29.7 billion |
+| After E049 and E050 | 151.4 billion | 28.3 to 28.5 billion |
+
+What is left is the fusion of pairs (a compare and the conditional jump after it as one
+executor), which changes what a run counts, notes and undoes; E049's finding belongs to its
+card, because a fused pair has to stay a branch on its taken path for the same reason.
+
+`tools/difftest.sh` on the source as it stands has 87 lines, all ok (four self-checks more
+than this morning, each run on the debug and the release build, and the layout check).
