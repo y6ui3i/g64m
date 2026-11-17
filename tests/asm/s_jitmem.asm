@@ -88,7 +88,8 @@ pass:
     mov  edx, [0x60000]                 ; not present from the eighth pass on
     add  eax, edx
     call tail
-    mov  dword [esi+4], 0x0F0F0F0F
+    mov  dword [esi+4], 0x0F0F0F0F      ; (two instructions after the RET: a block, which the
+    nop                                 ; RET does not leave for through a link slot)
     pushfd                              ; the block ends here, the CMP's flags written out
     pop  ebx
     add  ebx, eax

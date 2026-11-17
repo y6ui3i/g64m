@@ -497,7 +497,7 @@ fn main() {
         for code in post_trail { format(stats, " "); format_int(stats, code, 16, 2, '0'); }
         format(stats, " com ", com_out.len, " bytes");
     }
-    if jit_on { format(stats, " jit ", jit_blocks_made, " blocks, ", jit_ran, " instructions, ", jit_left, " left early, ", jit_used, " bytes, ", jit_flushes, " flushes"); }
+    if jit_on { format(stats, " jit ", jit_blocks_made, " blocks, ", jit_ran, " instructions, ", jit_calls, " entries, ", jit_links, " links, ", jit_used, " bytes, ", jit_flushes, " flushes"); }
     format(stats, "\n");
     write_stderr(stats);
     if com_arg > 0 {
