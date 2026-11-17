@@ -3757,7 +3757,7 @@ boot". The next cards stay on E043's list.
 
 2026-11-17. **Kept: 4.2% fewer host instructions and about 1.7% fewer cycles, in every
 layout. On the way: without a store on its taken path a conditional jump becomes a select,
-and that alone costs 14%.** `tools/difftest.sh` 80 of 80 (two new tests); the boot stops at
+and that alone costs 14%.** `tools/difftest.sh` has 82 lines, all ok (two of them new); the boot stops at
 1,651,240,001 instructions as before.
 
 **The first build was 14% slower with 4.3% fewer instructions.** It stored `cpu.ip` once,
@@ -3804,3 +3804,72 @@ flags, the TLB arrays and the rest of `state.goose` are loaded and stored unalig
 compiler needs an extra instruction to form each address. One pad byte before `cpu`, on
 main, in a build made only to be timed: 157.8 billion host instructions against 164.1, and
 29.0 billion cycles against 29.65. That is the next card.
+
+## E050: The globals back on their alignment, and a check that keeps them there (2026-11-17)
+
+- **Hypothesis**: E017's addendum aligned the globals by declaring the widest first, for 2%
+  of the boot's host instructions. Thirty cards have added globals since, and nothing shows
+  where they landed. Read from the C the compiler generates (the globals are one packed
+  struct; `offsetof` gives each one's place): `cpu`, `saved` and `seg_top` are at 7 modulo
+  8; `ram`, the decode cache, `dc_next` and `code_mark` at 1; `vtime` at 2; `ins`, `ea_seg`,
+  `ea_off` and `dc_cur` at 2; `chain_until` and `light_save` at 6; `timer_at` at 5. The TLB
+  arrays and `cr` are aligned, by luck. For a field off its alignment the compiler forms the
+  address with an extra instruction, and a load or store that straddles a 64-byte line costs
+  the host more. One pad byte before `cpu` alone, on main, in a build made only to be timed
+  (E049's result): 3.8% fewer host instructions and 2% fewer cycles, while it pushed the TLB
+  arrays off their alignment. With every one of the globals above at a multiple of 8:
+  **4% or more of the host instructions and 2% or more of the cycles**.
+- **What changed since last time**: E015 tried eight paddings in front of the whole block
+  and E017 reordered declarations, both without seeing the layout. This reads the layout,
+  pads in front of each group that is off (a `u8` array of the size wanted), and adds a check
+  to `tools/difftest.sh` that fails when a listed global is off its alignment, so that the
+  next global added in front of them is noticed.
+- **Next move for each result**:
+  - Cycles down by 0.6% or more over padded code layouts of both sides → keep, with the check
+  - Instructions down and cycles not → keep all the same if no layout is slower (it is E017's
+    rule: the instruction count is the measure that repeats), and say so
+  - bench.bin or test386 slower by more than their spread → some global of the 16-bit path is
+    now off; find it with the layout tool before giving up a pad
+- **Cut-off**: The same day. Pads only, no code: the tests must pass unchanged and the boot's
+  count stay; four layouts of each side, six rounds; bench.bin and test386 timed too.
+
+### Result
+
+2026-11-17. **Kept: 3.7% fewer host instructions and about 3.4% fewer cycles on the boot, in
+every layout; the 16-bit benchmark and test386 gain too.** Pads only: four `u8` arrays, 23
+bytes in all. `tools/difftest.sh` has 83 lines, all ok (the new one is the layout check); the
+boot's count is unchanged.
+
+**The layout is not what the declarations suggest.** `tools/layout.sh` asks the C compiler
+for `offsetof` each global in the struct the Goose compiler generates. The struct is packed,
+but a growable array (`u8[>..]`) is a member aligned to 8, so alignment is restored behind
+each one: `cr` and the TLB arrays were aligned because `tty` and `stop_message` are declared
+just before them, and a pad in front of `cpu` moves nothing behind those two. The pads that
+came out, after three rounds of build and look: 3 bytes before `timer_on`, 6 before `ins`, 4
+before `chain_until`, 7 before `cpu`, 7 before `ram`, 6 before `vtime`. E049's trial with
+one byte before `cpu` had the registers aligned and everything from `ram` on still off.
+
+| | Host instructions | Cycles |
+|---|---:|---:|
+| Linux boot, E049, four code layouts | 157.2 billion | medians of six rounds: 29.31, 29.30, 29.31, 29.37 billion |
+| Linux boot, E050, four code layouts | 151.4 billion | 28.34, 28.32, 28.30, 28.34 billion |
+| bench.bin (16-bit), E049 | 97.91 billion | 14.61, 14.61, 14.62 billion |
+| bench.bin, E050 | 91.35 billion | 14.33, 14.40, 14.33 billion |
+| test386, E049 | 17.66 billion | 2.83, 2.85, 2.84 billion |
+| test386, E050 | 16.93 billion | 2.77, 2.77, 2.76 billion |
+
+(The machine was a little slower for this table than for E049's: E049 reads 29.3 here and
+28.9 there. Each table's two sides were run interleaved.) By the card: the first branch.
+
+**The check.** `tools/layout.sh --check` fails when one of twenty-one watched globals is off
+its alignment, and `tools/difftest.sh` runs it; with the pad before `cpu` one byte short it
+names `cpu`, `saved` and `seg_top`. It reads the compiler's generated C under `GOOSE_HOME`,
+and is skipped where that is not to be found.
+
+**What this says about earlier cards.** E015 called alignment "one extra instruction per
+access, which turned out not to matter (1.5%)", and E017's addendum got 2% by reordering.
+Both were right about the size then; the boot was 584 and 466 billion host instructions, and
+the same extra instruction is a larger share of 157 billion. And both worked blind: E017's
+order was undone by the globals added since, and nothing said so. From main at the start of
+today (164.1 billion instructions, 29.4 to 29.7 billion cycles) the two cards together are
+at 151.4 billion and 28.3 billion: **7.7% fewer instructions, about 4.5% fewer cycles.**

@@ -185,6 +185,9 @@ let RUN_BUDGET = 0;      // virtual time reached the limit
 let RUN_STOPPED = 1;     // the machine cannot go on: a fault, or halted with nothing to wake it
 let RUN_SCRIPT = 2;      // the script finished
 
+// Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
+// tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
+var pad_vtime: u8[6] = [0; 6];
 var vtime = 0;           // virtual time, in instructions
 var trace = false;
 var trace_after = -1;     // start tracing at this virtual time; -1 for never

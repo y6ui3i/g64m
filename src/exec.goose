@@ -19,6 +19,9 @@ import fpu;
 // ---- Decode state that lives for one instruction ----
 
 // What the prefixes and the opcode of the instruction being executed say (see Pre in state.goose).
+// Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
+// tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
+var pad_ins: u8[6] = [0; 6];
 var ins: Pre = Pre { op: 0, plen: 0, osz: 16, asz32: false, lock: false, rep: 0, seg: -1, kind: 0 };
 var ea_seg = 3;              // segment register of the effective address (starts as DS)
 var dc_cur = -1;             // this instruction's entry in the decode cache, or -1 when it has none
@@ -1620,6 +1623,9 @@ var pending_has_err = false;
 // happen in between, except that virtual time reaches chain_until, the moment the run loop
 // worked out that something else is due. The last instruction of a run is left for the caller to
 // count, as a single instruction would be.
+// Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
+// tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
+var pad_chain: u8[4] = [0; 4];
 var chain_until = 0;
 
 // Runs short executors for as long as it can. True when it ran at least one instruction and the
