@@ -713,7 +713,7 @@ fn j_dead(from: u32, cnt: u32) -> bool {
         let op = dc[slot].pre.op;
         if mm & 0x0C != 0x0C && kind != K_MOV_R_I && kind != K_NOP && kind != K_LEA && kind != K_ALU_A_I
             && kind != K_TEST_A_I && kind != K_ALU8_A_I && kind != K_TEST8_A_I && kind != K_INC && kind != K_DEC { return false; }
-        if kind - 1 >= K_LAST || !jit_plain(kind, mm, op) { return false; }
+        if kind - 1 >= K_JLAST || !jit_plain(kind, mm, op) { return false; }
         // Sets all six, reads none.
         if kind >= K_ALU_RM_R_OP && kind < K_ALU_RM_I_OP + 8 { return true; }
         if kind == K_TEST || kind == K_TEST_I || kind == K_ALU_A_I || kind == K_TEST_A_I || kind == K_NEG { return true; }
@@ -789,6 +789,7 @@ fn jit_plain(kind: u8, mm: u32, op: u8) -> bool {
     if kind == K_IMUL { return jit_off & 4096 == 0; }
     if kind >= K_MOVS && kind <= K_STOS { return jit_off & 8192 == 0; }
     if kind == K_RDTSC { return jit_off & 16384 == 0; }
+    if kind >= K_J_MOV_A_M && kind <= K_JLAST { return jit_off & 131072 == 0; }
     return false;
 }
 
@@ -1072,6 +1073,57 @@ fn j_string(kind: u8, sg: u32, p: u32, cnt: u32) {
     if writes || kind == K_SCASB { a_op(0, g(DI), g(DI), T1, 0); }
 }
 
+// Group F7's MUL, IMUL, DIV and IDIV (which: 4 to 7) of EDX:EAX by a 32-bit operand. MUL and
+// IMUL set CF and OF and leave the other flags; DIV and IDIV touch none, and where they would
+// fault (a divisor of zero, a quotient that does not fit) they take the way out before
+// anything is changed.
+fn j_muldiv(which: u32, mm: u32, disp: u32, p: u32, cnt: u32, dead: bool) {
+    let regs = mm & 0x0C == 0x0C;
+    if which < 6 && !dead { j_settle(); }
+    jit_exit_here(p, cnt);
+    if regs { a_mov(T4, g(mm >> 7 & 7)); } else { j_operand(mm, disp, p, cnt, 4, false); a_load(4, T4); }
+    if which < 6 {
+        e((if which == 4 { 0x9BA07C00 } else { 0x9B207C00 }) | T4 << 16 | g(0) << 5 | T1);     // umull or smull x16, eax, w5
+        if !dead {
+            if which == 4 {
+                e(0xD360FC00 | T1 << 5 | T2);            // lsr x17, x16, #32
+                a_subsi(31, T2, 0);
+            } else {
+                e(0x93407C00 | T1 << 5 | T2);            // sxtw x17, w16
+                e(0xEB00001F | T2 << 16 | T1 << 5);      // cmp x16, x17
+            }
+            a_cset(7, C_NE);
+            a_ldr(T2, FLAGS_AT);
+            a_movi(T3, 0xFFFFF7FE);
+            a_op(4, T2, T2, T3, 0);
+            a_op(5, T2, T2, 7, 0);
+            a_op(5, T2, T2, 7, 11);
+            a_str(T2, FLAGS_AT);
+        }
+        a_mov(g(0), T1);
+        e(0xD360FC00 | T1 << 5 | T2);                    // lsr x17, x16, #32
+        a_mov(g(2), T2);
+        return;
+    }
+    a_subsi(31, T4, 0);                                  // a divisor of zero
+    j_out(C_EQ);
+    e(0xAA008000 | g(2) << 16 | g(0) << 5 | T1);         // orr x16, x8, x10, lsl #32: EDX:EAX
+    if which == 6 {
+        e(0x9AC00800 | T4 << 16 | T1 << 5 | T2);         // udiv x17, x16, x5
+        e(0xD360FC00 | T2 << 5 | T3);                    // lsr x6, x17, #32
+        a_subsi(31, T3, 0);                              // a quotient of more than 32 bits
+    } else {
+        e(0x93407C00 | T4 << 5 | T4);                    // sxtw x5, w5
+        e(0x9AC00C00 | T4 << 16 | T1 << 5 | T2);         // sdiv x17, x16, x5
+        e(0x93407C00 | T2 << 5 | T3);                    // sxtw x6, w17
+        e(0xEB00001F | T3 << 16 | T2 << 5);              // cmp x17, x6: a quotient that is no 32-bit signed number
+    }
+    j_out(C_NE);
+    e(0x9B008000 | T4 << 16 | T1 << 10 | T2 << 5 | T3);  // msub x6, x17, x5, x16: the remainder
+    a_mov(g(0), T2);
+    a_mov(g(2), T3);
+}
+
 // Where RDTSC's subtraction of what is left of the block is, to be filled in when the block's
 // length is known.
 let TS_MAX = 8;
@@ -1242,6 +1294,54 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
         e(0xD360FE11);                       // lsr x17, x16, #32
         e(0x2A1103E0 | g(2));                // mov edx, w17
     }
+    else if kind == K_J_MOV_A_M || kind == K_J_MOV_M_A {
+        jit_exit_here(p, cnt);
+        a_movi(T1, imm);
+        j_mem(mm >> 29, 4, kind == K_J_MOV_M_A);
+        if kind == K_J_MOV_A_M { a_load(4, g(0)); } else { a_store(4, g(0)); }
+    }
+    else if kind == K_J_LEAVE {
+        // ESP from EBP, then EBP popped: nothing changes unless the pop can be done.
+        jit_exit_here(p, cnt);
+        a_mov(T1, g(BP));
+        j_mem(SS, 4, false);
+        a_load(4, T4);
+        a_addi(g(SP), g(BP), 4);
+        a_mov(g(BP), T4);
+    }
+    else if kind == K_J_PUSH_I || kind == K_J_PUSH_RM {
+        if kind == K_J_PUSH_I { jit_exit_here(p, cnt); a_movi(T4, imm); }
+        else if regs { jit_exit_here(p, cnt); a_mov(T4, g(rm)); }
+        else { j_operand(mm, disp, p, cnt, 4, false); a_load(4, T4); }
+        a_subi(T1, g(SP), 4);
+        j_mem(SS, 4, true);
+        a_store(4, T4);
+        a_subi(g(SP), g(SP), 4);
+    }
+    else if kind == K_J_XCHG_A || kind == K_J_XCHG {
+        let a = if kind == K_J_XCHG_A { g(0) } else { g(reg) };
+        let b = if kind == K_J_XCHG_A { g(op & 7) } else { g(rm) };
+        a_mov(T4, a);
+        a_mov(a, b);
+        a_mov(b, T4);
+    }
+    else if kind == K_J_BSWAP { e(0x5AC00800 | g(imm) << 5 | g(imm)); }                    // rev
+    else if kind == K_J_CDQ { e(0x13007C00 | 31 << 16 | g(0) << 5 | g(2)); }               // asr edx, eax, #31
+    else if kind == K_J_DF {
+        // DF is in EFLAGS whatever the flags' record holds.
+        a_ldr(T1, FLAGS_AT);
+        if imm == 0 { e(0x12157800 | T1 << 5 | T1); } else { e(0x32160000 | T1 << 5 | T1); }   // and #~400h, orr #400h
+        a_str(T1, FLAGS_AT);
+    }
+    else if kind == K_J_ROT1 { j_rotate(reg == 0, 1, rm, j_dead(dc_next[slot], cnt + 1)); }
+    else if kind == K_J_MOVSX8 || kind == K_J_MOVSX16 {
+        let n: u32 = if kind == K_J_MOVSX8 { 1 } else { 2 };
+        if !regs { j_operand(mm, disp, p, cnt, n, false); a_load(n, T4); }
+        else if n == 1 { j_get8(T4, rm); }
+        else { a_mov(T4, g(rm)); }
+        e((if n == 1 { 0x13001C00 } else { 0x13003C00 }) | T4 << 5 | g(reg));             // sxtb, sxth
+    }
+    else if kind == K_J_MULDIV { j_muldiv(reg, mm, disp, p, cnt, j_dead(dc_next[slot], cnt + 1)); }
     else if kind == K_SETCC {
         // The condition first: it may write the record out, which has to be before the way out.
         j_cond(imm as! u8);
@@ -1341,7 +1441,7 @@ fn jit_translate(p0: u32, slot0: i64) {
             j_pairing = false;
             jit_jcc(jit_cc(K_JCC_MASK, b as! u32), nx, nx + (b >> 32) as! u32);
             last = p; n += 2; done = true;
-        } else if kind - 1 < K_LAST && jit_plain(kind, mm, dc[slot].pre.op) {
+        } else if kind - 1 < K_JLAST && jit_plain(kind, mm, dc[slot].pre.op) {
             jit_one(kind, slot, p, n);
             last = p; n += 1;
             p = nx;
@@ -1392,7 +1492,7 @@ fn jit_flush() {
 fn jit_reclaim(slot: i64) {
     let s = slot - DC_HALF;
     let p = dc[slot].tag;
-    if jit_head[s] != p || jit_gen[s] != code_gen[p >> 12] || dc[slot].pre.kind - 1 >= K_LAST { return; }
+    if jit_head[s] != p || jit_gen[s] != code_gen[p >> 12] || dc[slot].pre.kind - 1 >= K_JLAST { return; }
     jit_kind[s] = dc[slot].pre.kind;
     dc[slot].pre.kind = K_BLOCK;
     dc_hot[s] = 255;
@@ -1406,7 +1506,7 @@ fn jit_arrive(p: u32) {
     let s = slot - DC_HALF;
     let h = dc_hot[s];
     if h >= JIT_HOT {
-        if h != 255 && dc[slot].pre.kind - 1 < K_LAST { jit_translate(p, slot); }
+        if h != 255 && dc[slot].pre.kind - 1 < K_JLAST { jit_translate(p, slot); }
         return;
     }
     dc_hot[s] = h + 1;

@@ -80,7 +80,7 @@ each:
     CASE {shl ebx, 1}, {adc ebx, edx}, {add ebx, edx}   ; seen by the ADC, whose own are not
     CASE {shr dword [cell], 3}, {add ebx, edx}
     CASE {dec dword [cell]}, {sub ebx, edx}
-    CASE {shl ebx, 3}, {mov eax, ebx}, {xchg ecx, edx} ; flags seen after an instruction that touches none, and after one with no executor
+    CASE {shl ebx, 3}, {mov eax, ebx}, {xchg cl, dl} ; flags seen after an instruction that touches none, and after one with no executor
     FAULT {shl ebx, 1}
     FAULT {rol ebx, 1}
     FAULT {inc ebx}
@@ -118,7 +118,7 @@ real:
     mov  ds, ax
     mov  ss, ax
     lidt [ridtr]
-    cmp  edi, 0xAA38DDB0                ; from a trace run, one instruction at a time
+    cmp  edi, 0x9045FD50                ; from a trace run, one instruction at a time
     jne  .no
     mov  ax, 0x0E4F                     ; 'O'
     int  0x10

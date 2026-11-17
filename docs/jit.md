@@ -80,6 +80,12 @@ is entered. Otherwise the way out. Nothing is remembered between arrivals, so a 
 either page, a change of the paging and a new limit are all seen. `--jit-off 32768` turns
 it off.
 
+**Kinds.** The translator reads what `classify` left in the decode cache's entries: it
+decodes nothing. An instruction the interpreter has a short executor for has a kind from 1
+to `K_LAST`; one it has none for, but the translator knows, has a kind from there to
+`K_JLAST`, given only when the JIT is on, which a run leaves to the general path (E073).
+`--jit-off 131072` turns those off.
+
 **Flags.** The translator knows which instruction set the flags last in the block. The
 generated code keeps that instruction's operands and result in w1 to w3 (the record), and
 where a block ends it puts the record's kind in w26 (0: EFLAGS in memory is right) and goes
@@ -146,7 +152,8 @@ without the JIT. The self-checks written for the JIT: `s_jit` (blocks without me
 operations, shifts, rotates, the arithmetic to memory, ADC, SBB, SETCC), `s_jitslot` (a block
 whose decode-cache entry goes and comes back), `s_jitchain` (blocks that lead to one another;
 the stops are taken here), `s_jitfar` (the far way's four tests), `s_jitflags` (the record from block to block), `s_jitdead` (flags never seen, the carry
-alone, and what a fault's handler finds), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
+alone, and what a fault's handler finds), `s_jitkinds` (the kinds without executors, and
+divisions that fault), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
 (RDTSC), and `s_cslimit` (blocks at the code segment's limit). The JIT's self-checks are
 also run with room for 70,000 bytes of code, so that it fills up while they run.
 
@@ -158,28 +165,23 @@ before the eighth arrival anywhere (the first stop sweep). The count of instruct
 blocks, printed with `--jit`, shows the last. A fourth: an instruction the assembler encodes
 another way than the one meant (`test al, imm` and `mov cx, dx` have two encodings each).
 
-## Where it stands (2026-11-18, after E072)
+## Where it stands (2026-11-18, after E073)
 
 Linux boot to the shell prompt, Apple M1, medians of five in one hour:
 
 | | Host instructions | Cycles |
 |---|---:|---:|
-| Interpreter (main before the JIT) | 145.7 billion | 28.36 billion |
-| `--jit` after E066 (kinds) | 58.0 billion | 13.35 billion |
-| `--jit` after E069 (the far way) | 48.7 billion | about 12.4 billion |
-| `--jit` after E070 (the record kept) | 45.9 billion | 10.86 billion |
-| `--jit` after E071 (flags nothing reads) | 42.7 billion | 10.06 billion |
-| `--jit` after E072 | 41.1 billion | 9.72 billion |
+| Interpreter (main before the JIT) | 145.6 billion | 27.59 billion |
+| `--jit` after E066 (kinds with executors) | 58.0 billion | 13.35 billion, an hour earlier |
+| `--jit` after E072 (the far way, the flags) | 41.1 billion | 9.32 billion |
+| `--jit` after E073 (kinds without executors) | 35.9 billion | 8.40 billion |
 
-- 66% fewer cycles than the interpreter. A guest instruction costs 25 host instructions
+- 70% fewer cycles than the interpreter. A guest instruction costs 22 host instructions
   over the whole boot, where the interpreter's costs 88.
-- 97.7% of the guest instructions run in blocks (1,613 of 1,651 million); 250.8 million
-  blocks are begun, 6.4 instructions each.
-- Generated code is entered 16.5 million times in a boot; the far way finds a block 25.2
-  million times; 34 thousand link slots are filled.
-- 65.7 thousand blocks are translated, 22.6 MB of code, no flush (the room is 64 MB).
-- What generated code still comes back for, in millions (E069's count): an instruction
-  with no executor 6.95, a way out 2.5, the far way finding nothing 1.96.
+- 98.2% of the guest instructions run in blocks (1,621 of 1,651 million).
+- Generated code is entered 11.3 million times in a boot; the far way finds a block 25.7
+  million times; 36 thousand link slots are filled.
+- 66.6 thousand blocks are translated, 24.1 MB of code, no flush (the room is 64 MB).
 
 ## Tasks
 
@@ -199,7 +201,8 @@ started; this list is updated when one is done.
 | 7 | The code cache full: drop everything and start again | The Linux boot fills 32 MB once | done, E063; the room is 64 MB since E069 |
 | 8 | A page that is both stored into and run: its blocks are dropped and remade for ever | Not measured | |
 | 11 | A loop with no instruction for the general path in it never gets a block: arrivals are counted only where a run begins and where a block ends | Found in E065; the Linux boot hides it because the timer ends runs | |
-| 12 | The instructions with no executor that blocks stop at: `mov eax, moffs` and back, group 83 with a prefix, MUL and DIV, REP string instructions, `push r/m` and `push imm`, LEAVE, PUSHF, CMPXCHG, BSWAP, SHRD and SHLD. The translator reads what `classify` left, so each needs a kind of its own above `K_LAST` that only the translator knows | 6.95 of the 16.5 million trips (E067, E069) | |
+| 12 | The instructions with no executor that blocks stop at get kinds above `K_LAST` that only the translator knows | 6.95 of the 16.5 million trips (E067, E069) | first part done, E073: `mov eax, moffs` and back, LEAVE, `push imm` and `push r/m`, XCHG, BSWAP, CDQ, CLD and STD, a rotate by one, MOVSX, MUL, IMUL, DIV, IDIV. 11.3 million trips |
+| 12b | The rest: REP string instructions, CMPXCHG, SHRD and SHLD, PUSHF, group 83 with a prefix or longer than eight bytes, indirect CALL and JMP | Count again first: E067's list is from before E073 | |
 | 13 | INC and DEC in a block that inherited a record: the carry alone, by a second entry of the flags' code | 29 million whole records written for one bit (E071) | |
 | 14 | A shift or rotate whose flags may be seen, after a record the block made: only what it keeps (the auxiliary carry, the overflow) written | 19 million (E071) | |
 | 10 | Blocks are made at many overlapping starts (71 thousand in a boot, 35 MB of code): a block for an address inside an existing block could enter that block's code part way | Translation time and the one flush | |
