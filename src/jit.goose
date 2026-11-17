@@ -1,25 +1,35 @@
-// A JIT for arm64 (E059). With --jit, runs of 32-bit instructions that touch no memory are
-// translated into host code and run as one executor, K_BLOCK. See docs/experiments.md, E059,
-// for the design; this file is the translator, and jit.c the forty lines of C it needs.
+// A JIT for arm64 (E059, E061). With --jit, runs of 32-bit instructions are translated into
+// host code, block by block. See docs/experiments.md, E059 and E061, for the design; this file
+// is the translator, and jit.c the C it needs.
 //
-// Host registers in generated code, all of them ones a C function may overwrite, so a block
-// saves and restores nothing:
-//   x0        the address of cpu.regs (the flags are at FLAGS_AT from it)
+// Host registers in generated code:
+//   x0        the address of cpu.regs (the rest of the CPU state is at fixed places from it)
+//   x19       the address of RAM
+//   x20       the address of the TLB: tlb_rtag, with tlb_rphys, tlb_wtag and tlb_wphys behind it
+//   x21       the address of seg_top
+//   w22       what a physical address of the page of code is above the instruction pointer
 //   w8..w15   EAX ECX EDX EBX ESP EBP ESI EDI, loaded on entry, stored back where changed
-//   w3 w4 w5  the operands and the result of the last instruction that set the flags
-//   w16 w17 w6  scratch
-// A block returns the physical address of the next instruction in w0.
+//   w1 w2 w3  the operands and the result of the last instruction that set the flags
+//   w4        which half of the TLB the current privilege level uses: 0 or 100h
+//   w16 w17 w6 w5  scratch
+// x19 to x22 are a C function's to keep, so a block is entered through the few instructions
+// at the start of the code (jit_init), which save them and load them. A block returns the
+// physical address of the next instruction in the low half of x0 and how many instructions
+// it executed in the high half.
 
 import state;
 
 extern fn jit_alloc(size: i64) -> i64;
 extern fn jit_write(at: i64, code: const u8[:]);
-extern fn jit_call(f: i64, regs: u32[:]) -> i64;
+extern fn jit_call(enter: i64, regs: u32[:], ram: i64, tlb: i64, seg: i64, pbase: i64, code: i64) -> i64;
+extern fn jit_addr8(a: const u8[:]) -> i64;
+extern fn jit_addr32(a: const u32[:]) -> i64;
 
 var jit_on = false;
 var jit_mem = 0;             // where the code is mapped
 var jit_used = 0;            // how much of it holds code
-var jit_blocks = 0;          // blocks translated
+var jit_blocks_made = 0;     // blocks translated
+var jit_left = 0;            // times a block left before its end
 var jit_ran = 0;             // guest instructions executed in blocks
 var run_pmax: u32 = 0;       // the highest address the current run may execute at (exec_short)
 let JIT_SIZE = 33554432;     // 32 MB
@@ -27,9 +37,46 @@ let JIT_HOT = 8;             // arrivals at a jump's target before it is transla
 let JIT_MAX = 60;            // instructions in a block at most
 let FLAGS_AT = 0x78;         // cpu.flags from cpu.regs
 
+var jit_ram = 0;             // where RAM, the TLB and seg_top are, for generated code
+var jit_tlb = 0;
+var jit_seg = 0;
+
+let R_A = 1;                 // the flags' record
+let R_B = 2;
+let R_R = 3;
+let R_MODE = 4;
+let T1 = 16;                 // scratch
+let T2 = 17;
+let T3 = 6;
+let T4 = 5;
+let BASE_AT = 0x2C;          // cpu.base from cpu.regs
+let CPL_AT = 0x7C;           // cpu.cpl
+
 fn jit_init() {
     jit_mem = jit_alloc(JIT_SIZE);
-    jit_on = jit_mem != 0;
+    if jit_mem == 0 { return; }
+    jit_ram = jit_addr8(ram[..]);
+    jit_tlb = jit_addr32(tlb_rtag[..]);
+    jit_seg = jit_addr32(seg_top[..]);
+    // Generated code reaches the four TLB arrays from one address.
+    if jit_addr32(tlb_rphys[..]) != jit_tlb + 2048 || jit_addr32(tlb_wtag[..]) != jit_tlb + 4096
+        || jit_addr32(tlb_wphys[..]) != jit_tlb + 6144 { return; }
+    // The way in: x0 the registers, x1 RAM, x2 the TLB, x3 seg_top, x4 pbase, x5 the block.
+    e(0xA9BD7BFD);           // stp x29, x30, [sp, #-48]!
+    e(0xA90153F3);           // stp x19, x20, [sp, #16]
+    e(0xA9025BF5);           // stp x21, x22, [sp, #32]
+    e(0xAA0103F3);           // mov x19, x1
+    e(0xAA0203F4);           // mov x20, x2
+    e(0xAA0303F5);           // mov x21, x3
+    e(0xAA0403F6);           // mov x22, x4
+    e(0xD63F00A0);           // blr x5
+    e(0xA9425BF5);           // ldp x21, x22, [sp, #32]
+    e(0xA94153F3);           // ldp x19, x20, [sp, #16]
+    e(0xA8C37BFD);           // ldp x29, x30, [sp], #48
+    e(0xD65F03C0);           // ret
+    jit_write(jit_mem, jc[..]);
+    jit_used = jc.len;
+    jit_on = true;
 }
 
 // ---- arm64 ----
@@ -85,6 +132,27 @@ fn a_str(rt: u32, off: u32) { e(0xB9000000 | (off >> 2) << 10 | rt); }
 fn a_ldp(r1: u32, r2: u32, off: u32) { e(0x29400000 | (off >> 2) << 15 | r2 << 10 | r1); }   // ldp w1, w2, [x0, #off]
 fn a_stp(r1: u32, r2: u32, off: u32) { e(0x29000000 | (off >> 2) << 15 | r2 << 10 | r1); }
 fn a_ret() { e(0xD65F03C0); }
+fn a_ldrn(rt: u32, rn: u32, off: u32) { e(0xB9400000 | (off >> 2) << 10 | rn << 5 | rt); }    // ldr wt, [xn, #off]
+// A load or a store of n bytes at [x19, x6]: in RAM, at the place j_mem worked out.
+fn a_load(n: u32, rt: u32) { e((if n == 4 { 0xB8606800 } else if n == 2 { 0x78606800 } else { 0x38606800 }) | T3 << 16 | 19 << 5 | rt); }
+fn a_store(n: u32, rt: u32) { e((if n == 4 { 0xB8206800 } else if n == 2 { 0x78206800 } else { 0x38206800 }) | T3 << 16 | 19 << 5 | rt); }
+// xd = v, with n in its upper half.
+fn a_result(rd: u32, v: u32, n: u32) {
+    e(0xD2800000 | (v & 0xFFFF) << 5 | rd);
+    e(0xF2A00000 | (v >> 16) << 5 | rd);
+    if n != 0 { e(0xF2C00000 | n << 5 | rd); }
+}
+// Sets the instruction at `at`, a branch emitted as its opcode alone, to go to `to`.
+fn a_patch(at: i64, to: i64) {
+    let d: u32 = ((to - at) >> 2) as! u32;
+    var w: u32 = jc[at + 3];
+    w = w << 24;
+    if w == 0x54000000 { w = w | (d & 0x7FFFF) << 5 | jc[at]; } else { w = w | d & 0x3FFFFFF; }
+    jc[at] = w as! u8;
+    jc[at + 1] = (w >> 8) as! u8;
+    jc[at + 2] = (w >> 16) as! u8;
+    jc[at + 3] = (w >> 24) as! u8;
+}
 
 // arm64 conditions, and two that are not: taken always, taken never, and no translation.
 let C_EQ = 0;
@@ -118,46 +186,46 @@ let F_DEC = 5;       // w5 = w3 - 1, w4 = 1
 // Writes EFLAGS out from the record. What alu(), inc() and dec() leave, bit for bit.
 fn jit_flags(ft: u8) {
     if ft == F_MEM { return; }
-    a_ldr(16, FLAGS_AT);
-    a_movi(17, if ft >= F_INC { 0xFFFFF72B } else { 0xFFFFF72A });
-    a_op(4, 16, 16, 17, 0);
-    a_subsi(31, 5, 0);                       // ZF
-    a_cset(17, C_EQ);
-    a_op(5, 16, 16, 17, 6);
-    a_lsr(17, 5, 31);                        // SF
-    a_op(5, 16, 16, 17, 7);
-    a_op_lsr(6, 17, 5, 5, 4);                // PF: the low byte's bits folded into bit 0
-    a_op_lsr(6, 17, 17, 17, 2);
-    a_op_lsr(6, 17, 17, 17, 1);
-    e(0x12000000 | 17 << 5 | 17);            // and w17, w17, #1
-    e(0x52000000 | 17 << 5 | 17);            // eor w17, w17, #1
-    a_op(5, 16, 16, 17, 2);
+    a_ldr(T1, FLAGS_AT);
+    a_movi(T2, if ft >= F_INC { 0xFFFFF72B } else { 0xFFFFF72A });
+    a_op(4, T1, T1, T2, 0);
+    a_subsi(31, R_R, 0);                     // ZF
+    a_cset(T2, C_EQ);
+    a_op(5, T1, T1, T2, 6);
+    a_lsr(T2, R_R, 31);                      // SF
+    a_op(5, T1, T1, T2, 7);
+    a_op_lsr(6, T2, R_R, R_R, 4);            // PF: the low byte's bits folded into bit 0
+    a_op_lsr(6, T2, T2, T2, 2);
+    a_op_lsr(6, T2, T2, T2, 1);
+    e(0x12000000 | T2 << 5 | T2);            // and w17, w17, #1
+    e(0x52000000 | T2 << 5 | T2);            // eor w17, w17, #1
+    a_op(5, T1, T1, T2, 2);
     if ft != F_LOGIC {
         if ft == F_ADD {                     // CF: the sum is below an operand
-            a_op(3, 31, 5, 3, 0);
-            a_cset(17, C_LO);
-            a_op(5, 16, 16, 17, 0);
+            a_op(3, 31, R_R, R_A, 0);
+            a_cset(T2, C_LO);
+            a_op(5, T1, T1, T2, 0);
         } else if ft == F_SUB {              // CF: a borrow
-            a_op(3, 31, 3, 4, 0);
-            a_cset(17, C_LO);
-            a_op(5, 16, 16, 17, 0);
+            a_op(3, 31, R_A, R_B, 0);
+            a_cset(T2, C_LO);
+            a_op(5, T1, T1, T2, 0);
         }
         if ft == F_ADD || ft == F_INC {      // OF: both operands differ in sign from the sum
-            a_op(6, 17, 3, 5, 0);
-            a_op(6, 6, 4, 5, 0);
+            a_op(6, T2, R_A, R_R, 0);
+            a_op(6, T3, R_B, R_R, 0);
         } else {                             // OF: the operands differ, and the first from the difference
-            a_op(6, 17, 3, 4, 0);
-            a_op(6, 6, 3, 5, 0);
+            a_op(6, T2, R_A, R_B, 0);
+            a_op(6, T3, R_A, R_R, 0);
         }
-        a_op(4, 17, 17, 6, 0);
-        a_lsr(17, 17, 31);
-        a_op(5, 16, 16, 17, 11);
-        a_op(6, 17, 3, 4, 0);                // AF
-        a_op(6, 17, 17, 5, 0);
-        e(0x121C0000 | 17 << 5 | 17);        // and w17, w17, #0x10
-        a_op(5, 16, 16, 17, 0);
+        a_op(4, T2, T2, T3, 0);
+        a_lsr(T2, T2, 31);
+        a_op(5, T1, T1, T2, 11);
+        a_op(6, T2, R_A, R_B, 0);            // AF
+        a_op(6, T2, T2, R_R, 0);
+        e(0x121C0000 | T2 << 5 | T2);        // and w17, w17, #0x10
+        a_op(5, T1, T1, T2, 0);
     }
-    a_str(16, FLAGS_AT);
+    a_str(T1, FLAGS_AT);
 }
 
 // The host condition for x86 condition cc after an instruction of kind ft, once jit_compare
@@ -197,11 +265,11 @@ fn jit_cond(ft: u8, cc: u8) -> u8 {
 
 // Sets the host's flags from the record, as the instruction that made it would have.
 fn jit_compare(ft: u8) {
-    if ft == F_LOGIC { a_subsi(31, 5, 0); }
-    else if ft == F_ADD { a_op(1, 31, 3, 4, 0); }
-    else if ft == F_SUB { a_op(3, 31, 3, 4, 0); }
-    else if ft == F_INC { a_addsi(31, 3, 1); }
-    else { a_subsi(31, 3, 1); }
+    if ft == F_LOGIC { a_subsi(31, R_R, 0); }
+    else if ft == F_ADD { a_op(1, 31, R_A, R_B, 0); }
+    else if ft == F_SUB { a_op(3, 31, R_A, R_B, 0); }
+    else if ft == F_INC { a_addsi(31, R_A, 1); }
+    else { a_subsi(31, R_A, 1); }
 }
 
 // ---- a block ----
@@ -209,23 +277,125 @@ fn jit_compare(ft: u8) {
 var jf: u8 = 0;              // which instruction set the flags last, so far in the block
 var jd: u32 = 0;             // which guest registers the block has written, one bit each
 
-// Leaves the block: the changed registers and the flags written back, the next address returned.
-fn jit_leave(next: u32) {
+// The ways out of a block before an instruction whose memory operand is not on the short
+// path. Each is a few instructions after the block's body: the registers changed so far are
+// stored, the count and the instruction's own address returned, and the flags written out by
+// code the ways out share, one piece for each kind of record.
+let SX_MAX = 64;
+var sx_n = 0;
+var sx_jd: u32[SX_MAX] = [0; SX_MAX];
+var sx_jf: u8[SX_MAX] = [0; SX_MAX];
+var sx_next: u32[SX_MAX] = [0; SX_MAX];
+var sx_cnt: u32[SX_MAX] = [0; SX_MAX];
+let ST_MAX = 256;
+var st_n = 0;                // the branches to them, to be filled in
+var st_at: i64[ST_MAX] = [0; ST_MAX];
+var st_sx: i64[ST_MAX] = [0; ST_MAX];
+
+// Stores the guest registers written so far (jd says which), two at a time.
+fn jit_store(d: u32) {
     for k: u32 in 0..4 {
-        if jd >> (k * 2) & 3 != 0 { a_stp(8 + k * 2, 9 + k * 2, k * 8); }
+        if d >> (k * 2) & 3 != 0 { a_stp(8 + k * 2, 9 + k * 2, k * 8); }
     }
+}
+
+// Leaves the block: the changed registers and the flags written back, the next address and
+// the count of instructions executed returned.
+fn jit_leave(next: u32, cnt: u32) {
+    jit_store(jd);
     jit_flags(jf);
-    a_movi(0, next);
+    a_result(0, next, cnt);
     a_ret();
+}
+
+// A way out before the instruction at address p, the block having executed cnt instructions.
+// The accesses of that instruction branch to it (j_mem).
+fn jit_exit_here(p: u32, cnt: u32) {
+    sx_jd[sx_n] = jd;
+    sx_jf[sx_n] = jf;
+    sx_next[sx_n] = p;
+    sx_cnt[sx_n] = cnt;
+    sx_n += 1;
+}
+
+// A branch on host condition c to the way out made last.
+fn j_out(c: u32) {
+    st_at[st_n] = jc.len;
+    st_sx[st_n] = sx_n - 1;
+    st_n += 1;
+    e(0x54000000 | c);
+}
+
+// The ways out, and the flags' code they share, after the body.
+fn jit_exits() {
+    var at: i64[SX_MAX] = [0; SX_MAX];
+    var tail_from: i64[SX_MAX] = [0; SX_MAX];
+    for k in sx_n {
+        at[k] = jc.len;
+        jit_store(sx_jd[k]);
+        // What is returned waits in x7 while the flags are written out: that code needs x0.
+        if sx_jf[k] == F_MEM { a_result(0, sx_next[k], sx_cnt[k]); a_ret(); }
+        else { a_result(7, sx_next[k], sx_cnt[k]); tail_from[k] = jc.len; e(0x14000000); }
+    }
+    for k in st_n { a_patch(st_at[k], at[st_sx[k]]); }
+    for ft: u8 in 1..6 {
+        var used = false;
+        for k in sx_n { if sx_jf[k] == ft { used = true; } }
+        if used {
+            let here = jc.len;
+            jit_flags(ft);
+            e(0xAA0703E0);                   // mov x0, x7
+            a_ret();
+            for k in sx_n { if sx_jf[k] == ft { a_patch(tail_from[k], here); } }
+        }
+    }
+}
+
+// The offset of a memory operand into w16, as ea_short works it out.
+fn j_ea(mm: u32, disp: u32) {
+    let base = mm >> 14 & 15;
+    let index = mm >> 18 & 15;
+    let scale = mm >> 22 & 3;
+    if base != 0 && index != 0 { a_op(0, T1, g(base - 1), g(index - 1), scale); }
+    else if base != 0 { a_mov(T1, g(base - 1)); }
+    else if index != 0 { a_lsl(T1, g(index - 1), scale); }
+    else { a_movi(T1, disp); }
+    if disp != 0 && (base != 0 || index != 0) { a_movi(T2, disp); a_op(0, T1, T1, T2, 0); }
+}
+
+// The short path of seg_read and seg_write (state.goose), for n bytes at the offset in w16 in
+// segment sg: the offset below seg_top, the access inside one page, the TLB's tag for a read
+// or for a write at this privilege level. Leaves in x6 where the bytes are in RAM; anything
+// else goes to the way out made last. An entry in the TLB says the page is in RAM.
+fn j_mem(sg: u32, n: u32, write: bool) {
+    a_ldrn(T2, 21, sg * 4);                              // seg_top[sg]
+    a_op(3, 31, T1, T2, 0);
+    j_out(C_HS);
+    a_ldr(T2, BASE_AT + sg * 4);                         // the linear address
+    a_op(0, T1, T1, T2, 0);
+    if n > 1 {
+        e(0x12002C00 | T1 << 5 | T2);                    // and w17, w16, #0xFFF
+        a_subsi(31, T2, 0x1000 - n);
+        j_out(C_HI);
+    }
+    e(0x53000000 | 12 << 16 | 19 << 10 | T1 << 5 | T2);  // ubfx w17, w16, #12, #8
+    a_op(5, T2, T2, R_MODE, 0);
+    e(0x8B000000 | T2 << 16 | 2 << 10 | 20 << 5 | T2);   // add x17, x20, x17, lsl #2
+    a_ldrn(T3, T2, if write { 4096 } else { 0 });        // the tag
+    e(0x6B400000 | T1 << 16 | 12 << 10 | T3 << 5 | 31);  // cmp w6, w16, lsr #12
+    j_out(C_NE);
+    a_ldrn(T3, T2, if write { 6144 } else { 2048 });     // the page in RAM
+    e(0x12002C00 | T1 << 5 | T2);                        // and w17, w16, #0xFFF
+    a_op(5, T3, T3, T2, 0);
 }
 
 // res = a op b for one of the eight arithmetic operations that reads no carry, the record kept;
 // the result goes to guest register dst unless dst is 8.
 fn jit_alu(aop: u8, dst: u32) {
     let op: u32 = match aop { 0 => 0, 1 => 5, 4 => 4, 6 => 6, _ => 2 };
-    a_op(op, 5, 3, 4, 0);
+    a_op(op, R_R, R_A, R_B, 0);
     jf = match aop { 0 => F_ADD, 5, 7 => F_SUB, _ => F_LOGIC };
-    if dst < 8 { a_mov(g(dst), 5); jd |= 1 << dst; }
+    if dst < 8 { a_mov(g(dst), R_R); jd |= 1 << dst; }
 }
 
 // A conditional jump's condition code, from what its entry keeps (see jcc_data and fuse_data).
@@ -245,89 +415,144 @@ fn jit_cc(kind: u8, d: u32) -> u8 {
     return 14 | neg;
 }
 
-// Ends the block with a conditional jump: to `to` if cc holds, else to `fall`. False, and
-// nothing generated, if the condition cannot be had from the record.
-fn jit_jcc(cc: u8, fall: u32, to: u32) -> bool {
-    let c = jit_cond(jf, cc);
+// Ends the block with a conditional jump: to `to` if cc holds, else to `fall`; cnt is the
+// count of instructions with the jump. False, and nothing generated, if the condition cannot
+// be had from the record.
+fn jit_jcc(cc: u8, fall: u32, to: u32, cnt: u32) -> bool {
+    let c: u32 = jit_cond(jf, cc);
     if c == C_NONE { return false; }
-    if c == C_ALWAYS { jit_leave(to); return true; }
-    if c == C_NEVER { jit_leave(fall); return true; }
+    if c == C_ALWAYS { jit_leave(to, cnt); return true; }
+    if c == C_NEVER { jit_leave(fall, cnt); return true; }
     jit_compare(jf);
     let at = jc.len;
-    e(0);                                    // b.cond over the first way out, filled in below
-    jit_leave(fall);
-    let over: u32 = ((jc.len - at) >> 2) as! u32;
-    let w: u32 = 0x54000000 | over << 5 | c;
-    jc[at] = w as! u8;
-    jc[at + 1] = (w >> 8) as! u8;
-    jc[at + 2] = (w >> 16) as! u8;
-    jc[at + 3] = (w >> 24) as! u8;
-    jit_leave(to);
+    e(0x54000000 | c);
+    jit_leave(fall, cnt);
+    a_patch(at, jc.len);
+    jit_leave(to, cnt);
     return true;
 }
 
-// Can this entry's instruction go into a block, as anything but its last? Register forms only.
+// Can this entry's instruction go into a block, as anything but its last?
 fn jit_plain(kind: u8, mm: u32, op: u8) -> bool {
     let regs = mm & 0x0C == 0x0C;
     if kind == K_MOV_R_R || kind == K_MOV_R_R_89 || kind == K_MOV_R_I || kind == K_NOP || kind == K_LEA { return true; }
     if kind == K_INC || kind == K_DEC { return true; }
-    if kind >= K_ALU_RM_R_OP && kind < K_ALU_RM_I_OP + 8 { return regs; }
-    if kind == K_TEST || kind == K_TEST_I { return regs; }
+    if kind == K_MOV_R_RM || kind == K_MOV_RM_R || kind == K_MOV_RM_I { return true; }
+    if kind == K_MOVZX8 || kind == K_MOVZX16 || kind == K_PUSH || kind == K_POP { return true; }
+    if kind >= K_ALU_R_RM_OP && kind < K_ALU_R_RM_OP + 8 { return true; }
+    // To memory, only the two that store nothing: CMP.
+    if kind >= K_ALU_RM_R_OP && kind < K_ALU_RM_R_OP + 8 { return regs || kind == K_ALU_RM_R_OP + 7; }
+    if kind >= K_ALU_RM_I_OP && kind < K_ALU_RM_I_OP + 8 { return regs || kind == K_ALU_RM_I_OP + 7; }
+    if kind == K_TEST || kind == K_TEST_I { return true; }
     if kind == K_ALU_A_I { return !carries(op >> 3); }
     if kind == K_TEST_A_I { return true; }
     return false;
 }
 
-// Generates one such instruction.
-fn jit_one(kind: u8, slot: i64) {
+// Generates one such instruction, which is at address p and the block's cnt-th (from 0).
+fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     let mm = dc[slot].m;
     let imm = dc[slot].imm;
+    let disp = dc[slot].disp;
     let op = dc[slot].pre.op;
     let reg = mm >> 4 & 7;
     let rm = mm >> 7 & 7;
+    let regs = mm & 0x0C == 0x0C;
+    let sg = mm >> 29;
     if kind == K_MOV_R_R { a_mov(g(reg), g(rm)); jd |= 1 << reg; }
     else if kind == K_MOV_R_R_89 { a_mov(g(rm), g(reg)); jd |= 1 << rm; }
     else if kind == K_MOV_R_I { a_movi(g(op & 7), imm); jd |= 1 << (op & 7); }
     else if kind == K_NOP { }
-    else if kind == K_LEA {
-        let base = mm >> 14 & 15;
-        let index = mm >> 18 & 15;
-        let scale = mm >> 22 & 3;
-        let disp = dc[slot].disp;
-        if base != 0 && index != 0 { a_op(0, 16, g(base - 1), g(index - 1), scale); }
-        else if base != 0 { a_mov(16, g(base - 1)); }
-        else if index != 0 { a_lsl(16, g(index - 1), scale); }
-        else { a_movi(16, disp); }
-        if disp != 0 && (base != 0 || index != 0) { a_movi(17, disp); a_op(0, 16, 16, 17, 0); }
-        a_mov(g(reg), 16);
+    else if kind == K_LEA { j_ea(mm, disp); a_mov(g(reg), T1); jd |= 1 << reg; }
+    else if kind == K_MOV_R_RM {
+        jit_exit_here(p, cnt);
+        j_ea(mm, disp);
+        j_mem(sg, 4, false);
+        a_load(4, g(reg));
         jd |= 1 << reg;
+    }
+    else if kind == K_MOV_RM_R {
+        jit_exit_here(p, cnt);
+        j_ea(mm, disp);
+        j_mem(sg, 4, true);
+        a_store(4, g(reg));
+    }
+    else if kind == K_MOV_RM_I {
+        if regs { a_movi(g(rm), imm); jd |= 1 << rm; }
+        else {
+            jit_exit_here(p, cnt);
+            j_ea(mm, disp);
+            j_mem(sg, 4, true);
+            a_movi(T4, imm);
+            a_store(4, T4);
+        }
+    }
+    else if kind == K_MOVZX8 || kind == K_MOVZX16 {
+        if !regs {
+            let n: u32 = if kind == K_MOVZX8 { 1 } else { 2 };
+            jit_exit_here(p, cnt);
+            j_ea(mm, disp);
+            j_mem(sg, n, false);
+            a_load(n, g(reg));
+        }
+        else if kind == K_MOVZX16 { e(0x12003C00 | g(rm) << 5 | g(reg)); }                  // and wd, wn, #0xFFFF
+        else if rm < 4 { e(0x12001C00 | g(rm) << 5 | g(reg)); }                              // and wd, wn, #0xFF
+        else { e(0x53000000 | 8 << 16 | 15 << 10 | g(rm - 4) << 5 | g(reg)); }               // ubfx wd, wn, #8, #8: AH CH DH BH
+        jd |= 1 << reg;
+    }
+    else if kind == K_PUSH {
+        jit_exit_here(p, cnt);
+        a_subi(T1, g(SP), 4);
+        j_mem(SS, 4, true);
+        a_store(4, g(op & 7));
+        a_subi(g(SP), g(SP), 4);
+        jd |= 1 << SP;
+    }
+    else if kind == K_POP {
+        jit_exit_here(p, cnt);
+        a_mov(T1, g(SP));
+        j_mem(SS, 4, false);
+        a_load(4, T4);
+        a_addi(g(SP), g(SP), 4);
+        a_mov(g(op & 7), T4);
+        jd |= 1 << SP | 1 << (op & 7);
     }
     else if kind == K_INC || kind == K_DEC {
         // CF is the one before: if that is in the record, it is written out first.
         if jf != F_MEM { jit_flags(jf); }
         let r = op & 7;
-        a_mov(3, g(r));
-        a_movi(4, 1);
-        if kind == K_INC { a_addi(5, 3, 1); jf = F_INC; } else { a_subi(5, 3, 1); jf = F_DEC; }
-        a_mov(g(r), 5);
+        a_mov(R_A, g(r));
+        a_movi(R_B, 1);
+        if kind == K_INC { a_addi(R_R, R_A, 1); jf = F_INC; } else { a_subi(R_R, R_A, 1); jf = F_DEC; }
+        a_mov(g(r), R_R);
         jd |= 1 << r;
     }
-    else if kind >= K_ALU_RM_R_OP && kind < K_ALU_RM_R_OP + 8 {
-        a_mov(3, g(rm)); a_mov(4, g(reg));
-        jit_alu(kind - K_ALU_RM_R_OP, if kind == K_ALU_RM_R_OP + 7 { 8 } else { rm });
+    else {
+        // The arithmetic, CMP and TEST: the two operands into the record, then the operation.
+        // An operand in memory is loaded first, into w5: the way out is before the record
+        // changes.
+        var aop: u8 = 4;
+        var dst: u32 = 8;
+        var a_mem = false;                               // the first operand is the one in memory
+        var b_reg: u32 = 8;                              // the second: a guest register, or 8 for imm
+        var a_reg: u32 = rm;
+        if kind >= K_ALU_RM_R_OP && kind < K_ALU_RM_R_OP + 8 { aop = kind - K_ALU_RM_R_OP; b_reg = reg; a_mem = !regs; if aop != 7 { dst = rm; } }
+        else if kind >= K_ALU_R_RM_OP && kind < K_ALU_R_RM_OP + 8 { aop = kind - K_ALU_R_RM_OP; a_reg = reg; b_reg = if regs { rm } else { 9 }; if aop != 7 { dst = reg; } }
+        else if kind >= K_ALU_RM_I_OP && kind < K_ALU_RM_I_OP + 8 { aop = kind - K_ALU_RM_I_OP; a_mem = !regs; if aop != 7 { dst = rm; } }
+        else if kind == K_TEST { b_reg = reg; a_mem = !regs; }
+        else if kind == K_TEST_I { a_mem = !regs; }
+        else if kind == K_ALU_A_I { aop = op >> 3; a_reg = 0; if aop != 7 { dst = 0; } }
+        else { a_reg = 0; }                              // K_TEST_A_I
+        if a_mem || b_reg == 9 {
+            jit_exit_here(p, cnt);
+            j_ea(mm, disp);
+            j_mem(sg, 4, false);
+            a_load(4, T4);
+        }
+        if a_mem { a_mov(R_A, T4); } else { a_mov(R_A, g(a_reg)); }
+        if b_reg == 9 { a_mov(R_B, T4); } else if b_reg < 8 { a_mov(R_B, g(b_reg)); } else { a_movi(R_B, imm); }
+        jit_alu(aop, dst);
     }
-    else if kind >= K_ALU_R_RM_OP && kind < K_ALU_R_RM_OP + 8 {
-        a_mov(3, g(reg)); a_mov(4, g(rm));
-        jit_alu(kind - K_ALU_R_RM_OP, if kind == K_ALU_R_RM_OP + 7 { 8 } else { reg });
-    }
-    else if kind >= K_ALU_RM_I_OP && kind < K_ALU_RM_I_OP + 8 {
-        a_mov(3, g(rm)); a_movi(4, imm);
-        jit_alu(kind - K_ALU_RM_I_OP, if kind == K_ALU_RM_I_OP + 7 { 8 } else { rm });
-    }
-    else if kind == K_TEST { a_mov(3, g(rm)); a_mov(4, g(reg)); jit_alu(4, 8); }
-    else if kind == K_TEST_I { a_mov(3, g(rm)); a_movi(4, imm); jit_alu(4, 8); }
-    else if kind == K_ALU_A_I { a_mov(3, 8); a_movi(4, imm); jit_alu(op >> 3, if op >> 3 == 7 { 8 } else { 0 }); }
-    else { a_mov(3, 8); a_movi(4, imm); jit_alu(4, 8); }             // K_TEST_A_I
 }
 
 // The lone instruction a pair's kind begins with; K_NONE for a kind that is no pair.
@@ -351,25 +576,57 @@ fn jit_translate(p0: u32, slot0: i64) {
     jc = [];
     jf = F_MEM;
     jd = 0;
+    sx_n = 0;
+    st_n = 0;
     a_ldp(8, 9, 0);
     a_ldp(10, 11, 8);
     a_ldp(12, 13, 16);
     a_ldp(14, 15, 24);
+    e(0x39400000 | CPL_AT << 10 | R_MODE);   // ldrb w4, [x0, #CPL_AT]: 100h for the user's half of the TLB
+    a_subsi(31, R_MODE, 3);
+    a_cset(R_MODE, C_EQ);
+    a_lsl(R_MODE, R_MODE, 8);
     var p = p0;
-    var n = 0;
+    var n: u32 = 0;
     var last = p0;
     var done = false;
-    while !done && n < JIT_MAX {
+    while !done && n < JIT_MAX && sx_n < SX_MAX - 2 && st_n < ST_MAX - 8 {
         let slot: i64 = p & (DC_HALF - 1) | DC_HALF;
         if dc[slot].tag != p || p >> 12 != p0 >> 12 { break; }
         let kind = dc[slot].pre.kind;
         let mm = dc[slot].m;
         let nx = dc_next[slot];
         if kind == K_JMP {
-            jit_leave(nx + dc[slot].imm);
+            jit_leave(nx + dc[slot].imm, n + 1);
             last = p; n += 1; done = true;
         } else if kind == K_JCC || (kind >= K_JCC_MASK && kind <= K_JCC_LE) {
-            if !jit_jcc(jit_cc(kind, dc[slot].disp), nx, nx + dc[slot].imm) { break; }
+            if !jit_jcc(jit_cc(kind, dc[slot].disp), nx, nx + dc[slot].imm, n + 1) { break; }
+            last = p; n += 1; done = true;
+        } else if kind == K_CALL {
+            // The return address is pushed; that it is an instruction pointer, not an address
+            // in RAM, is what w22 is for.
+            jit_exit_here(p, n);
+            a_subi(T1, g(SP), 4);
+            j_mem(SS, 4, true);
+            a_movi(T4, nx);
+            a_op(2, T4, T4, 22, 0);
+            a_store(4, T4);
+            a_subi(g(SP), g(SP), 4);
+            jd |= 1 << SP;
+            jit_leave(nx + dc[slot].imm, n + 1);
+            last = p; n += 1; done = true;
+        } else if kind == K_RET {
+            jit_exit_here(p, n);
+            a_mov(T1, g(SP));
+            j_mem(SS, 4, false);
+            a_load(4, T4);
+            a_addi(g(SP), g(SP), 4);
+            jd |= 1 << SP;
+            jit_store(jd);
+            jit_flags(jf);
+            a_op(0, 0, T4, 22, 0);                       // where it returns to, as an address
+            e(0xF2C00000 | (n + 1) << 5);                // movk x0, #count, lsl #32
+            a_ret();
             last = p; n += 1; done = true;
         } else if jit_unpair(kind) != K_NONE {
             let first = jit_unpair(kind);
@@ -380,21 +637,24 @@ fn jit_translate(p0: u32, slot0: i64) {
             let keep_f = jf;
             let keep_d = jd;
             let keep_len = jc.len;
-            jit_one(first, slot);
-            if !jit_jcc(jit_cc(K_JCC_MASK, b as! u32), nx, nx + (b >> 32) as! u32) {
-                jf = keep_f; jd = keep_d;
+            let keep_sx = sx_n;
+            let keep_st = st_n;
+            jit_one(first, slot, p, n);
+            if !jit_jcc(jit_cc(K_JCC_MASK, b as! u32), nx, nx + (b >> 32) as! u32, n + 2) {
+                jf = keep_f; jd = keep_d; sx_n = keep_sx; st_n = keep_st;
                 while jc.len > keep_len { jc.pop(); }
                 break;
             }
             last = p; n += 2; done = true;
         } else if kind - 1 < K_LAST && jit_plain(kind, mm, dc[slot].pre.op) {
-            jit_one(kind, slot);
+            jit_one(kind, slot, p, n);
             last = p; n += 1;
             p = nx;
         } else { break; }
     }
     if n < 2 { return; }
-    if !done { jit_leave(p); }
+    if !done { jit_leave(p, n); }
+    jit_exits();
     jit_write(jit_mem + jit_used, jc[..]);
     jit_code[s0] = jit_mem + jit_used;
     jit_used += jc.len;
@@ -403,7 +663,7 @@ fn jit_translate(p0: u32, slot0: i64) {
     jit_last[s0] = last;
     jit_gen[s0] = code_gen[p0 >> 12];
     dc[slot0].pre.kind = K_BLOCK;
-    jit_blocks += 1;
+    jit_blocks_made += 1;
 }
 
 // The run has come to physical address p at its start or from a block, which is where a block
@@ -425,16 +685,19 @@ fn jit_arrive(p: u32) {
 var jit_at: i64 = -1;
 
 // Runs the block that the run came to, and the blocks that follow it one after another, for
-// as long as each is still good and there is the time and the room for all of it. True if at
-// least one ran: the virtual time and the instruction pointer are then moved on, and the
-// interpreter goes on from there. False if none did: the first instruction of the block is
-// then the general path's, by its own kind.
+// as long as each is still good, there is the time and the room for all of it, and it runs
+// to its end. True if anything was executed: the virtual time and the instruction pointer
+// are then moved on, and the interpreter goes on from there. False if nothing was: the first
+// instruction of the block is then the general path's, by its own kind.
 //
 // A block is in the page of code the run was on, and code_page, code_phys and run_pmax still
-// describe that page and how far the run may go in it.
+// describe that page and how far the run may go in it. Blocks push and pop with a 32-bit
+// stack pointer, so none is run on a 16-bit stack.
 fn jit_blocks() -> bool {
     var slot = jit_at;
     jit_at = -1;
+    if !stack32() { return false; }
+    let pbase: i64 = cpu.base[CS] - (code_page << 12) + code_phys;
     var ran = false;
     var next: u32 = 0;
     loop {
@@ -449,10 +712,14 @@ fn jit_blocks() -> bool {
         let n: i64 = jit_n[s];
         // One instruction of the time is left for the general path, as a run leaves it.
         if chain_until - vtime - 1 < n || jit_last[s] > run_pmax { break; }
-        next = jit_call(jit_code[s], cpu.regs[..]) as! u32;
-        vtime += n;
-        jit_ran += n;
+        let r = jit_call(jit_mem, cpu.regs[..], jit_ram, jit_tlb, jit_seg, pbase, jit_code[s]);
+        let k = r >> 32;
+        if k == 0 { break; }                 // it left before its first instruction
+        next = r as! u32;
+        vtime += k;
+        jit_ran += k;
         ran = true;
+        if k < n { jit_left += 1; break; }   // it left early: the interpreter has the instruction it left at
         // On to the next block, if that is what is there.
         if next < code_phys || next > run_pmax { break; }
         slot = next & (DC_HALF - 1) | DC_HALF;

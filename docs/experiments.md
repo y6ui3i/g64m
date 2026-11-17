@@ -4544,3 +4544,109 @@ RAM, at the number the address makes in the first block's page, there is another
 second must not be run. Twenty-six wrong translators now, each caught; the one for this
 passed until the jump went to a lower page, because a block in a higher page is refused
 anyway for lying beyond where the run may go.
+
+## E061: The JIT, second stage: memory operands, the stack, CALL and RET (2026-11-17)
+
+- **Hypothesis**: `mov r, r/m` is 13.4% of all instructions and a block of E059 ends at the
+  first one. With the short path of `seg_read` and `seg_write` generated inline (the
+  segment's bound, the page crossing, the TLB's tag, then a load or store in RAM), blocks
+  run from jump to jump, and most instructions of the boot are in blocks. Generated code
+  still never faults: where an access is not on the short path the block leaves *before*
+  that instruction, with the registers and flags as they were then and the count of
+  instructions it did execute, and the interpreter takes that instruction (a TLB miss, a
+  page fault, a store into a page of code). The block's own registers are four that a C
+  function must preserve, so blocks are entered through a few generated instructions that
+  save them and load the addresses of RAM, the TLB and `seg_top`. With that: **60% or more
+  of the boot's instructions in blocks, and the boot's cycles 20% or more under main's**
+  (rustx86's JIT, with 58% of the instructions in generated code, took 28% off its
+  interpreter's time).
+- **What changed since last time**: E059's blocks touched registers only and ran whole.
+  This adds loads and stores (`mov` both ways, the arithmetic and CMP and TEST from memory,
+  MOVZX, `mov [m], imm`), PUSH and POP of a register, and CALL and RET as ends of a block; a
+  block now returns how many instructions it ran.
+- **Next move for each result**:
+  - Everything passes with `--jit`, the count is the same, and the boot is 10% or more
+    under main → keep; then what the blocks still leave out (the arithmetic *to* memory,
+    INC and DEC of memory, shifts, 8-bit operations), by a count of what ends blocks
+  - Passes, and under 10% faster → a count first: how long blocks are, how often a block
+    leaves early, how often the run is entered between blocks; the design is adjusted from
+    that before anything is added
+  - A test fails only with `--jit` → halve the set of kinds the translator accepts
+- **Cut-off**: This stage ends when the suite passes with `--jit` and the boot is measured,
+  or at three wrong instructions that halving cannot find.
+
+### Result
+
+2026-11-17. **It works, and it is not faster yet: with `--jit` every test passes and the
+boot stops at the same instruction, 38.6% of its instructions run in blocks, and it takes
+4% more cycles than main. The count says why: blocks are three instructions long.**
+`tools/difftest.sh` has 106 lines, all ok.
+
+| Linux boot to the shell prompt | Host instructions | Cycles, median of three |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.34 billion |
+| This source, without `--jit` | 147.2 billion | 27.50 billion |
+| This source, with `--jit` | 164.2 billion | 28.49 billion |
+
+With `--jit`: 24,969 blocks, 9.7 MB of code, 637 million guest instructions in blocks,
+456 thousand times a block left before its end.
+
+**What was built.** Blocks are entered through twelve generated instructions that save
+x19 to x22 and load them with the addresses of RAM, the TLB and `seg_top` and with what a
+physical address in the page is above the instruction pointer. `j_mem` is the short path of
+`seg_read` and `seg_write`: the offset against `seg_top`, the page crossing, the TLB's tag
+in the half for the current privilege level, the page's place in RAM. An access that is not
+on it branches to a way out after the block's body, which stores the registers changed so
+far, returns the instruction's own address and the count so far, and goes through a piece
+of code, shared by the block's ways out, that writes the flags' record to EFLAGS. New in
+blocks: `mov` from and to memory and of an immediate to memory, the arithmetic, CMP and
+TEST from memory, MOVZX, PUSH and POP of a register, and CALL and RET as a block's end. A
+block returns its count; `jit_blocks` stops the chain where a block left early.
+
+**The count the card asked for.**
+
+| | |
+|---|---:|
+| Times the run came to a block | 139.6 million |
+| Blocks run | 214.7 million |
+| Instructions in a block run, on average | 3.0 |
+| Blocks run one after another, on average | 1.5 |
+| The chain ends because what is next is not a block | 130.9 million (94%) |
+| ... because the next address is in another page | 6.8 million |
+| ... because the block left before its first instruction, or early | 0.8, 0.5 million |
+
+Each time the run comes to a block it leaves `exec_short`, and comes back: a hundred-odd
+host instructions for three guest instructions. What the chain stops at, by the kind of
+the instruction there:
+
+| Stops at | Share | |
+|---|---:|---|
+| a shift by CL | 13.6% | not translated |
+| the 8-bit `mov`s, the 8-bit TESTs and their pairs | 20% | not translated |
+| ADC and SBB | 6.1% | not translated |
+| shifts and rotates by a constant | 6.8% | not translated |
+| MOVSW, LODSB, SETCC, an instruction with no executor | 8.6% | not translated |
+| `mov r, r/m`, `mov r/m, r`, MOVZX, `mov` between registers, of an immediate, arithmetic from memory | 40% | translated, but the block would be one instruction, because what follows is not |
+
+So the blocks are short for want of instructions, not by design: more than half of what
+stops them is a dozen kinds, and most of the rest follows from those.
+
+By the card: the second branch (under 10% faster: count, then adjust). The adjustment is
+the next card: the kinds above, in the order of the table.
+
+**Tests.** `s_jitmem`: blocks with loads, stores, arithmetic and CMP from memory, MOVZX,
+PUSH, POP, CALL and RET, with two accesses that cross into a page mapped elsewhere, a store
+into a page of code, a load from a page made not present half way, and a store to a page
+whose place in the read TLB another page has. `s_jitseg`: a load beyond a segment's limit
+from a block. `s_jitring`: a block in ring 3 loading from the supervisor's page, which the
+supervisor's half of the TLB has. The Linux boot with `--jit` is now in `tools/difftest.sh`,
+against the boot without. Twenty-two wrong translators of this stage: twenty caught (six
+only after the tests above were extended); two are not wrong. A block that left early going
+on to look for the next block finds none there; and a block on a 16-bit stack leaves by the
+segment's bound wherever the 16-bit and the 32-bit stack pointer would differ. Both checks
+stay.
+
+Two things the tests taught about themselves: a load whose result is overwritten before
+anything reads it tests nothing (the first crossing load); and a block whose page is
+stored into on every pass is dropped on every pass and never runs (the first version of
+the store into code).

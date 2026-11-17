@@ -40,7 +40,14 @@ void jit_write(int64_t at, jit_bytes code) {
 #endif
 }
 
-// Calls the code at fn with the address of the guest's registers in x0. Returns what it returns.
-int64_t jit_call(int64_t fn, jit_regs regs) {
-    return ((int64_t (*)(uint32_t *))fn)(regs.data);
+// Calls the way into generated code (jit.goose, jit_init) for the block at code: the address of
+// the guest's registers, of RAM, of the TLB and of seg_top, and pbase. Returns what the block
+// returns.
+int64_t jit_call(int64_t enter, jit_regs regs, int64_t ram, int64_t tlb, int64_t seg, int64_t pbase, int64_t code) {
+    return ((int64_t (*)(uint32_t *, int64_t, int64_t, int64_t, int64_t, int64_t))enter)(regs.data, ram, tlb, seg, pbase, code);
 }
+
+// Where an array of the Goose program is.
+typedef struct { const uint32_t *data; int64_t len; } jit_words;
+int64_t jit_addr8(jit_bytes a) { return (int64_t)a.data; }
+int64_t jit_addr32(jit_words a) { return (int64_t)a.data; }
