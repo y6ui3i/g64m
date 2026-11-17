@@ -118,6 +118,11 @@ for the total, a debugger stepping one instruction for the detail). See E010 and
   `if short_of_time { kind += 5; }` in front of the dispatch on `kind` made the C compiler
   thread the two paths apart and build two tables with a test between; every dispatch paid
   for it (E053). Pass what the arm needs to know as a parameter and leave the value alone
+- **Code that a hot function never runs can still slow it down, by being in it.** g86m's run
+  loop met a new kind of entry on a path taken once in thousands of iterations; the code for
+  that case, two calls and a few assignments, cost every iteration 1 to 3% of its cycles
+  wherever in the function it was put, with the loop's own instructions unchanged. Storing
+  one value in a global and returning, and doing the work in the caller, cost nothing (E060)
 - **A hot loop that is out of registers pays for one more variable on every iteration, in
   spills that have nothing to do with the variable.** Look at what the loop already carries
   before adding to it: g86m's run kept two counters that always moved together, and making

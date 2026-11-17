@@ -108,6 +108,61 @@ if [ -f build/s_pairs.bin ]; then
     done
 fi
 
+# With the JIT (E059): every self-check again, and the stops. A block is run whole or not at
+# all, so a stop inside one must find the interpreter there instead.
+bad=0
+count=0
+for bin in build/s_*.bin; do
+    name=$(basename "$bin" .bin)
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    out=$(build/g86m --jit $cpu --max 2000000 "$bin" 2>/dev/null)
+    count=$((count + 1))
+    if [ "$out" != "OK" ]; then
+        bad=$((bad + 1))
+        echo "  $name with --jit: console was \"$out\""
+    fi
+done
+if [ $bad -eq 0 ]; then
+    echo "ok    jit: $count self-checks"
+else
+    fail=1
+    echo "FAIL  jit: $bad of $count self-checks"
+fi
+if [ -f build/s_pairs.bin ]; then
+    bad=0
+    k=1200
+    while [ $k -lt 1600 ]; do
+        want=$(sed -n "$((k + 1))p" build/s_pairs.ips)
+        at=$(build/g86m --jit --max $k build/s_pairs.bin 2>&1 | sed -n 's/^steps \([0-9]*\) .* at \([0-9a-f]*\):\([0-9a-f]*\) .*/\1 \2 \3/p')
+        set -- $at
+        got=$(printf '%s:%08X' "$(echo "${2:-}" | tr a-f A-F)" "0x${3:-0}")
+        if [ "${1:-}" != "$k" ] || [ "$got" != "$want" ]; then bad=$((bad + 1)); fi
+        k=$((k + 1))
+    done
+    if [ $bad -eq 0 ]; then
+        echo "ok    jit: stops at 400 counts in s_pairs"
+    else
+        fail=1
+        echo "FAIL  jit: stops in s_pairs: $bad of 400 counts are not where the trace is"
+    fi
+fi
+
+# And the Linux boot with the JIT stops at the same instruction as without it: code at linear
+# addresses that are not its physical ones, the kernel's own CALLs and RETs, two privilege
+# levels.
+if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-mini ]; then
+    plain=$(build/g86m --headless --initrd images/initramfs-mini --wait "~ # " images/vmlinuz-lts 2>&1 >/dev/null | sed -n 's/^steps \([0-9]*\) .* at \([0-9a-f:]*\) .*/\1 \2/p')
+    jit=$(build/g86m --jit --headless --initrd images/initramfs-mini --wait "~ # " images/vmlinuz-lts 2>&1 >/dev/null | sed -n 's/^steps \([0-9]*\) .* at \([0-9a-f:]*\) .*/\1 \2/p')
+    if [ -n "$plain" ] && [ "$plain" = "$jit" ]; then
+        echo "ok    jit: the Linux boot stops where it does without it ($plain)"
+    else
+        fail=1
+        echo "FAIL  jit: the Linux boot stops at \"$jit\", without the JIT at \"$plain\""
+    fi
+else
+    echo "skip  jit: Linux boot (images/vmlinuz-lts and images/initramfs-mini are not there)"
+fi
+
 # Operating-system boots. The disk images are not in the repository; a missing image is skipped
 # and reported, never counted as a pass.
 if [ -f images/fd2880.img ]; then

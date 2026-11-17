@@ -4297,3 +4297,438 @@ its result, one for DEC of memory); `s_flagro` has a jump after two of its fault
 so that a pair whose first instruction faults on its store is checked for flags and
 address. Nine wrong builds, each caught; two passed at first (the AL pair in the test was a
 CMP, which stores nothing; TEST with an immediate was told from CMP only by test386).
+
+## E058: Goose calls code it generated (2026-11-17)
+
+- **Hypothesis**: "Goose cannot call generated code" (E048) is true of Goose by itself: it has
+  no function pointers. It can call C (`extern fn`, `c_sources`), and C can map memory that
+  may be executed and jump to it. So a few lines of C are enough for a Goose program to
+  write arm64 instructions into a buffer and run them: one function that maps the memory,
+  one that copies bytes into it (on macOS a thread must switch the mapping between writable
+  and executable, and the instruction cache has to be told), one that calls an address with
+  a pointer to the guest state. What decides whether a JIT for g86m is worth designing is
+  what such a call costs. A run of the interpreter executes about 32 guest instructions at
+  18 cycles each; if entering generated code costs under 20 cycles, a block of a few
+  instructions already pays, and if it costs hundreds (a slice passed by value, a wrapper
+  that saves every register) only long blocks would.
+- **What changed since last time**: Nothing in g86m generates code. This uses the one new
+  thing the project allows itself here: executable memory through a C extension. The dull
+  alternative is what g86m is now (an interpreter with fused pairs, E054); it is not given
+  up, and the probe is a separate program under `probe/`.
+- **Next move for each result**:
+  - It runs, and a call costs under 20 cycles → a card for the design: what a block is, how
+    generated code reaches the guest's registers and RAM, and how it leaves when an
+    instruction would fault (it cannot use Goose's return out of `exec_one`)
+  - It runs, and a call costs 20 to 200 cycles → the design has to chain blocks inside the
+    generated code so as to leave it seldom; say so in the design card
+  - It cannot be made to run (the mapping is refused, or Goose cannot hand the state's
+    address to C) → reported as not possible on this machine, with what refused
+- **Cut-off**: The same day. A stub that adds one to a guest register, called 100 million
+  times, against the same loop in Goose; and a generated loop that does it 100 million times
+  in one call.
+
+### Result
+
+2026-11-17. **It runs, and a call costs about 8 cycles.** `probe/jit0.goose` writes two
+functions as arm64 instructions into a Goose array, `probe/jit0.c` (three functions, about
+thirty lines) maps memory with `MAP_JIT`, copies them in and calls them:
+
+| | 100 million times | Each |
+|---|---:|---:|
+| A generated stub (add one to a guest register in memory), called from Goose through C | 242 ms | 2.4 ns, about 8 cycles |
+| The same addition as a generated loop, in one call | 32 ms | 0.3 ns, one cycle |
+
+(The same loop written in Goose took no time: the compiler worked the sum out.) The state
+crosses as a slice, whose data pointer is the address of the guest's registers; nothing
+refused. By the card: the first branch. A call is less than half of one interpreted
+instruction, so a block does not have to be long to pay, and leaving generated code often
+is affordable; the design card is next.
+
+## E059: A JIT, first stage: blocks of instructions that touch no memory (2026-11-17)
+
+This card is the design as well as the first experiment. The stages after it are cards of
+their own.
+
+**Why generated code, and what the dull alternative is.** The interpreter is at 88 host
+instructions for a guest instruction, and E052 and E056 say what is left in it comes a
+fraction of a percent at a time. Generated code has no dispatch, no entry to look up, keeps
+the guest's registers in host registers and works the flags out only where something reads
+them. It is the one new technique this project takes on beside Goose itself; the interpreter
+stays whole and stays the default, and `--jit` turns the rest on.
+
+**The unit.** A block: instructions of 32-bit code that follow one another in one physical
+page, from the target of a jump to the next jump (included) or to the first instruction the
+translator does not know (excluded). It is found through the decode cache, whose entries say
+what each instruction is; nothing is decoded twice.
+
+**How it is entered.** The entry of a block's first instruction gets the kind `K_BLOCK`, and
+its own kind is kept beside it. The run dispatches it like any executor; the executor calls
+the generated code through C and gets back the next address and how many instructions ran,
+which the run counts where it counts a pair's second (E054). A block runs whole or not at
+all: it is given the run's time and the highest address the run may execute at, and if
+either is short it does nothing, and the general path runs its first instruction by its own
+kind.
+
+**What generated code may do.** It reads and writes the guest's registers and flags, and
+nothing else in this stage. It never faults and never calls back, so Goose's return out of
+`exec_one` does not have to cross it. The stage after this one adds memory operands the same
+way: the fast path inline, and for anything else the block stops before that instruction
+and the interpreter takes it.
+
+**Flags.** The translator knows which instruction set the flags last. The generated code
+keeps that instruction's operands and result in three host registers; a conditional jump at
+the block's end redoes the comparison on them with the host's own flags, and EFLAGS is
+written out only where the block is left.
+
+**When a block is made.** Each jump counts arrivals at its target; at the eighth, the
+block is translated.
+
+**When a block dies.** A store into a page that has decode-cache entries already goes the
+long way (E044); it now also moves the page's generation on, and a block made under another
+generation is dropped when it is next reached.
+
+- **Hypothesis**: The machinery above can be built in Goose with about forty lines of C, and
+  with `--jit` every test passes and the Linux boot stops at the same 1,651,240,001
+  instructions. Blocks without memory operands are short, so this stage is not expected to
+  be faster: the boot's cycles within 3% of the interpreter's either way, and a count of how
+  many instructions run in blocks (expected 10 to 20%).
+- **What changed since last time**: E058 showed the call. This is the first generated code
+  that executes guest instructions.
+- **Next move for each result**:
+  - Everything passes with `--jit`, the count is the same → the second stage: memory
+    operands with an exit to the interpreter, which is where the speed is
+  - A test fails only with `--jit` → the block's first wrong instruction, found by halving
+    the set of kinds the translator accepts
+  - Without `--jit` the boot is slower by 0.6% or more (the jumps now count arrivals) → the
+    counting moves out of the jump executors before anything else
+- **Cut-off**: This stage ends when the suite passes with and without `--jit`, or at three
+  wrong instructions that halving cannot find.
+
+### Result
+
+2026-11-17. **It works: with `--jit` every test passes and the Linux boot stops at the same
+1,651,240,001 instructions, 11.3% of them run in generated code. With it the boot is 0.7%
+faster than main; without it, the same source is 1.1% slower than main, which is over this
+card's line.** `tools/difftest.sh` has 97 lines, all ok, four of them with the JIT.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of three layouts |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.35, 27.52, 27.41 billion |
+| This source, without `--jit` | 142.7 to 142.8 billion | 28.01, 27.52, 27.69 billion |
+| This source, with `--jit` | 144.0 to 144.1 billion | 27.48, 26.96, 27.30 billion |
+
+With `--jit`: 6,631 blocks, 1.15 MB of code, 186.8 million guest instructions in blocks.
+test386 with `--jit` is byte for byte the reference.
+
+**What was built.** `src/jit.c`, forty lines: map, copy, call. `src/jit.goose`, the
+translator: an emitter for the arm64 instructions it uses, the flags (the last
+flag-setting instruction's operands and result in three host registers; EFLAGS written out
+where a block is left; a conditional jump redoes the comparison with the host's flags, and
+where the condition cannot be had that way the block ends before the jump), and blocks of
+MOV between registers and of an immediate, LEA, the arithmetic and TEST between registers
+and with an immediate, INC and DEC, ending at a JMP, a conditional jump or a fused pair.
+A block is entered where the run finds a kind with no executor, so the interpreter's own
+path is not touched; it is counted there, and where it cannot run (the page was written
+since, or there is not the time or the room for all of it) its first instruction is run by
+its own kind.
+
+**Three designs of the entry, as in E053.** A `K_BLOCK` executor among the others, the
+count returned beside the address, and arrivals counted by the jump executors: 151.1
+billion host instructions without `--jit`, 3.8% over main. Taking the counting out of the
+jumps: 150.6. Undoing the three changes to the run one at a time: each was worth one to two
+billion, none was the culprit. Finding blocks where the run finds a kind with no executor
+(the branch is there already): 142.8 billion, under main. Arrivals are now counted where a
+run begins and where a block ends, which is less often and finds fewer blocks to start
+with; that is the stage's 11%.
+
+**The line this card set, and where it is.** "Without `--jit` slower by 0.6% or more: the
+counting moves out of the jump executors before anything else." That was done, and the
+instruction count is 1.9% under main's; the cycles are 0 to 2.4% over, by layout, 1.1% on
+average, and the layouts of this source differ among themselves by 1.8% where main's
+differ by 0.6%. The run's function is larger by the block's branch and its code has moved;
+E056 is the precedent for not chasing that by reformulation. It stands as an open cost of
+having the JIT in the source, to be weighed when the second stage says what the JIT gives.
+
+**Tests.** `s_jit`: thirty-odd blocks, one for each instruction the translator knows and
+each way a conditional jump is taken from a block's own flags, EFLAGS and the result summed
+against a trace run; INC after SUB in one block; a block changed in place too far from its
+first instruction for the store to empty that entry. `s_cslimit` now makes a block that
+runs past the segment's limit, which must not be run. Twenty-two wrong translators, each
+caught. Four passed at first, and one of those for a reason worth keeping: the changed
+instruction's result differed in bit 30 in four places of the sum, and the sum, which
+multiplies by three between terms, cancelled them exactly. The change is now in the low
+bits.
+
+By the card: the first branch. The second stage is memory operands: the fast path of
+`seg_read` and `seg_write` generated inline, and a block that leaves, with the state as the
+interpreter needs it, before an instruction whose operand is not on that path.
+
+## E060: Why the JIT's source is slower with the JIT off (2026-11-17)
+
+- **Hypothesis**: E059 left the same source 1.1% slower than main without `--jit`, with 1.9%
+  fewer host instructions. Fewer instructions and more cycles is the sign E049 and E053 both
+  met. Read in the disassembly of the two builds: main's `exec_short` has one indirect jump,
+  the dispatch; the JIT source's has two, with a test of the kind against 32 in front. The
+  compiler has split the dispatch into two jump tables. E053 met exactly this and named the
+  cause: the value a `match` is on is changed just before the `match`. E059 does that where
+  a block cannot run: `kind = jit_kind[...]`, then on to the dispatch. If that assignment
+  goes (the run ends there instead, and the general path, which already runs a block's first
+  instruction by its own kind, takes it), the dispatch is one table again and the cycles are
+  main's.
+- **What changed since last time**: E059 measured the cost and did not look for it. This
+  reads the code first; the cause it proposes is one this ledger has already recorded.
+- **Next move for each result**:
+  - One indirect jump again, and without `--jit` the cycles are within 0.6% of main's over
+    padded layouts → keep; the JIT's source no longer costs the interpreter anything
+  - One indirect jump and still slower → the split was not it; next the store of
+    `run_pmax` and the test of `jit_on` where a run begins, one at a time
+  - Still two → something else changes the kind before the dispatch; read the function again
+- **Cut-off**: The same day; the disassembly first, then three layouts of each, six rounds.
+  With `--jit` the suite and the boot's count as before.
+
+### Result
+
+2026-11-17. **Found, in two parts, and fixed: without `--jit` the source is as fast as main
+again. The price is on the other side: with `--jit` this stage is now 5% slower than main,
+because leaving the run for each short block costs more than the block saves.**
+`tools/difftest.sh` has 99 lines, all ok.
+
+| Linux boot to the shell prompt, without `--jit` | Host instructions | Cycles: median of six rounds, for each of three layouts |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.79, 27.59, 27.72 billion |
+| E059 as committed | 142.7 billion | 28.01, 27.52, 27.69 billion (its own rounds; main then read 27.35 to 27.52) |
+| E060 | 146.7 billion | 27.78, 27.70, 27.74 billion |
+
+The mean of E060's three layouts is 0.1% over main's, and the layouts agree with each other
+again (0.3% apart, where E059's were 1.8% apart).
+
+**Part one: the dispatch was in two jump tables.** As the card read it from the
+disassembly, and for the reason E053 recorded: where a block could not run, E059 set `kind`
+to the entry's own kind and went on to the dispatch. With the run ending there instead,
+`exec_short` has one indirect jump again and the instruction count is main's. The cycles
+were not: 27.94 billion in every layout against main's 27.34, 2.2% more with the same
+instructions. By the card's second branch the store of `run_pmax` and the test of `jit_on`
+were taken out one at a time, and neither was it (27.87, 27.89).
+
+**Part two: the code that runs a block was in `exec_short`.** Taking the block's branch out
+altogether gave main's cycles (27.33). So the branch was put back in pieces:
+
+| What `exec_short` does when it meets a block | Cycles without `--jit` (main 27.4 to 27.5) |
+|---|---:|
+| Runs it inside the loop, counts it, goes on (E059) | 27.96 billion |
+| Notes it, leaves the loop, runs it after the loop, starts the loop again | 27.91, 28.31 billion |
+| Notes it, leaves the loop, and after the loop only leaves the function | 27.90 billion |
+| Stores its slot in a global and leaves | 27.52 to 27.65 billion |
+
+A profile of the slow and the fast build has the extra samples in `exec_short` and spread
+evenly over its instructions (907 more of 77,000), and the loop's code is the same,
+instruction for instruction, in both. It is not anything the loop does: it is the function
+having two more calls in it, and what the compiler makes of the function around the loop
+for that. Where that goes was not found, and after E056 not looked for further. **As
+fixed**: `exec_short` stores the slot of the block it came to in `jit_at` and returns;
+`exec_one` then has `jit_blocks` run that block and the ones that follow it, and calls
+`exec_short` again.
+
+**What that does to the JIT.** With `--jit` the boot is now 159.9 billion host instructions
+and 29.2 billion cycles, 5% over main, where E059 had it 0.7% under. Leaving `exec_short`
+and entering it again for each block is a hundred-odd host instructions (the state is
+copied to `saved` twice), and this stage's blocks are three or four instructions long.
+`jit_blocks` goes from block to block without the run in between, so the cost falls with
+the share of instructions that are in blocks; the second stage decides it. Until then
+`--jit` is slower than no `--jit`, and that is said here and not hidden in a mean.
+
+By the card: the second branch, then a cause the card had not listed.
+
+**Tests.** `s_jitpage`: a block that jumps back to an address in the page below, where in
+RAM, at the number the address makes in the first block's page, there is another block; the
+second must not be run. Twenty-six wrong translators now, each caught; the one for this
+passed until the jump went to a lower page, because a block in a higher page is refused
+anyway for lying beyond where the run may go.
+
+## E061: The JIT, second stage: memory operands, the stack, CALL and RET (2026-11-17)
+
+- **Hypothesis**: `mov r, r/m` is 13.4% of all instructions and a block of E059 ends at the
+  first one. With the short path of `seg_read` and `seg_write` generated inline (the
+  segment's bound, the page crossing, the TLB's tag, then a load or store in RAM), blocks
+  run from jump to jump, and most instructions of the boot are in blocks. Generated code
+  still never faults: where an access is not on the short path the block leaves *before*
+  that instruction, with the registers and flags as they were then and the count of
+  instructions it did execute, and the interpreter takes that instruction (a TLB miss, a
+  page fault, a store into a page of code). The block's own registers are four that a C
+  function must preserve, so blocks are entered through a few generated instructions that
+  save them and load the addresses of RAM, the TLB and `seg_top`. With that: **60% or more
+  of the boot's instructions in blocks, and the boot's cycles 20% or more under main's**
+  (rustx86's JIT, with 58% of the instructions in generated code, took 28% off its
+  interpreter's time).
+- **What changed since last time**: E059's blocks touched registers only and ran whole.
+  This adds loads and stores (`mov` both ways, the arithmetic and CMP and TEST from memory,
+  MOVZX, `mov [m], imm`), PUSH and POP of a register, and CALL and RET as ends of a block; a
+  block now returns how many instructions it ran.
+- **Next move for each result**:
+  - Everything passes with `--jit`, the count is the same, and the boot is 10% or more
+    under main → keep; then what the blocks still leave out (the arithmetic *to* memory,
+    INC and DEC of memory, shifts, 8-bit operations), by a count of what ends blocks
+  - Passes, and under 10% faster → a count first: how long blocks are, how often a block
+    leaves early, how often the run is entered between blocks; the design is adjusted from
+    that before anything is added
+  - A test fails only with `--jit` → halve the set of kinds the translator accepts
+- **Cut-off**: This stage ends when the suite passes with `--jit` and the boot is measured,
+  or at three wrong instructions that halving cannot find.
+
+### Result
+
+2026-11-17. **It works, and it is not faster yet: with `--jit` every test passes and the
+boot stops at the same instruction, 38.6% of its instructions run in blocks, and it takes
+4% more cycles than main. The count says why: blocks are three instructions long.**
+`tools/difftest.sh` has 106 lines, all ok.
+
+| Linux boot to the shell prompt | Host instructions | Cycles, median of three |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.34 billion |
+| This source, without `--jit` | 147.2 billion | 27.50 billion |
+| This source, with `--jit` | 164.2 billion | 28.49 billion |
+
+With `--jit`: 24,969 blocks, 9.7 MB of code, 637 million guest instructions in blocks,
+456 thousand times a block left before its end.
+
+**What was built.** Blocks are entered through twelve generated instructions that save
+x19 to x22 and load them with the addresses of RAM, the TLB and `seg_top` and with what a
+physical address in the page is above the instruction pointer. `j_mem` is the short path of
+`seg_read` and `seg_write`: the offset against `seg_top`, the page crossing, the TLB's tag
+in the half for the current privilege level, the page's place in RAM. An access that is not
+on it branches to a way out after the block's body, which stores the registers changed so
+far, returns the instruction's own address and the count so far, and goes through a piece
+of code, shared by the block's ways out, that writes the flags' record to EFLAGS. New in
+blocks: `mov` from and to memory and of an immediate to memory, the arithmetic, CMP and
+TEST from memory, MOVZX, PUSH and POP of a register, and CALL and RET as a block's end. A
+block returns its count; `jit_blocks` stops the chain where a block left early.
+
+**The count the card asked for.**
+
+| | |
+|---|---:|
+| Times the run came to a block | 139.6 million |
+| Blocks run | 214.7 million |
+| Instructions in a block run, on average | 3.0 |
+| Blocks run one after another, on average | 1.5 |
+| The chain ends because what is next is not a block | 130.9 million (94%) |
+| ... because the next address is in another page | 6.8 million |
+| ... because the block left before its first instruction, or early | 0.8, 0.5 million |
+
+Each time the run comes to a block it leaves `exec_short`, and comes back: a hundred-odd
+host instructions for three guest instructions. What the chain stops at, by the kind of
+the instruction there:
+
+| Stops at | Share | |
+|---|---:|---|
+| a shift by CL | 13.6% | not translated |
+| the 8-bit `mov`s, the 8-bit TESTs and their pairs | 20% | not translated |
+| ADC and SBB | 6.1% | not translated |
+| shifts and rotates by a constant | 6.8% | not translated |
+| MOVSW, LODSB, SETCC, an instruction with no executor | 8.6% | not translated |
+| `mov r, r/m`, `mov r/m, r`, MOVZX, `mov` between registers, of an immediate, arithmetic from memory | 40% | translated, but the block would be one instruction, because what follows is not |
+
+So the blocks are short for want of instructions, not by design: more than half of what
+stops them is a dozen kinds, and most of the rest follows from those.
+
+By the card: the second branch (under 10% faster: count, then adjust). The adjustment is
+the next card: the kinds above, in the order of the table.
+
+**Tests.** `s_jitmem`: blocks with loads, stores, arithmetic and CMP from memory, MOVZX,
+PUSH, POP, CALL and RET, with two accesses that cross into a page mapped elsewhere, a store
+into a page of code, a load from a page made not present half way, and a store to a page
+whose place in the read TLB another page has. `s_jitseg`: a load beyond a segment's limit
+from a block. `s_jitring`: a block in ring 3 loading from the supervisor's page, which the
+supervisor's half of the TLB has. The Linux boot with `--jit` is now in `tools/difftest.sh`,
+against the boot without. Twenty-two wrong translators of this stage: twenty caught (six
+only after the tests above were extended); two are not wrong. A block that left early going
+on to look for the next block finds none there; and a block on a 16-bit stack leaves by the
+segment's bound wherever the 16-bit and the 32-bit stack pointer would differ. Both checks
+stay.
+
+Two things the tests taught about themselves: a load whose result is overwritten before
+anything reads it tests nothing (the first crossing load); and a block whose page is
+stored into on every pass is dropped on every pass and never runs (the first version of
+the store into code).
+
+## E062: The kinds that stop the chains of blocks (2026-11-17)
+
+- **Hypothesis**: E061's count: a chain of blocks stops because what is next is not a block
+  (94%), and what is next is one of a dozen kinds the translator does not know, or an
+  instruction it knows followed by one of those. Translating them — the 8-bit `mov`s, tests
+  and arithmetic, the shifts by a constant and by CL, the rotates by a constant, the
+  arithmetic to memory and INC and DEC of memory, NOT and NEG, ADC and SBB, SETCC — and
+  taking any condition from EFLAGS where the flags' record cannot give it (so that no block
+  has to end before a conditional jump) makes blocks run from jump to jump: **70% or more
+  of the boot's instructions in blocks, five or more instructions to a block run, and the
+  boot's cycles 10% or more under main's.**
+- **What changed since last time**: E061 translated the 32-bit `mov`s, loads and the stack.
+  This is breadth, by the table of what stopped the chains, and one change of design: a
+  condition can be worked out from EFLAGS in memory, so every conditional jump can end a
+  block.
+- **Next move for each result**:
+  - 10% or more under main → keep; then the cost of going from block to block (the flags
+    written out at every exit, the way in through C), by a count of host instructions per
+    block run
+  - Coverage up and still not 10% under → that count first; the kinds stay
+  - A test fails only with `--jit` → halve the set of kinds
+- **Cut-off**: This card ends when the suite passes with `--jit` and the boot is measured.
+
+### Result
+
+2026-11-17. **Kept: with `--jit` the Linux boot takes 19% fewer cycles than main and 15%
+fewer host instructions, with 68% of its instructions in blocks.** `tools/difftest.sh` has
+108 lines, all ok; the boot with `--jit` stops at the same 1,651,240,001 instructions.
+
+| Linux boot to the shell prompt | Host instructions | Cycles, median of six |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.37 billion |
+| This source, without `--jit` | 147.1 billion | 27.66 billion |
+| This source, with `--jit` (E061) | 164.2 billion | 28.49 billion (then) |
+| This source, with `--jit` | 123.3 billion | 22.10 billion |
+
+With `--jit`: 32,113 blocks, 15.8 MB of code, 1,130 million guest instructions in blocks
+(68.4%), 918 thousand times a block left before its end. By the card: the first branch (10%
+or more under main); its figures were 70% in blocks and 10% faster, and it got 68% and 19%.
+Without `--jit` this build reads 1.1% over main in the one layout measured; E060 had it
+within 0.1% over three, and `exec_short` has not changed since. It is to be measured over
+layouts before it is believed either way.
+
+**What was added.** The 8-bit `mov`s, TEST and arithmetic (for ADD, SUB and CMP the flags'
+record holds the operands shifted to the top byte, so that the 32-bit rules give the 8-bit
+flags; for the logic ones, the result sign-extended); shifts by a constant, of a register
+or of memory, as two new kinds of record (the result and CF, and OF when the count is one;
+AF and otherwise OF are left, so the record before is written out first); shifts of a
+register by CL and rotates by a constant, whose flags depend on the count and go straight
+to EFLAGS; the arithmetic to memory, INC, DEC, NOT and NEG of memory; ADC and SBB, with the
+host's own carry; SETCC; and any condition worked out from EFLAGS where the record cannot
+give it, so that every conditional jump can end a block. `--jit-off N` tells the translator
+to leave groups of kinds alone, for finding a wrong one.
+
+**Two bugs, and how each was found.** (1) Exits for the new kinds of record branched to
+themselves: the code the exits share for writing the flags out was emitted for the first
+five kinds of record only. Every test hung; a debugger attached to the hung process showed
+`b .`. (2) ADC and SBB to memory stored their result at the wrong place: the address of
+the operand is in a register that the flags' code then used as scratch. **Every test
+passed, and the Linux boot ran to twenty billion instructions without reaching its
+prompt.** Found as the card said, by halving: with the new groups off the boot was right;
+five groups on, five off, twice; then one at a time; ADC and SBB, in seven boots. The
+suite had no ADC to memory in a block. It has now (`s_jitops`), and a wrong build that
+puts the bug back fails it.
+
+**Tests.** `s_jitops`: forty-odd blocks, one for each of the new instructions, EFLAGS and
+the results summed against a trace run. Twenty-seven wrong translators, each caught; five
+passed at first. Three for want of an operand: a rotate and a shift by CL of small values
+leave OF clear whether it is worked out or not, and the first constant counts were odd
+where the wrong build differed only for even ones. Two for want of a case: SETCC was only
+ever run on flags from EFLAGS, never on the block's own, and no condition taken from
+EFLAGS was a negated one. And once more a test that could not test: its cell of memory was
+in the page of its code, so every store dropped every block and none ever ran; the JIT's
+count of blocks (none) said so.
+
+**What is left, by this count.** 32% of the instructions are still interpreted: the
+string instructions, the rotates through carry and by CL, MUL and DIV, the 16-bit forms,
+everything the general path executes, and whatever follows them up to the next place a
+block begins. A block that leaves early (918 thousand times) is a TLB miss or a page
+fault. And between blocks the flags are written out and the registers stored and loaded
+again; the card's next step is the count of host instructions for a block run.

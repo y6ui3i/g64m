@@ -6,11 +6,12 @@
 ; not attempted on a page that begins below the segment's base) and a byte-granular limit that
 ; ends 30h bytes after `lim`. From `lim` on there are one-byte INC EDX instructions, 30h of
 ; them inside the limit and more beyond. Jumping to `lim` must run exactly 30h of them and then
-; fault with #GP at the first one beyond. Four passes, so that the executors run on the later ones.
+; fault with #GP at the first one beyond. Twelve passes, so that the executors run on the later
+; ones, and with --jit a block, which must not be run when its last instruction is beyond.
 ;
 ; A run only executes instructions the decode cache knows, and those beyond the limit would
-; never get there through this segment, so first they are run four times through the flat one
-; (a CALL to the linear address of offset 30h; a RET ends them). It has to be a self-check:
+; never get there through this segment, so first all of them are run four times through the
+; flat one (a CALL to the linear address of `lim`; a RET ends them). It has to be a self-check:
 ; tracing ends a run after every instruction. Prints "OK".
 %define CPU386
 %include "common.inc"
@@ -35,10 +36,10 @@ pm:
     mov  bl, 1
     mov  ebp, 4
 warm:
-    call lim + 0x30                     ; flat: the cache learns what lies beyond the limit
+    call lim                            ; flat: the cache learns every INC, those beyond the limit too
     dec  ebp
     jnz  warm
-    mov  ebp, 4
+    mov  ebp, 12                        ; often enough for the JIT to make a block of the INCs (E059)
 again:
     mov  esp, 0x7000
     push dword lim - 0x7000 + 0x30      ; should the RET beyond the limit be reached

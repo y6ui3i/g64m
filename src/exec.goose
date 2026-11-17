@@ -1102,6 +1102,10 @@ let K_SUB_RM_I_J = 93;   // SUB r/m, imm and Jcc
 let K_ALU8_A_I_J = 94;   // 8-bit arithmetic on AL and Jcc
 let K_TEST_I_J = 95;     // TEST r/m, imm32 and Jcc
 let K_LAST = 95;         // the largest kind with an executor
+// The first instruction of a block the JIT has translated (jit.goose). It is above K_LAST on
+// purpose: the run finds it where it finds a kind with no executor, off the path every other
+// instruction takes, and no executor has to know about blocks.
+let K_BLOCK = 254;
 
 // Byte k of the instruction, from its first eight.
 inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32; }
@@ -1822,6 +1826,9 @@ fn exec_short() {
         var p = a - lin_of;
         // The same address as the executor gave it, which for a pair has PAIR_RAN above it.
         var pr: u64 = p;
+        run_pmax = phys32 + off_max;
+        // Where a run begins is where a block may begin: the JIT counts the arrival (E059).
+        if jit_on && !moved { jit_arrive(a - lin_of); }
         let phys64: u64 = phys32;
         let off_max64: u64 = off_max;
         loop {
@@ -1863,6 +1870,11 @@ fn exec_short() {
             // recorded the operand: classify it now and, if it has an executor, run it with
             // that this time already. Or K_NONE.
             if kind - 1 >= K_LAST {
+                // A block of the JIT's: the run ends here and says so, and exec_one has the
+                // block run. Nothing of that is done in this function: the code for it,
+                // wherever in the function it was put, cost every instruction one to three
+                // percent, block or not (E060).
+                if kind == K_BLOCK { jit_at = slot; break; }
                 if kind != 0 { break; }
                 ins = dc[slot].pre;
                 classify(slot, code64(p));
@@ -1892,6 +1904,9 @@ fn exec_short() {
 fn exec_one() -> bool {
     if code32() && dc_on && !pending && !(irq_line && flag(IF) && !shadow) {
         exec_short();
+        // The run ended at a block: the blocks are run, and then a run again, for as long
+        // as that goes on.
+        while jit_at >= 0 && jit_blocks() { exec_short(); }
     }
     return exec_general();
 }
@@ -1964,7 +1979,9 @@ fn exec_general() -> bool {
                 if kind != 0 {
                     let pb = cpu.base[CS] - (a - key);
                     // One instruction is wanted here: of a pair, the first.
-                    cpu.ip = (run_short(kind, slot, pb, 0) as! u32) - pb;
+                    // Of a block, its first instruction by its own kind.
+                    let k1 = if kind == K_BLOCK { jit_kind[slot - DC_HALF] } else { kind };
+                    cpu.ip = (run_short(k1, slot, pb, 0) as! u32) - pb;
                     return true;
                 }
                 classify(slot, raw);

@@ -41,6 +41,7 @@ import bios;
 import dev;
 import console;
 import linux;
+import jit;
 import big;         // last on purpose: see big.goose
 
 var trace_buf: u8[>..];
@@ -322,6 +323,12 @@ fn main() {
         else if a[i] == "--cpu" && i + 1 < a.len { i++; cpu_arg = i; }
         else if a[i] == "--faults" { log_faults = true; }
         else if a[i] == "--no-decode-cache" { dc_on = false; }
+        else if a[i] == "--jit" { jit_init(); }
+        else if a[i] == "--jit-off" && i + 1 < a.len {
+            i++;
+            let n, ok = parse_int(a[i]);
+            if ok { jit_off = n as! u32; }
+        }
         else if a[i] == "--dump" && i + 1 < a.len { i++; dump_arg = i; }
         else if a[i] == "--com" && i + 1 < a.len { i++; com_arg = i; }
         else if a[i] == "--initrd" && i + 1 < a.len { i++; initrd_arg = i; }
@@ -444,6 +451,7 @@ fn main() {
         for code in post_trail { format(stats, " "); format_int(stats, code, 16, 2, '0'); }
         format(stats, " com ", com_out.len, " bytes");
     }
+    if jit_on { format(stats, " jit ", jit_blocks_made, " blocks, ", jit_ran, " instructions, ", jit_left, " left early, ", jit_used, " bytes"); }
     format(stats, "\n");
     write_stderr(stats);
     if com_arg > 0 {
