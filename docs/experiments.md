@@ -4650,3 +4650,85 @@ Two things the tests taught about themselves: a load whose result is overwritten
 anything reads it tests nothing (the first crossing load); and a block whose page is
 stored into on every pass is dropped on every pass and never runs (the first version of
 the store into code).
+
+## E062: The kinds that stop the chains of blocks (2026-11-17)
+
+- **Hypothesis**: E061's count: a chain of blocks stops because what is next is not a block
+  (94%), and what is next is one of a dozen kinds the translator does not know, or an
+  instruction it knows followed by one of those. Translating them — the 8-bit `mov`s, tests
+  and arithmetic, the shifts by a constant and by CL, the rotates by a constant, the
+  arithmetic to memory and INC and DEC of memory, NOT and NEG, ADC and SBB, SETCC — and
+  taking any condition from EFLAGS where the flags' record cannot give it (so that no block
+  has to end before a conditional jump) makes blocks run from jump to jump: **70% or more
+  of the boot's instructions in blocks, five or more instructions to a block run, and the
+  boot's cycles 10% or more under main's.**
+- **What changed since last time**: E061 translated the 32-bit `mov`s, loads and the stack.
+  This is breadth, by the table of what stopped the chains, and one change of design: a
+  condition can be worked out from EFLAGS in memory, so every conditional jump can end a
+  block.
+- **Next move for each result**:
+  - 10% or more under main → keep; then the cost of going from block to block (the flags
+    written out at every exit, the way in through C), by a count of host instructions per
+    block run
+  - Coverage up and still not 10% under → that count first; the kinds stay
+  - A test fails only with `--jit` → halve the set of kinds
+- **Cut-off**: This card ends when the suite passes with `--jit` and the boot is measured.
+
+### Result
+
+2026-11-17. **Kept: with `--jit` the Linux boot takes 19% fewer cycles than main and 15%
+fewer host instructions, with 68% of its instructions in blocks.** `tools/difftest.sh` has
+108 lines, all ok; the boot with `--jit` stops at the same 1,651,240,001 instructions.
+
+| Linux boot to the shell prompt | Host instructions | Cycles, median of six |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.37 billion |
+| This source, without `--jit` | 147.1 billion | 27.66 billion |
+| This source, with `--jit` (E061) | 164.2 billion | 28.49 billion (then) |
+| This source, with `--jit` | 123.3 billion | 22.10 billion |
+
+With `--jit`: 32,113 blocks, 15.8 MB of code, 1,130 million guest instructions in blocks
+(68.4%), 918 thousand times a block left before its end. By the card: the first branch (10%
+or more under main); its figures were 70% in blocks and 10% faster, and it got 68% and 19%.
+Without `--jit` this build reads 1.1% over main in the one layout measured; E060 had it
+within 0.1% over three, and `exec_short` has not changed since. It is to be measured over
+layouts before it is believed either way.
+
+**What was added.** The 8-bit `mov`s, TEST and arithmetic (for ADD, SUB and CMP the flags'
+record holds the operands shifted to the top byte, so that the 32-bit rules give the 8-bit
+flags; for the logic ones, the result sign-extended); shifts by a constant, of a register
+or of memory, as two new kinds of record (the result and CF, and OF when the count is one;
+AF and otherwise OF are left, so the record before is written out first); shifts of a
+register by CL and rotates by a constant, whose flags depend on the count and go straight
+to EFLAGS; the arithmetic to memory, INC, DEC, NOT and NEG of memory; ADC and SBB, with the
+host's own carry; SETCC; and any condition worked out from EFLAGS where the record cannot
+give it, so that every conditional jump can end a block. `--jit-off N` tells the translator
+to leave groups of kinds alone, for finding a wrong one.
+
+**Two bugs, and how each was found.** (1) Exits for the new kinds of record branched to
+themselves: the code the exits share for writing the flags out was emitted for the first
+five kinds of record only. Every test hung; a debugger attached to the hung process showed
+`b .`. (2) ADC and SBB to memory stored their result at the wrong place: the address of
+the operand is in a register that the flags' code then used as scratch. **Every test
+passed, and the Linux boot ran to twenty billion instructions without reaching its
+prompt.** Found as the card said, by halving: with the new groups off the boot was right;
+five groups on, five off, twice; then one at a time; ADC and SBB, in seven boots. The
+suite had no ADC to memory in a block. It has now (`s_jitops`), and a wrong build that
+puts the bug back fails it.
+
+**Tests.** `s_jitops`: forty-odd blocks, one for each of the new instructions, EFLAGS and
+the results summed against a trace run. Twenty-seven wrong translators, each caught; five
+passed at first. Three for want of an operand: a rotate and a shift by CL of small values
+leave OF clear whether it is worked out or not, and the first constant counts were odd
+where the wrong build differed only for even ones. Two for want of a case: SETCC was only
+ever run on flags from EFLAGS, never on the block's own, and no condition taken from
+EFLAGS was a negated one. And once more a test that could not test: its cell of memory was
+in the page of its code, so every store dropped every block and none ever ran; the JIT's
+count of blocks (none) said so.
+
+**What is left, by this count.** 32% of the instructions are still interpreted: the
+string instructions, the rotates through carry and by CL, MUL and DIV, the 16-bit forms,
+everything the general path executes, and whatever follows them up to the next place a
+block begins. A block that leaves early (918 thousand times) is a TLB miss or a page
+fault. And between blocks the flags are written out and the registers stored and loaded
+again; the card's next step is the count of host instructions for a block run.

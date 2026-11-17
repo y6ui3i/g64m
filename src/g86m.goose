@@ -324,6 +324,11 @@ fn main() {
         else if a[i] == "--faults" { log_faults = true; }
         else if a[i] == "--no-decode-cache" { dc_on = false; }
         else if a[i] == "--jit" { jit_init(); }
+        else if a[i] == "--jit-off" && i + 1 < a.len {
+            i++;
+            let n, ok = parse_int(a[i]);
+            if ok { jit_off = n as! u32; }
+        }
         else if a[i] == "--dump" && i + 1 < a.len { i++; dump_arg = i; }
         else if a[i] == "--com" && i + 1 < a.len { i++; com_arg = i; }
         else if a[i] == "--initrd" && i + 1 < a.len { i++; initrd_arg = i; }
