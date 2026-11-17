@@ -4160,3 +4160,140 @@ catch it, as they do the run that goes on to its limit; nothing else does.
 
 Next, by the card: a count of what precedes the conditional jumps that are still by
 themselves, and what the rebuilt loop lost.
+
+## E055: What is left to fuse, counted on the fused build (2026-11-17)
+
+- **Hypothesis**: E054's card asked for this count. After the five pairs, the conditional
+  jumps still on their own are 4% of all instructions, and E053's table says what precedes
+  them is spread thin (the 8-bit arithmetic 0.66%, DEC 0.47%, ...). If six more pairs cover
+  2.5%, at 49 host instructions a pair that is 0.8% of the boot's instructions and under
+  half a percent of its cycles: by itself below what can be measured. The same count shows
+  the pairs that do not end in a jump, where the larger numbers are.
+- **What changed since last time**: E053's count was of main before any pair; this is of
+  main with the five.
+- **Next move for each result**:
+  - Some predecessor of a lone jump is 1% or more → a pair for it
+  - None is, and the six largest together are 2% or more → one card for the six together,
+    kept only if the instructions fall and no layout is slower
+  - Pairs without a jump: listed for a card of their own; a pair whose second instruction
+    can fault needs the run's count and the instruction pointer moved on between the two,
+    which the jump pairs did not
+- **Cut-off**: The same day; one counting copy, one boot.
+
+### Result
+
+2026-11-17. **No predecessor of a lone jump reaches 1%; the six largest are 2.5%. The large
+pairs are those that begin with `mov r, r/m`.** One boot of a counting copy; 1,496 million
+dispatches for the 1,651 million instructions.
+
+| Before a conditional jump that is still alone (3.94% of all instructions) | Share of all |
+|---|---:|
+| 8-bit arithmetic `r/m8, imm8` | 0.66% |
+| DEC of a register | 0.47% |
+| ADC or SBB `r/m, r` | 0.44% |
+| DEC `r/m` | 0.43% |
+| `mov r/m, r` (the flags are older) | 0.28% |
+| 8-bit arithmetic on AL, AND `r/m, imm`, TEST `r/m, imm32`, SUB `r/m, imm` | 0.24%, 0.22%, 0.18%, 0.16% |
+
+| Pairs of any kind | Share of all |
+|---|---:|
+| `mov r, r/m` then `mov r, r/m` | 2.93% |
+| `mov r/m, r` then `mov r, r/m` | 2.10% |
+| `mov r, r/m` then a CMP-and-jump pair | 1.72% |
+| `mov r, r/m` then `mov r/m, r` | 1.47% |
+| `mov r, r/m` then `mov` between registers | 1.25% |
+| `mov r, r/m` then ADD `r/m, r` | 1.12% |
+| IMUL then IMUL; `mov` between registers then `mov r, r/m`; a shift by CL then SUB | 0.99%, 0.98%, 0.96% |
+
+`mov r, r/m` is 13.4% of all instructions, and what follows it is one of six kinds for
+9.4%. By the card: the second branch for the jumps (one card for the six together), and the
+`mov` pairs go to a card of their own, with the note above: the second `mov` can take a
+page fault after the first has written its register.
+
+## E056: The point the rebuilt loop lost (2026-11-17)
+
+- **Hypothesis**: E054's loop with no pairs made is 1% slower in cycles than main's was, with
+  0.8% fewer instructions. Read side by side, the two tails are the same length; what the
+  new one has that the old did not is a copy of the next address into the register the
+  executors return in (`pr` beside `p`), the address test in 64 bits, and it still carries
+  `ran`, a flag set to true after every instruction for the one use at the end of the run.
+  The loop is out of registers (E053), so a variable less is worth more than its own
+  instruction. Two changes, each by itself and together: (A) one loop variable for the
+  address, `pr`, with `p` its lower half taken where it is used; (C) no `ran`: whether the
+  run executed anything is `left` against what it started as.
+- **What changed since last time**: E053 tried (A) together with a second copy of the stores
+  at the loop's exit and got a loop full of spills; this is (A) alone. (C) is new.
+- **Next move for each result**:
+  - Either gives fewer host instructions and, over padded layouts, cycles at or under
+    E054's → keep it
+  - Neither moves the instructions by 0.3% → not kept, and the point is left: two
+    formulations are the limit for this (E044 spent nine on the like)
+- **Cut-off**: The same day; three builds, host instructions first, then four layouts of
+  whatever is kept.
+
+### Result
+
+2026-11-17. **Not kept: neither change, nor both.** `src/` is as it was.
+
+| Linux boot | Host instructions | Cycles, one run |
+|---|---:|---:|
+| main (E054) | 146.51 billion | 27.81 billion |
+| (A) one loop variable for the address | 166.29 billion | 30.80 billion |
+| (C) no `ran` | 146.60 billion | 28.47 billion |
+| both | 147.40 billion | 28.75 billion |
+
+(A) by itself does what it did in E053: the compiler keeps five of the loop's values on the
+stack and reloads them on every trip. (C) takes away a constant set on every trip and the
+instruction count goes up all the same. By the card: the second branch; two formulations
+were the limit, and the point is left where it is. What the three builds say together is
+that this loop's code is decided by the register allocator more than by the source, and
+that a change is only known by building it.
+
+## E057: Seven more pairs that end in a conditional jump (2026-11-17)
+
+- **Hypothesis**: E055's second branch. DEC of a register, DEC `r/m`, the 8-bit arithmetic
+  with an immediate (on `r/m8` and on AL), AND and SUB `r/m, imm`, and TEST `r/m, imm32`,
+  each with the conditional jump after it: 2.4% of all instructions between them, 39 million
+  pairs. At 49 host instructions a pair, 1.9 billion, **1.3% of the boot's host instructions
+  and about half a percent of its cycles**. Each is one arm that does what the lone executor
+  does and then `pair_end`; nothing in the run changes.
+- **What changed since last time**: E054 fused five instructions that only set flags. These
+  seven (all but TEST) also write a result, some to memory, where the store can fault after
+  the flags are worked out; the lone executors already have the old flags in place for that
+  store (E049), and the jump is not reached.
+- **Next move for each result**:
+  - Host instructions down by 1% or more and no layout slower in cycles → keep
+  - Instructions down and some layout slower, or the instructions up (seven arms more can
+    move the loop's code, E047) → not kept, and no more pairs of this size
+- **Cut-off**: The same day. `s_pairs` with a pair of each new kind; `s_flagro` with a jump
+  after two of its faulting stores; wrong builds; four layouts, six rounds.
+
+### Result
+
+2026-11-17. **Kept, on E017's rule and not on this card's figure: 0.6% fewer host
+instructions, about 0.4% fewer cycles, and no layout slower.** `tools/difftest.sh` 93 lines,
+all ok; the boot's count unchanged.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of four layouts |
+|---|---:|---:|
+| main (E054) | 146.5 billion | 27.73, 27.68, 27.66, 27.62 billion |
+| E057 | 145.6 billion | 27.63, 27.52, 27.48, 27.61 billion |
+
+The card said 1.3% of the instructions and asked for 1%; it got 0.6%, 0.88 billion for 39
+million pairs, **22 host instructions a pair where E054's saved 49**. The difference was not
+looked into; the likeliest part of it is that E054's five first instructions are among the
+shortest executors, so that the loop's share of them was largest, and that these seven had
+a jump of the masked kind after them already. The card's two branches did not provide for
+"fewer instructions than asked, and nothing slower"; it is kept because every layout is at
+or under its counterpart and the instruction count, which repeats, fell (E017's addendum).
+In cycles it is at the edge of what four layouts can show (0.4%, where the layouts of one
+source differ by 0.1 to 0.2%).
+
+By the card's second half: **no more pairs of this size.** What is left before a lone jump
+is under 0.3% each.
+
+**Tests.** `s_pairs` has a pair of each new kind (and one for arithmetic on AL that stores
+its result, one for DEC of memory); `s_flagro` has a jump after two of its faulting stores,
+so that a pair whose first instruction faults on its store is checked for flags and
+address. Nine wrong builds, each caught; two passed at first (the AL pair in the test was a
+CMP, which stores nothing; TEST with an immediate was told from CMP only by test386).
