@@ -4887,3 +4887,88 @@ seconds after it is entered): at speed 3 the guest says 5 seconds where 10.8 of 
 had passed in that run, at speed 2 it says 7 for 13.3; unpaced it says 13 for 7.6, which is
 the disagreement the owner saw. (Those real times are of runs driven by a script that reads
 the terminal; the table's are the emulator's own.)
+
+## E065: From block to block inside generated code (2026-11-17)
+
+Task 4 of `docs/jit.md`.
+
+- **Hypothesis**: After E063, 245 million blocks are run in a boot and each is a round trip:
+  out of the block (the registers stored, the flags written, a return through C), a turn of
+  `jit_blocks` (the page's generation, the time, the limit, a look in the decode cache), and
+  in again (through C, the registers loaded). A guest instruction costs 57 host instructions
+  with the bodies a fraction of that. If a block's way out to a known address in the same
+  page is a branch that `jit_blocks` fills in the first time it sees where it leads, the
+  next block is entered with the guest's registers still in host registers, and all that is
+  left between two blocks is a count-down of the time and the flags' record written out:
+  **the boot's host instructions under 75 billion (from 95) and its cycles 15% or more
+  under E063's.**
+- **What changed since last time**: nothing in what is translated. The way in now loads
+  the guest's registers and the way out stores all of them, once for a whole chain; a block
+  begins by taking its length off the time left (x23) and leaves if that is not enough; and
+  a block's exits to fixed addresses are link slots.
+  - *Why a link needs no check of the page's generation*: links are only made inside a
+    page. If the page is written, every block in it is stale together, and a stale block is
+    only ever entered from Goose, which checks, or from another block of the same page,
+    which is stale too and so is never entered.
+  - *Why it needs no check of the code segment's limit*: where the limit cuts into the page
+    (the run's last address is not the page's), the chain is given time for one block only.
+- **Next move for each result**:
+  - 15% or more → keep; task 5 (the flags' record across a block's end) is then the largest
+    thing left between blocks
+  - Under 15% → count host instructions per block run again before task 5
+  - A test fails only with `--jit` → `--jit-off 1024` (no linking) tells the linking from
+    the new way in and out
+- **Cut-off**: The suite with `--jit`, the boot's count, the stops; wrong builds for the
+  count of time and the link.
+
+### Result
+
+2026-11-17. **Kept: with `--jit` the Linux boot takes 74.6 billion host instructions and
+15.2 billion cycles: 16% fewer cycles than E063, 47% fewer than the interpreter.**
+`tools/difftest.sh` has 113 lines, all ok; the boot stops at the same instruction.
+
+| Linux boot to the shell prompt, medians of six | Host instructions | Cycles |
+|---|---:|---:|
+| Interpreter (main before the JIT) | 145.6 billion | 28.63 billion |
+| This source, without `--jit` | 147.2 billion | 28.84 billion |
+| `--jit`, E063 | 94.9 billion | 18.16 billion |
+| `--jit`, linked | 74.6 billion | 15.20 billion |
+
+Generated code is entered 64.3 million times in a boot, where 245.7 million blocks were run
+one call each; 24,358 link slots are filled in. By the card: the first branch.
+
+**As built.** The way in saves x19 to x25, loads the guest's eight registers and the half
+of the TLB, and jumps to a block. A block begins `subs x23, x23, #n; b.lt`: its length off
+the time, or out. Each exit to a fixed address writes the flags' record out and ends in one
+branch, the link slot, which goes to three instructions behind the body that leave with the
+address in w16 and the slot's own address in x17. A way out before an instruction gives
+back the time for the instructions not executed and leaves with x17 zero. The way out
+stores the eight registers and returns the address, the count (what x23 was on the way in,
+less what it is) and the slot. `jit_blocks` looks the address up; if it begins a good block
+in the page, it writes a branch to that block into the slot.
+
+**Tests, and what the wrong builds showed about them.** Nine wrong builds; eight caught,
+three only after the tests changed:
+
+- *The stops did not test the JIT at all.* `s_pairs`, stopped after 1,200 to 1,600
+  instructions, has made no block by then (a block is made at the eighth arrival); the
+  sweep passed whatever the count of time did. It is now taken in `s_jitchain`, a loop whose
+  body is a chain of blocks, CALL and RET among them, late in its 400 turns: a build that
+  does not give a block's length back when there is no time for it fails 185 of the 400.
+- *A RET that leaves through a link slot* (x17 not cleared) has Goose write a branch at
+  whatever was in x17. Only the Linux boot caught it; now `s_jitchain` does, and `s_jitmem`
+  has a block where its RET comes back.
+- *A chain where the code segment's limit cuts into the page.* `s_cslimit` had one block.
+  It now has two short blocks and then a row of INCs that begins where a run may still go
+  and ends far beyond the limit; with a chain allowed there, the row runs to its end.
+
+The ninth, a link made to a block of an older generation, is not reachable: such a block
+is dropped the first time the interpreter comes to it, which is before anything can be
+linked to it. The check stays.
+
+**Found on the way: a loop with no instruction for the general path in it never gets a
+block.** Arrivals are counted where a run of the interpreter begins and where a block
+ends. A loop made only of instructions with short executors is one run, for as long as the
+time lasts, and is never counted; `s_jitchain` has a CLD in its loop for that reason. The
+Linux boot does not show it, because the timer ends a run a thousand times a second. It is
+on the list in `docs/jit.md`.

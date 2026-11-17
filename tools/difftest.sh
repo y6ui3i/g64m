@@ -146,22 +146,26 @@ else
     fail=1
     echo "FAIL  jit: $bad of $count self-checks with the code filling up"
 fi
-if [ -f build/s_pairs.bin ]; then
+# The stops with the JIT are taken in s_jitchain, late, where its blocks have been made and
+# lead to one another: a chain of blocks counts the time down in generated code and must stop
+# short where the time runs out (E065).
+if [ -f build/s_jitchain.bin ]; then
+    build/g86m --trace --max 2000000 build/s_jitchain.bin 2>/dev/null | cut -c1-13 > build/s_jitchain.ips
     bad=0
-    k=1200
-    while [ $k -lt 1600 ]; do
-        want=$(sed -n "$((k + 1))p" build/s_pairs.ips)
-        at=$(build/g86m --jit --max $k build/s_pairs.bin 2>&1 | sed -n 's/^steps \([0-9]*\) .* at \([0-9a-f]*\):\([0-9a-f]*\) .*/\1 \2 \3/p')
+    k=6000
+    while [ $k -lt 6400 ]; do
+        want=$(sed -n "$((k + 1))p" build/s_jitchain.ips)
+        at=$(build/g86m --jit --max $k build/s_jitchain.bin 2>&1 | sed -n 's/^steps \([0-9]*\) .* at \([0-9a-f]*\):\([0-9a-f]*\) .*/\1 \2 \3/p')
         set -- $at
         got=$(printf '%s:%08X' "$(echo "${2:-}" | tr a-f A-F)" "0x${3:-0}")
         if [ "${1:-}" != "$k" ] || [ "$got" != "$want" ]; then bad=$((bad + 1)); fi
         k=$((k + 1))
     done
     if [ $bad -eq 0 ]; then
-        echo "ok    jit: stops at 400 counts in s_pairs"
+        echo "ok    jit: stops at 400 counts in s_jitchain"
     else
         fail=1
-        echo "FAIL  jit: stops in s_pairs: $bad of 400 counts are not where the trace is"
+        echo "FAIL  jit: stops in s_jitchain: $bad of 400 counts are not where the trace is"
     fi
 fi
 

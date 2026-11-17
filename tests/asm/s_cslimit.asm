@@ -4,10 +4,12 @@
 ;
 ; The segment at selector 18h is 32-bit code with a base of 7000h (a page boundary: a run is
 ; not attempted on a page that begins below the segment's base) and a byte-granular limit that
-; ends 30h bytes after `lim`. From `lim` on there are one-byte INC EDX instructions, 30h of
-; them inside the limit and more beyond. Jumping to `lim` must run exactly 30h of them and then
-; fault with #GP at the first one beyond. Twelve passes, so that the executors run on the later
-; ones, and with --jit a block, which must not be run when its last instruction is beyond.
+; ends 30h bytes after `lim`. From `lim` on there are one-byte INC EDX instructions, in groups
+; of eight with a jump between and then in a row, 44 of them inside the limit and more
+; beyond. Jumping to `lim` must run exactly those 44 and then fault with #GP at the first
+; one beyond. Forty passes, so that the executors run on the later
+; ones, and with --jit blocks, of which the third must not be run, by itself or after the
+; second (a chain of blocks is not let run where the limit cuts into the page, E065).
 ;
 ; A run only executes instructions the decode cache knows, and those beyond the limit would
 ; never get there through this segment, so first all of them are run four times through the
@@ -39,14 +41,14 @@ warm:
     call lim                            ; flat: the cache learns every INC, those beyond the limit too
     dec  ebp
     jnz  warm
-    mov  ebp, 12                        ; often enough for the JIT to make a block of the INCs (E059)
+    mov  ebp, 40                        ; often enough for the JIT to make a block of each group in turn
 again:
     mov  esp, 0x7000
     push dword lim - 0x7000 + 0x30      ; should the RET beyond the limit be reached
     xor  edx, edx
     jmp  0x18:lim - 0x7000
 gp:
-    cmp  edx, 0x30                      ; every INC inside the limit, none beyond
+    cmp  edx, 44                        ; every INC inside the limit (8, 8 and 28), none beyond
     jne  .bad
     cmp  dword [esp+4], lim - 0x7000 + 0x30 ; the faulting instruction's offset
     je   .next
@@ -81,7 +83,11 @@ real:
     hlt
 bits 32
 lim:
-    times 0x50 inc edx                  ; 30h inside the limit, 20h beyond
+%rep 2                                  ; two groups of eight INCs and a jump to the next
+    times 8 inc edx                     ; instruction, then INCs in a row from 14h on, across
+    jmp  short $+2                      ; the limit at 30h. With --jit each group is a block
+%endrep                                 ; and so is the row: it begins where a run may still
+    times 0x40 inc edx                  ; go and ends far beyond the limit.
     ret
 align 8
 gdt:

@@ -47,11 +47,20 @@ void jit_write(int64_t at, jit_bytes code) {
 }
 
 // Calls the way into generated code (jit.goose, jit_init) for the block at code: the address of
-// the guest's registers, of RAM, of the TLB and of seg_top, and pbase. Returns what the block
-// returns.
-int64_t jit_call(int64_t enter, jit_regs regs, int64_t ram, int64_t tlb, int64_t seg, int64_t pbase, int64_t code) {
-    return ((int64_t (*)(uint32_t *, int64_t, int64_t, int64_t, int64_t, int64_t))enter)(regs.data, ram, tlb, seg, pbase, code);
+// the guest's registers, of RAM, of the TLB and of seg_top, pbase, the time and the virtual
+// time. Generated code comes back with two values: what the Goose program gets (the next
+// address, and above it the count of instructions executed), and the address of the link slot
+// it left through or 0, which is kept here for jit_slot.
+typedef struct { int64_t next; int64_t slot; } jit_back;
+static int64_t jit_slot_was;
+
+int64_t jit_call(int64_t enter, jit_regs regs, int64_t ram, int64_t tlb, int64_t seg, int64_t pbase, int64_t code, int64_t time, int64_t vt) {
+    jit_back b = ((jit_back (*)(uint32_t *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t))enter)(regs.data, ram, tlb, seg, pbase, code, time, vt);
+    jit_slot_was = b.slot;
+    return b.next;
 }
+
+int64_t jit_slot(void) { return jit_slot_was; }
 
 // Where an array of the Goose program is.
 typedef struct { const uint32_t *data; int64_t len; } jit_words;
