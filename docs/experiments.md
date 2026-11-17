@@ -5158,3 +5158,73 @@ the branch was is later patched as a branch: an illegal instruction), which a re
 showed; and the tag's test was not reached until the CALL was put in a block of its own,
 because a block that reads memory left by its way out first and the interpreter made the
 call.
+
+## E070: The flags' record kept from block to block (2026-11-18)
+
+Task 5 of `docs/jit.md`.
+
+- **Hypothesis**: Every block writes EFLAGS out from the record where it ends: about thirty
+  host instructions, and the same again in each of its ways out's shared tails, which is
+  most of a block's 480 bytes. The block that follows nearly always sets the flags anew
+  before anything reads them. Kept instead: the record stays in w1 to w3 and its kind goes
+  into w26 where a block ends (one instruction); a block begins not knowing the kind, and
+  where it needs EFLAGS itself (INC, a shift, ADC, a condition on flags it did not set) it
+  calls code after the far way that writes them out by the kind in w26. The way out does
+  the same before it returns. **The boot's host instructions 15% or more under E069's,
+  cycles 8% or more, and the code under 20 MB.**
+- **What changed since last time**: E061 chose to write the flags at each end because each
+  block was entered from Goose, which wants EFLAGS right. Since E065 and E069 most blocks
+  are entered from generated code.
+- **Next move for each result**:
+  - Both as said → keep; task 12 next
+  - Instructions fall and cycles do not → keep for the size; sample for what the cycles are
+  - A test fails with `--jit` only → the kinds one at a time with `--jit-off`; a stop sweep
+    (`tools/jit-firstbad.sh`) on the self-check that fails
+- **Cut-off**: The suite with `--jit`, the boot's count and time, a self-check in which a
+  record of each kind crosses a block's end and is read on the other side, and wrong builds
+  for it.
+
+### Result
+
+2026-11-18. **Kept: the boot takes 46.4 billion host instructions (48.7) and about 9% fewer
+cycles; the code is 25.1 MB (31.8).** `tools/difftest.sh` has 121 lines, all ok.
+
+| Linux boot to the shell prompt, five rounds | Host instructions | Cycles, median | Cycles, least |
+|---|---:|---:|---:|
+| `--jit`, E066 | 58.1 billion | 14.48 billion | 13.76 billion |
+| `--jit`, E069 | 48.7 billion | 13.60 billion | 12.41 billion |
+| `--jit`, the record kept | 46.4 billion | 12.42 billion | 11.49 billion |
+
+(The machine was busy for these rounds: three wrong builds from earlier in the day had hung
+and were still running, found by `ps` and stopped before this table; a system update ran
+during it. The instruction counts do not depend on that.)
+
+By the card: the instructions fell by 5%, not 15%; the cycles by 8% or more; the code is
+not under 20 MB. The second branch, so a count (`build/jitcount3.py`): 250.8 million blocks
+are begun in a boot, 6.4 instructions each. EFLAGS is still written out 150 million times
+inside blocks: 90 million times from a record the translator knows (rotates 25.1 million,
+shifts by CL 16.8, ADC and SBB 22.7, shifts by a constant 16.3, IMUL 6.0, INC and DEC 2.9)
+and 61 million times a block asks without knowing (shifts by CL 16.1, by a constant 9.7,
+INC and DEC 29.4, a conditional jump at the head of a block 3.3), of which the flags' code
+finds a record waiting 44 million times. Those are instructions that keep some of the old
+flags or read one: what E071 is about.
+
+**What was built.** w26 holds the kind of the record in w1 to w3 where a block ends, 0 for
+none; x27 is scratch for the far way, which no longer uses w1 to w3. The translator begins
+a block with the kind `F_ANY`: where EFLAGS is needed before the block has set the flags
+itself, it emits `cbz w26` over a call to *the flags' code*, which is after the far way: a
+jump by a table on w26 to one copy of what `jit_flags` generates for each kind. The way out
+calls it too. A block's ways out lost their shared tails: each puts the kind it knows in
+w26 and goes to the way out.
+
+**Tests.** `s_jitflags`: an instruction of each kind of record, a JMP that ends the block,
+and in the next block nothing, or an instruction that reads the carry (ADC, SBB), keeps it
+(INC, DEC), keeps all but two (ROL, ROR), keeps the overflow (SHL), tests a flag (SETcc, a
+conditional jump); a RET between; a record made and written out in the second block; a
+way out in the second block. EFLAGS after each, summed against a trace run. Seven wrong
+builds, each caught by it; three passed at first. A stale kind left in w26 by a block that
+has written its own record out shows only if that block made a record after the one it
+inherited; a way out that does not pass its kind shows only if the access really leaves
+(`mov eax, [addr]` is an instruction with no executor: the block ended before it); and the
+flags' code set w26 to 0 for nothing, since the block that called it says so itself where
+it ends: taken out.

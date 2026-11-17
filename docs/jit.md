@@ -80,12 +80,16 @@ is entered. Otherwise the way out. Nothing is remembered between arrivals, so a 
 either page, a change of the paging and a new limit are all seen. `--jit-off 32768` turns
 it off.
 
-**Flags.** The translator knows which instruction set the flags last. The generated code
-keeps that instruction's operands and result in w1 to w3 (the record); EFLAGS is written out
-from it where the block is left. A conditional jump or SETCC redoes the comparison on the
-record with the host's flags where that gives the condition, and works it out from EFLAGS
-where it does not. Instructions whose flags depend on the old ones (INC, DEC, shifts, ADC)
-have the record written out first.
+**Flags.** The translator knows which instruction set the flags last in the block. The
+generated code keeps that instruction's operands and result in w1 to w3 (the record), and
+where a block ends it puts the record's kind in w26 (0: EFLAGS in memory is right) and goes
+on: the next block nearly always sets the flags anew (E070). A block begins not knowing
+the kind. A conditional jump or SETCC redoes the comparison on the record with the host's
+flags where the block made the record and that gives the condition. Where EFLAGS itself
+is needed (an instruction whose flags depend on the old ones: INC, DEC, shifts, rotates,
+ADC; a condition the record does not give), a record the block made is written out inline,
+and one it inherited by a call to *the flags' code* after the far way, which does it by
+the kind in w26. The way out calls that too, so Goose always finds EFLAGS right.
 
 **Memory.** `j_mem` is the short path of `seg_read` and `seg_write` inline: the offset below
 `seg_top`, the access inside one page, the TLB's tag in the right half, then a load or store
@@ -133,7 +137,7 @@ without the JIT. The self-checks written for the JIT: `s_jit` (blocks without me
 `s_jitseg` (a segment's limit), `s_jitring` (the privilege level), `s_jitops` (8-bit
 operations, shifts, rotates, the arithmetic to memory, ADC, SBB, SETCC), `s_jitslot` (a block
 whose decode-cache entry goes and comes back), `s_jitchain` (blocks that lead to one another;
-the stops are taken here), `s_jitfar` (the far way's four tests), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
+the stops are taken here), `s_jitfar` (the far way's four tests), `s_jitflags` (the record from block to block), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
 (RDTSC), and `s_cslimit` (blocks at the code segment's limit). The JIT's self-checks are
 also run with room for 70,000 bytes of code, so that it fills up while they run.
 
@@ -177,7 +181,7 @@ started; this list is updated when one is done.
 | 4 | From block to block inside generated code: the guest registers stay in host registers, the time left is counted down there, and Goose is returned to only where a block cannot go on | Most of the 57 host instructions a guest instruction cost | done, E065 |
 | 4b | From a block to a block in another page, and from a RET | 16 million of 34.5 million trips (E067) | done, E069: the far way looks the block up at every arrival; nothing is linked across pages |
 | 4c | A block of one instruction where that is a jump | 4.5 million trips (E067) | done, E068 |
-| 5 | The flags' record kept across the end of a block where the next block sets the flags before anything can read them | Up to thirty instructions at most block ends | |
+| 5 | The flags' record kept across the end of a block | Up to thirty instructions at most block ends | done, E070: 5% of the instructions, 9% of the cycles, a fifth of the code |
 | 6 | The interpreter's cost of carrying the JIT, measured over layouts again | E062 read 1.1% in one layout; E060 0.1% in three; E063 0.1% in one | |
 | 7 | The code cache full: drop everything and start again | The Linux boot fills 32 MB once | done, E063 |
 | 8 | A page that is both stored into and run: its blocks are dropped and remade for ever | Not measured | |
