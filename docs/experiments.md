@@ -3873,3 +3873,75 @@ the same extra instruction is a larger share of 157 billion. And both worked bli
 order was undone by the globals added since, and nothing said so. From main at the start of
 today (164.1 billion instructions, 29.4 to 29.7 billion cycles) the two cards together are
 at 151.4 billion and 28.3 billion: **7.7% fewer instructions, about 4.5% fewer cycles.**
+
+## E051: The memory operand's short path in fewer tests (2026-11-17)
+
+- **Hypothesis**: E043's fourth candidate, the part of it that is a few lines. The short
+  path of `seg_read`, `seg_write` and `rmw_place` tests, in order: the offset against
+  `seg_top`; that the access does not cross a page; the TLB tag, at an index that includes a
+  test of `cpu.cpl`; that the place is in RAM. Two of these can go. (1) Crossing: compare
+  the tag with the page of the access's *last* byte. An entry at the index of the first
+  byte's page can only hold a page with the same low eight bits, and the next page has
+  others, so an access that crosses never matches (Bochs and QEMU take the tag from the last
+  byte for this). (2) The privilege level: the index's ninth bit kept in a global, set where
+  the level changes, in place of a load of a byte, a comparison and a select at every
+  access. The test for RAM stays: it is what takes the bounds checks off the four loads. By
+  E037's rate (3.6% of the instructions gave 1.8% of the cycles): about 5 host instructions
+  for each of the accesses, which are about one for every two guest instructions, **1.5% of
+  the host instructions and under 1% of the cycles**.
+- **What changed since last time**: E037 made the segment test one bound; this is the same
+  kind of change on the next two tests. Measured with padded layouts (E047's instrument),
+  which E037 did not have.
+- **Next move for each result**:
+  - Cycles down by 0.6% or more, or instructions down and no layout slower → keep; then the
+    stack window is the last of E043's list, and it is decided by a count of what a PUSH and
+    a POP still cost after this
+  - No layout faster and some slower → not kept; the tests were predicted and free
+  - A test fails → a place where the level changes without the global following (a fault
+    that puts the CPU state back; the boot protocol's entry), or an access that crosses
+- **Cut-off**: The same day; `tools/difftest.sh`, the boot's count, wrong builds (the tag
+  from the first byte in each of the three places; the global not following a change of
+  level, and not following a fault's undo), four layouts of each side, six rounds.
+
+### Result
+
+2026-11-17. **Not kept: 0.75% fewer host instructions and about 0.5% more cycles, in every
+layout; each half alone is slower too.** `src/` is as it was after E050. The two tests
+written for it stay, because what they check is true of the code as it is.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of four layouts |
+|---|---:|---:|
+| E050 | 151.4 to 151.6 billion | 28.31, 28.50, 28.32, 28.35 billion |
+| E051 | 150.3 to 150.5 billion | 28.46, 28.46, 28.63, 28.49 billion |
+
+The fastest run of each layout says the same: 28.12 to 28.21 against 28.26 to 28.36. Then
+each half by itself, one layout, six rounds:
+
+| | Host instructions | Cycles, median |
+|---|---:|---:|
+| E050 | 151.38 billion | 28.37 billion |
+| The tag from the last byte only | 150.24 billion | 28.50 billion |
+| The level in a global only | 151.35 billion | 28.66 billion |
+| Both (E051) | 150.23 billion | 28.66 billion |
+
+All of the instructions saved are the crossing test's, and taking it out costs cycles: the
+test was a branch the host predicted, off the path to the load, and what replaced it is an
+addition on the way to the tag comparison. The global for the level saves nothing (a load
+in place of a load, a comparison and a select) and costs 1%; why was not looked into. By the
+card: the second branch, and "the tests were predicted and free" is the reading.
+
+**What this closes.** The stack window is not tried. Its whole gain would be tests of the
+same kind taken off PUSH and POP (the segment bound, the crossing, the tag), and this card
+says those tests cost nothing where they are; it would add a cached translation to keep
+true across every flush for that. That was the last item of E043's list. The 16-bit general
+path (E044) is not tried again either: nine formulations were measured there, and E050 has
+since given bench.bin 2% of its cycles back from another side.
+
+**Tests kept.** `s_pagecross`: loads, stores and an ADD that cross from a page into the
+next, where the two are not next to each other in RAM, checked against loads that do not
+cross; three wrong builds (the tag taken from the first byte in `seg_read`, `seg_write` and
+`rmw_place`) fail it and passed everything before it. `s_modeundo`: a far return to ring 3
+that faults after CS is loaded, then a store from ring 3 into the page of ring 0's stack; a
+wrong build that did not put the level's global back failed only this, and only once the
+test aimed at the pushes of the fault's own delivery (every later change of level repairs
+the global, so the window is those three pushes).
