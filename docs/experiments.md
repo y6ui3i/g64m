@@ -4462,3 +4462,85 @@ bits.
 By the card: the first branch. The second stage is memory operands: the fast path of
 `seg_read` and `seg_write` generated inline, and a block that leaves, with the state as the
 interpreter needs it, before an instruction whose operand is not on that path.
+
+## E060: Why the JIT's source is slower with the JIT off (2026-11-17)
+
+- **Hypothesis**: E059 left the same source 1.1% slower than main without `--jit`, with 1.9%
+  fewer host instructions. Fewer instructions and more cycles is the sign E049 and E053 both
+  met. Read in the disassembly of the two builds: main's `exec_short` has one indirect jump,
+  the dispatch; the JIT source's has two, with a test of the kind against 32 in front. The
+  compiler has split the dispatch into two jump tables. E053 met exactly this and named the
+  cause: the value a `match` is on is changed just before the `match`. E059 does that where
+  a block cannot run: `kind = jit_kind[...]`, then on to the dispatch. If that assignment
+  goes (the run ends there instead, and the general path, which already runs a block's first
+  instruction by its own kind, takes it), the dispatch is one table again and the cycles are
+  main's.
+- **What changed since last time**: E059 measured the cost and did not look for it. This
+  reads the code first; the cause it proposes is one this ledger has already recorded.
+- **Next move for each result**:
+  - One indirect jump again, and without `--jit` the cycles are within 0.6% of main's over
+    padded layouts → keep; the JIT's source no longer costs the interpreter anything
+  - One indirect jump and still slower → the split was not it; next the store of
+    `run_pmax` and the test of `jit_on` where a run begins, one at a time
+  - Still two → something else changes the kind before the dispatch; read the function again
+- **Cut-off**: The same day; the disassembly first, then three layouts of each, six rounds.
+  With `--jit` the suite and the boot's count as before.
+
+### Result
+
+2026-11-17. **Found, in two parts, and fixed: without `--jit` the source is as fast as main
+again. The price is on the other side: with `--jit` this stage is now 5% slower than main,
+because leaving the run for each short block costs more than the block saves.**
+`tools/difftest.sh` has 99 lines, all ok.
+
+| Linux boot to the shell prompt, without `--jit` | Host instructions | Cycles: median of six rounds, for each of three layouts |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.79, 27.59, 27.72 billion |
+| E059 as committed | 142.7 billion | 28.01, 27.52, 27.69 billion (its own rounds; main then read 27.35 to 27.52) |
+| E060 | 146.7 billion | 27.78, 27.70, 27.74 billion |
+
+The mean of E060's three layouts is 0.1% over main's, and the layouts agree with each other
+again (0.3% apart, where E059's were 1.8% apart).
+
+**Part one: the dispatch was in two jump tables.** As the card read it from the
+disassembly, and for the reason E053 recorded: where a block could not run, E059 set `kind`
+to the entry's own kind and went on to the dispatch. With the run ending there instead,
+`exec_short` has one indirect jump again and the instruction count is main's. The cycles
+were not: 27.94 billion in every layout against main's 27.34, 2.2% more with the same
+instructions. By the card's second branch the store of `run_pmax` and the test of `jit_on`
+were taken out one at a time, and neither was it (27.87, 27.89).
+
+**Part two: the code that runs a block was in `exec_short`.** Taking the block's branch out
+altogether gave main's cycles (27.33). So the branch was put back in pieces:
+
+| What `exec_short` does when it meets a block | Cycles without `--jit` (main 27.4 to 27.5) |
+|---|---:|
+| Runs it inside the loop, counts it, goes on (E059) | 27.96 billion |
+| Notes it, leaves the loop, runs it after the loop, starts the loop again | 27.91, 28.31 billion |
+| Notes it, leaves the loop, and after the loop only leaves the function | 27.90 billion |
+| Stores its slot in a global and leaves | 27.52 to 27.65 billion |
+
+A profile of the slow and the fast build has the extra samples in `exec_short` and spread
+evenly over its instructions (907 more of 77,000), and the loop's code is the same,
+instruction for instruction, in both. It is not anything the loop does: it is the function
+having two more calls in it, and what the compiler makes of the function around the loop
+for that. Where that goes was not found, and after E056 not looked for further. **As
+fixed**: `exec_short` stores the slot of the block it came to in `jit_at` and returns;
+`exec_one` then has `jit_blocks` run that block and the ones that follow it, and calls
+`exec_short` again.
+
+**What that does to the JIT.** With `--jit` the boot is now 159.9 billion host instructions
+and 29.2 billion cycles, 5% over main, where E059 had it 0.7% under. Leaving `exec_short`
+and entering it again for each block is a hundred-odd host instructions (the state is
+copied to `saved` twice), and this stage's blocks are three or four instructions long.
+`jit_blocks` goes from block to block without the run in between, so the cost falls with
+the share of instructions that are in blocks; the second stage decides it. Until then
+`--jit` is slower than no `--jit`, and that is said here and not hidden in a mean.
+
+By the card: the second branch, then a cause the card had not listed.
+
+**Tests.** `s_jitpage`: a block that jumps back to an address in the page below, where in
+RAM, at the number the address makes in the first block's page, there is another block; the
+second must not be run. Twenty-six wrong translators now, each caught; the one for this
+passed until the jump went to a lower page, because a block in a higher page is refused
+anyway for lying beyond where the run may go.

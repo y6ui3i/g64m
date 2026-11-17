@@ -1870,29 +1870,16 @@ fn exec_short() {
             // recorded the operand: classify it now and, if it has an executor, run it with
             // that this time already. Or K_NONE.
             if kind - 1 >= K_LAST {
-                if kind == K_BLOCK {
-                    // A block: all of it, if it is still good and there is the time and the
-                    // room; counted here. If not, its first instruction by its own kind.
-                    let n = jit_enter(slot, left);
-                    if n != 0 {
-                        p = jit_next;
-                        pr = p;
-                        left -= n;
-                        run_left = left;
-                        saved.ip = jit_next - pbase;
-                        ran = true;
-                        if left <= 0 { break; }
-                        jit_arrive(jit_next);
-                        continue;
-                    }
-                    kind = jit_kind[slot - DC_HALF];
-                } else {
-                    if kind != 0 { break; }
-                    ins = dc[slot].pre;
-                    classify(slot, code64(p));
-                    kind = dc[slot].pre.kind;
-                    if kind == K_NONE { break; }
-                }
+                // A block of the JIT's: the run ends here and says so, and exec_one has the
+                // block run. Nothing of that is done in this function: the code for it,
+                // wherever in the function it was put, cost every instruction one to three
+                // percent, block or not (E060).
+                if kind == K_BLOCK { jit_at = slot; break; }
+                if kind != 0 { break; }
+                ins = dc[slot].pre;
+                classify(slot, code64(p));
+                kind = dc[slot].pre.kind;
+                if kind == K_NONE { break; }
             }
             pr = run_short(kind, slot, pbase, left);
             p = pr as! u32;
@@ -1917,6 +1904,9 @@ fn exec_short() {
 fn exec_one() -> bool {
     if code32() && dc_on && !pending && !(irq_line && flag(IF) && !shadow) {
         exec_short();
+        // The run ended at a block: the blocks are run, and then a run again, for as long
+        // as that goes on.
+        while jit_at >= 0 && jit_blocks() { exec_short(); }
     }
     return exec_general();
 }

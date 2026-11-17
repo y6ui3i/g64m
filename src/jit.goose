@@ -420,23 +420,47 @@ fn jit_arrive(p: u32) {
     dc_hot[s] = h + 1;
 }
 
-// Runs the block whose first instruction's entry is at slot, if the block is still good and
-// the run has the time (room instructions) and the room for all of it. Returns how many
-// instructions it ran, with the next address in jit_next; 0 if it did not run.
-var jit_next: u32 = 0;
+// Where a run of the interpreter came to a block: the entry's slot, or -1. Set by exec_short,
+// taken by jit_blocks.
+var jit_at: i64 = -1;
 
-fn jit_enter(slot: i64, room: i64) -> i64 {
-    let s = slot - DC_HALF;
-    let head = dc[slot].tag;
-    if jit_gen[s] != code_gen[head >> 12] {
-        // A store has been made into this page since: the block is dropped.
-        dc[slot].pre.kind = jit_kind[s];
-        dc_hot[s] = 0;
-        return 0;
+// Runs the block that the run came to, and the blocks that follow it one after another, for
+// as long as each is still good and there is the time and the room for all of it. True if at
+// least one ran: the virtual time and the instruction pointer are then moved on, and the
+// interpreter goes on from there. False if none did: the first instruction of the block is
+// then the general path's, by its own kind.
+//
+// A block is in the page of code the run was on, and code_page, code_phys and run_pmax still
+// describe that page and how far the run may go in it.
+fn jit_blocks() -> bool {
+    var slot = jit_at;
+    jit_at = -1;
+    var ran = false;
+    var next: u32 = 0;
+    loop {
+        let s = slot - DC_HALF;
+        let head = dc[slot].tag;
+        if jit_gen[s] != code_gen[head >> 12] {
+            // A store has been made into this page since: the block is dropped.
+            dc[slot].pre.kind = jit_kind[s];
+            dc_hot[s] = 0;
+            break;
+        }
+        let n: i64 = jit_n[s];
+        // One instruction of the time is left for the general path, as a run leaves it.
+        if chain_until - vtime - 1 < n || jit_last[s] > run_pmax { break; }
+        next = jit_call(jit_code[s], cpu.regs[..]) as! u32;
+        vtime += n;
+        jit_ran += n;
+        ran = true;
+        // On to the next block, if that is what is there.
+        if next < code_phys || next > run_pmax { break; }
+        slot = next & (DC_HALF - 1) | DC_HALF;
+        if dc[slot].tag != next || dc[slot].pre.kind != K_BLOCK { jit_arrive(next); break; }
     }
-    let n: i64 = jit_n[s];
-    if room < n || jit_last[s] > run_pmax { return 0; }
-    jit_next = jit_call(jit_code[s], cpu.regs[..]) as! u32;
-    jit_ran += n;
-    return n;
+    if ran {
+        cpu.ip = next + (code_page << 12) - code_phys - cpu.base[CS];
+        saved = cpu;
+    }
+    return ran;
 }

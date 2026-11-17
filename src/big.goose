@@ -10,7 +10,7 @@ import state;
 
 // Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
 // tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
-var pad_ram: u8[7] = [0; 7];
+var pad_ram: u8[3] = [0; 3];
 var ram: u8[RAM_SIZE];
 
 // The decode cache: one entry per instruction address, by its low bits.
