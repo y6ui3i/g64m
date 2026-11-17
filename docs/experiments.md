@@ -4972,3 +4972,66 @@ ends. A loop made only of instructions with short executors is one run, for as l
 time lasts, and is never counted; `s_jitchain` has a CLD in its loop for that reason. The
 Linux boot does not show it, because the timer ends a run a thousand times a second. It is
 on the list in `docs/jit.md`.
+
+## E066: The kinds the JIT still left to the interpreter (2026-11-17)
+
+Task 3 of `docs/jit.md`.
+
+- **Hypothesis**: E063's count: of the times a chain of blocks stopped, 31 million were at a
+  kind with an executor that the translator does not know: `mov` with a 16-bit operand 7.0
+  million, IMUL 6.8, MOVSW 6.7, LODSB 2.4, and RDTSC behind another 6.5 million. With E065
+  generated code is entered 64 million times in a boot, so these are now a larger share of
+  what sends it back. Translated (`mov` of 16 bits both ways, IMUL r, r/m, the seven string
+  instructions without REP, RDTSC): **generated code entered under 45 million times, 93% or
+  more of the instructions in blocks, and the boot's cycles 5% or more under E065's.**
+- **What changed since last time**: E065 changed how blocks follow one another; this is
+  breadth again, on that. The string instructions are the first with two accesses to memory
+  (both are tried before anything is stored), and RDTSC the first that needs the virtual
+  time, which generated code has as what it was on the way in plus what has run since.
+- **Next move for each result**:
+  - 5% or more → keep; then count what is left between blocks for task 5 (the flags)
+  - Under 5% → keep if the count of entries fell as said; the time is then elsewhere, and
+    the count for task 5 says where
+  - A test fails only with `--jit` → `--jit-off` with the new groups' bits, one at a time
+- **Cut-off**: The suite with `--jit`, the boot's count, wrong builds for each new kind.
+
+### Result
+
+2026-11-17. **Kept: with `--jit` the Linux boot takes 58.0 billion host instructions and
+12.95 billion cycles: 13% fewer cycles than E065, 55% fewer than the interpreter. 95.4% of
+its instructions run in blocks.** `tools/difftest.sh` has 117 lines, all ok.
+
+| Linux boot to the shell prompt, medians of six | Host instructions | Cycles |
+|---|---:|---:|
+| Interpreter (main before the JIT) | 145.7 billion | 28.97 billion |
+| This source, without `--jit` | 147.4 billion | 28.75 billion |
+| `--jit`, E065 | 74.7 billion | 14.96 billion |
+| `--jit`, with the new kinds | 58.0 billion | 12.95 billion |
+
+Generated code is entered 34.5 million times (64.3 before; the card said under 45), 1,576
+million instructions are in blocks (the card said 93%; 95.4%). By the card: the first
+branch.
+
+**What was added.** `mov` with a 16-bit operand, both ways and both opcodes (the low half
+of a register is inserted; the high half stays). IMUL `r, r/m`: the product in 64 bits,
+CF and OF where it does not fit 32, the other flags left. The seven string instructions
+without REP as one function: a read at ESI and a write at EDI, each by the short path and
+both before anything is stored; SCASB leaves an 8-bit SUB's record; ESI and EDI step by the
+operand's size, down when DF is set in EFLAGS. RDTSC: the virtual time on the way in (x25),
+plus the time taken off since (x24 less x23), less what of the block is still to come,
+which is filled in when the block's length is known.
+
+**One bug**: IMUL multiplied by the wrong register. The opcode's constant, copied from an
+assembled example, had the example's second register still in it. test386 failed and the
+Linux boot did not reach its prompt; `--jit-off` with the four new groups' bits found the
+group in five boots.
+
+**Tests.** `s_jitstr`: the string instructions forwards and backwards, 16-bit moves by both
+opcodes, IMUL from a register and from memory, summed against a trace run. `s_jittsc`: two
+RDTSCs five instructions apart in one block and a third in the next, sixteen times: 240.
+Fourteen wrong builds, each caught; four passed at first. A SCASB with its result worked
+out the wrong way round changes only the flags that are written to EFLAGS, which nothing
+read; a 16-bit move between registers that moves 32 bits shows only if the upper halves
+differ, and, for the opcode an assembler does not use, only if the test has that opcode.
+The test script ran the JIT's self-checks with little room for code on the default
+machine, where RDTSC is no instruction; it now picks the machine for that one.

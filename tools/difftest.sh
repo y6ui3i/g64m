@@ -67,7 +67,7 @@ done
 # Self-checking tests, for what the oracle cannot judge. A test passes when the console says OK and nothing else.
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc) cpu="--cpu i686" ;; *) cpu="" ;; esac
     for exe in build/g86m-debug build/g86m; do
         out=$("$exe" $cpu --max 2000000 "$bin" 2>/dev/null)
         if [ "$out" = "OK" ]; then
@@ -114,7 +114,7 @@ bad=0
 count=0
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc) cpu="--cpu i686" ;; *) cpu="" ;; esac
     out=$(build/g86m --jit $cpu --max 2000000 "$bin" 2>/dev/null)
     count=$((count + 1))
     if [ "$out" != "OK" ]; then
@@ -133,7 +133,8 @@ fi
 bad=0
 count=0
 for bin in build/s_jit*.bin; do
-    out=$(build/g86m --jit --jit-size 70000 --max 2000000 "$bin" 2>/dev/null)
+    case "$(basename "$bin" .bin)" in s_jittsc) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    out=$(build/g86m --jit --jit-size 70000 $cpu --max 2000000 "$bin" 2>/dev/null)
     count=$((count + 1))
     if [ "$out" != "OK" ]; then
         bad=$((bad + 1))

@@ -588,6 +588,10 @@ fn jit_plain(kind: u8, mm: u32, op: u8) -> bool {
     if kind == K_SHIFT_CL { return regs && which >= 4 && jit_off & 128 == 0; }      // SHL SHR SAL SAR of a register
     if kind == K_SHIFT_I { return regs && which < 2 && jit_off & 256 == 0; }        // ROL and ROR of a register
     if kind == K_SETCC { return jit_off & 512 == 0; }
+    if kind == K_MOV16_R_RM || kind == K_MOV16_RM_R { return jit_off & 2048 == 0; }
+    if kind == K_IMUL { return jit_off & 4096 == 0; }
+    if kind >= K_MOVS && kind <= K_STOS { return jit_off & 8192 == 0; }
+    if kind == K_RDTSC { return jit_off & 16384 == 0; }
     return false;
 }
 
@@ -803,6 +807,53 @@ fn j_rotate(left: bool, n: u32, rm: u32) {
     a_str(T3, FLAGS_AT);
 }
 
+// The string instructions without REP: n bytes from the source's segment at ESI (reads), to
+// ES at EDI (writes), with AL or EAX where there is no source or no destination; then ESI and
+// EDI move by n, down if DF is set. Both accesses are tried before anything is stored, so a
+// way out leaves nothing done. DF is in EFLAGS whatever the flags' record holds.
+fn j_string(kind: u8, sg: u32, p: u32, cnt: u32) {
+    let n: u32 = if kind == K_MOVS || kind == K_STOS { 4 } else if kind == K_MOVSW { 2 } else { 1 };
+    let reads = kind == K_MOVS || kind == K_MOVSW || kind == K_MOVSB || kind == K_LODSB;
+    let writes = kind == K_MOVS || kind == K_MOVSW || kind == K_MOVSB || kind == K_STOSB || kind == K_STOS;
+    jit_exit_here(p, cnt);
+    if reads {
+        a_mov(T1, g(SI));
+        j_mem(sg, n, false);
+        a_load(n, T4);
+    }
+    if kind == K_SCASB {
+        a_mov(T1, g(DI));
+        j_mem(ES, 1, false);
+        a_load(1, T4);
+        // CMP AL, the byte: an 8-bit SUB's record.
+        j_get8(R_A, 0);
+        a_lsl(R_A, R_A, 24);
+        a_lsl(R_B, T4, 24);
+        a_op(2, R_R, R_A, R_B, 0);
+        jf = F_SUB8;
+    }
+    if writes {
+        a_mov(T1, g(DI));
+        j_mem(ES, n, true);
+        if reads { a_store(n, T4); } else { a_store(n, g(0)); }
+    }
+    if kind == K_LODSB { j_set8(0, T4); }
+    // The step: n, or minus n with DF set.
+    a_ldr(T2, FLAGS_AT);
+    a_movi(T1, n);
+    e(0x36500040 | T2);                      // tbz w17, #10, over the next instruction
+    e(0x4B0003E0 | T1 << 16 | T1);           // neg w16, w16
+    if reads { a_op(0, g(SI), g(SI), T1, 0); }
+    if writes || kind == K_SCASB { a_op(0, g(DI), g(DI), T1, 0); }
+}
+
+// Where RDTSC's subtraction of what is left of the block is, to be filled in when the block's
+// length is known.
+let TS_MAX = 8;
+var ts_n = 0;
+var ts_at: i64[TS_MAX] = [0; TS_MAX];
+var ts_cnt: u32[TS_MAX] = [0; TS_MAX];
+
 // Generates one such instruction, which is at address p and the block's cnt-th (from 0).
 fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     let mm = dc[slot].m;
@@ -907,6 +958,47 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     else if kind == K_SAR_I { j_shift(7, imm, mm, disp, p, cnt); }
     else if kind == K_SHIFT_CL { j_shift_cl(reg, rm); }
     else if kind == K_SHIFT_I { if imm & 31 != 0 { j_rotate(reg == 0, imm & 31, rm); } }
+    else if kind == K_MOV16_R_RM {
+        // The low half of a register from a register or from memory; the high half stays.
+        if regs { e(0x33003C00 | g(rm) << 5 | g(reg)); }
+        else { j_operand(mm, disp, p, cnt, 2, false); a_load(2, T4); e(0x33003C00 | T4 << 5 | g(reg)); }
+    }
+    else if kind == K_MOV16_RM_R {
+        if regs { e(0x33003C00 | g(reg) << 5 | g(rm)); }
+        else { j_operand(mm, disp, p, cnt, 2, true); a_store(2, g(reg)); }
+    }
+    else if kind == K_IMUL {
+        // The product's low half; CF and OF say whether the whole product is more than that,
+        // and the other flags stay, so the record is written out first.
+        j_settle();
+        if regs { a_mov(T4, g(rm)); } else { j_operand(mm, disp, p, cnt, 4, false); a_load(4, T4); }
+        e(0x9B207C00 | T4 << 16 | g(reg) << 5 | R_R);    // smull x3, wreg, w5
+        a_mov(g(reg), R_R);
+        e(0x93407C00 | R_R << 5 | T1);                   // sxtw x16, w3
+        e(0xEB00001F | T1 << 16 | R_R << 5);             // cmp x3, x16
+        a_cset(T1, C_NE);
+        a_ldr(T2, FLAGS_AT);
+        a_movi(T3, 0xFFFFF7FE);
+        a_op(4, T2, T2, T3, 0);
+        a_op(5, T2, T2, T1, 0);
+        a_op(5, T2, T2, T1, 11);
+        a_str(T2, FLAGS_AT);
+    }
+    else if kind >= K_MOVS && kind <= K_STOS { j_string(kind, mm >> 29, p, cnt); }
+    else if kind == K_RDTSC {
+        // The virtual time now: what it was on the way in, and what has run since. What has
+        // run is the time taken off so far (x24 - x23), less what of this block is still to
+        // come, which is known when the block is whole.
+        e(0xCB170310);                       // sub x16, x24, x23
+        e(0x8B190210);                       // add x16, x16, x25
+        ts_at[ts_n] = jc.len;
+        ts_cnt[ts_n] = cnt;
+        ts_n += 1;
+        e(0xD1000210);                       // sub x16, x16, #(n - cnt)
+        e(0x2A1003E0 | g(0));                // mov eax, w16
+        e(0xD360FE11);                       // lsr x17, x16, #32
+        e(0x2A1103E0 | g(2));                // mov edx, w17
+    }
     else if kind == K_SETCC {
         // The condition first: it may write the record out, which has to be before the way out.
         j_cond(imm as! u8);
@@ -945,6 +1037,7 @@ fn jit_translate(p0: u32, slot0: i64) {
     sx_n = 0;
     st_n = 0;
     lk_n = 0;
+    ts_n = 0;
     // The block's length off the time left; if that is not enough, out. (The length is
     // filled in below.)
     e(0xF10002F7);                           // subs x23, x23, #n
@@ -957,7 +1050,7 @@ fn jit_translate(p0: u32, slot0: i64) {
     // Whether what stopped the block may be otherwise later: an instruction not in the decode
     // cache, or in it and not yet classified.
     var again = false;
-    while !done && n < JIT_MAX && sx_n < SX_MAX - 2 && st_n < ST_MAX - 8 {
+    while !done && n < JIT_MAX && sx_n < SX_MAX - 2 && st_n < ST_MAX - 8 && ts_n < TS_MAX {
         let slot: i64 = p & (DC_HALF - 1) | DC_HALF;
         if p >> 12 != p0 >> 12 { break; }
         if dc[slot].tag != p { again = true; break; }
@@ -1020,6 +1113,10 @@ fn jit_translate(p0: u32, slot0: i64) {
     }
     if !done { jit_leave(p); }
     jc[1] = jc[1] | ((n << 2) as! u8);       // the length into the first instruction
+    for k in ts_n {
+        let at = ts_at[k];
+        jc[at + 1] = jc[at + 1] | (((n - ts_cnt[k]) << 2) as! u8);
+    }
     jit_exits(n, p0, short_at);
     jit_write(jit_mem + jit_used, jc[..]);
     jit_code[s0] = jit_mem + jit_used;
