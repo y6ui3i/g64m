@@ -4809,3 +4809,81 @@ answers; and a block given back in spite of its page's generation is dropped whe
 next reached, by the check there.
 
 By the card: the first branch. Task 3 (the unknown kinds) is next, then task 4.
+
+## E064: Where an interactive Linux boot's time goes (2026-11-17)
+
+- **Hypothesis** (the owner's, from watching it): with `--jit` the boot in a terminal still
+  feels slow, and drawing looks like what takes the time. Checked before anything is
+  changed: the boot through a pseudo-terminal, stopped at the prompt, against the same boot
+  headless. If it is drawing, the process's own CPU time is most of the wall time; if it is
+  the pacing against real time (`run_serial` sleeps until a second of guest time has taken
+  a second), most of the wall time is sleep, and the wall time is the boot's guest time,
+  1,651 million instructions at 76.4 million a second: 21.6 seconds, whatever the host does.
+- **What changed since last time**: the JIT made the host three times faster than the
+  guest's clock; before it, the two were close enough that pacing did not show.
+- **Next move for each result**:
+  - Mostly sleep → pace only the guest time that passes while the machine is halted, for a
+    kernel (Linux waits by halting; a DOS program may wait by counting, and keeps the old
+    pacing); `sleep 3` must still take three seconds
+  - Mostly CPU, and in the console → look at what is written to the terminal and how often
+- **Cut-off**: The same hour.
+
+### Result
+
+2026-11-17. **Sleep: 6.8 seconds of CPU in 22.0 seconds of wall time, and the 22.0 is the
+guest's 21.6. Paced only while halted, the boot in a terminal takes 7.5 seconds with
+`--jit` and 11.6 without.**
+
+| Linux boot to the prompt, in a pseudo-terminal | Wall time |
+|---|---:|
+| main, `--jit` | 21.6 s |
+| unpaced (now the default for a kernel), `--jit` | 7.5 s |
+| unpaced, interpreter | 11.6 s |
+| `--paced`, `--jit` | 21.6 s |
+
+`run_until` adds up the guest time it skips while the machine is halted (`idle_insns`);
+the two console loops, when `unpaced`, sleep for that and for nothing else, keeping count
+of what they have slept so that a sleep that overshoots is made up. A kernel is unpaced
+unless `--paced` is given; a disk image is paced unless `--unpaced` is. The guest's clock
+runs ahead of the wall while it computes: after the boot its uptime says 21 seconds.
+
+`tools/console_test.py` drives the real thing through a pseudo-terminal and passes: the
+boot to the shell in 11.0 seconds (it does not use `--jit`), `sleep 3` in 3.08 seconds of
+real time, Ctrl-] leaves; ELKS and FreeDOS as before (`sleep 3` in ELKS 3.25 seconds).
+Nothing here touches what a headless or scripted run does, which was never paced.
+
+### Addendum: the clocks should agree (the owner's question)
+
+2026-11-17. "Does the time not disagree with a real machine? It feels too fast." It does
+disagree: unpaced, the guest's clock runs ahead of the wall while the guest computes, three
+times as fast with `--jit`, and that had been made the default for a kernel. The owner chose
+the other way to be faster: **a faster guest CPU under the same clock.** `--speed N` makes
+a second of guest time N times as many instructions (`tick_insns` times N); pacing stays as
+it was, and is the default again for everything. `--unpaced` stays as an option.
+
+| With `--jit`, in a pseudo-terminal | Instructions to the prompt | Guest time | Real time |
+|---|---:|---:|---:|
+| `--speed 1` | 1,651 million | 21.6 s | 21.6 s |
+| `--speed 2` | 1,767 million | 11.6 s | 11.6 s |
+| `--speed 3` | 1,908 million | 8.3 s | 9.2 s |
+| `--speed 4` | 2,055 million | 6.7 s | 9.8 s |
+| `--speed 6` | 2,355 million | 5.1 s | 11.1 s |
+| `--speed 8` | 2,658 million | 4.4 s | 13.3 s |
+| `--unpaced` at speed 1 | 1,651 million | 21.6 s | 7.5 s |
+
+Two things the table says. A faster guest does more work to boot: each step of speed adds
+about 130 million instructions, the kernel's own delay loops, which are calibrated to last
+a time and so spin more on a faster CPU. And the host delivers about 200 million guest
+instructions a second over this boot (much of it code run for the first time, which the JIT
+has yet to translate), so up to speed 2 the clocks agree exactly, at 3 the wall is a second
+behind the guest by the prompt, and from 4 on the guest's clock falls behind the wall and
+the boot gets longer. 3 is the fastest boot with the clocks near each other on this
+machine: 9.2 seconds against the default's 21.6.
+
+Checked through a pseudo-terminal, with a shell command typed at the prompt: `sleep 3`
+takes 3.01 seconds of real time at speed 3, 3.03 at speed 2 and 3.07 unpaced. And the
+clocks, by `/proc/uptime` at the prompt (the kernel starts counting about three guest
+seconds after it is entered): at speed 3 the guest says 5 seconds where 10.8 of real time
+had passed in that run, at speed 2 it says 7 for 13.3; unpaced it says 13 for 7.6, which is
+the disagreement the owner saw. (Those real times are of runs driven by a script that reads
+the terminal; the table's are the emulator's own.)

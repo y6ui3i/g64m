@@ -109,29 +109,39 @@ each `--type` types at the keyboard. A scripted run is not paced and skips idle 
 ```
 
 A Linux kernel image is loaded and entered directly, and the terminal becomes its serial console:
-the boot log scrolls by, and after about 11 seconds there is a shell. **Ctrl-]** leaves.
+the boot log scrolls by, and after about 22 seconds there is a shell. **Ctrl-]** leaves.
 
 ```bash
 ./build/g86m --initrd images/initramfs-mini images/vmlinuz-lts
 ```
 
-`--wait` and `--type` work here too, on the serial port instead of the screen. Each `--wait` looks
-only at what was printed after the previous one matched.
+The 22 seconds are the guest's: guest time is counted in instructions, 76 million to the second
+for this machine, and the console paces it against real time. A faster host does not shorten
+them; a faster *guest* does. `--speed N` makes a second of guest time N times as many
+instructions, which is a CPU N times as fast under the same clock, and `--jit` (arm64 hosts) is
+what lets the host keep up with it:
 
 ```bash
-./build/g86m --initrd images/initramfs-mini --wait "~ # " --type "uname -a\n" --wait "~ # " images/vmlinuz-lts
+./build/g86m --jit --speed 3 --initrd images/initramfs-mini images/vmlinuz-lts
 ```
 
-To run test386, build its ROM with `COM_PORT equ 1` in `src/configuration.asm` and put `test386.bin`
-and `test386-EE-reference.txt` in `images/`:
+| On an Apple M1, with `--jit` | Guest time to the shell | Real time |
+|---|---:|---:|
+| `--speed 1` (the default) | 21.6 s | 21.6 s |
+| `--speed 2` | 11.6 s | 11.6 s |
+| `--speed 3` | 8.3 s | 9.2 s |
+| `--speed 4` | 6.7 s | 9.8 s |
+| `--speed 8` | 4.4 s | 13.3 s |
 
-```bash
-./build/g86m --com build/test386.out images/test386.bin
-```
+Up to the speed the host can deliver, the guest's clock and the wall agree; beyond it the guest's
+clock falls behind (a faster guest also spins more instructions in its own delay loops, so the
+boot is more work). `--speed` changes how many instructions run between two timer ticks, so a
+run's instruction count is its own for each speed; the tests use the default.
 
-Disk images and the test386 ROM are not in the repository. `images/fd2880.img` is the ELKS 0.9.1 2.88 MB floppy
-(`fd2880-minix.img` from the [ELKS releases](https://github.com/ghaerr/elks/releases/tag/v0.9.1)),
-and `images/fd14boot.img` is the FreeDOS 1.4 boot floppy from [freedos.org](https://www.freedos.org/).
+`--unpaced` is the other way to stop waiting: real time is then spent only on the guest time that
+passes while the machine is halted, so the boot takes 7.5 seconds with `--jit` at the default
+speed and `sleep 3` still takes three, but the guest's clock runs ahead of the wall while it
+computes. It is off unless asked for.
 
 ## Tests
 

@@ -204,7 +204,9 @@ fn run_until(limit: i64) -> i64 {
                 // Idle: nothing can happen until the timer fires, so jump there, but not past
                 // the limit, so that a caller pacing against real time keeps its count.
                 guard timer_on else { return RUN_STOPPED; }
-                vtime = if timer_at < limit { timer_at } else { limit };
+                let woke = if timer_at < limit { timer_at } else { limit };
+                idle_insns += woke - vtime;
+                vtime = woke;
                 if vtime >= timer_at { timer_fire(); }
                 continue;
             }
@@ -233,6 +235,27 @@ fn run_until(limit: i64) -> i64 {
     return RUN_BUDGET;
 }
 
+// Pacing. A console runs the guest against real time: a second of guest time, which is so many
+// instructions, takes a second. That is what a guest that waits by counting (a DOS program's
+// delay loop) needs. A guest that waits by halting until the next interrupt, as Linux does,
+// does not need it for what it computes, only for what it waits: with `unpaced`, real time is
+// spent only on the guest time that passed while the machine was halted (idle_insns), and
+// everything else runs as fast as the host can. `sleep 3` still takes three seconds; a boot
+// takes as long as its instructions take.
+var unpaced = false;
+var idle_insns = 0;          // guest time, in instructions, passed while halted
+var idle_slept = 0;          // real time, in nanoseconds, slept for it
+
+// Sleeps for the idle guest time not yet slept for.
+fn pace_idle() {
+    let owed = idle_insns * 1000000000 / insns_per_second() - idle_slept;
+    if owed <= 0 { return; }
+    let nap = if owed > 50000000 { 50000000 } else { owed };
+    let t = clock_ns();
+    con_sleep_us((nap / 1000) as! i32);
+    idle_slept += clock_ns() - t;
+}
+
 // The virtual CPU runs tick_insns instructions per timer tick, and the timer ticks 1,193,182
 // times a second, so this many instructions are one second of guest time.
 fn insns_per_second() -> i64 { return 1193182 * tick_insns; }
@@ -249,6 +272,7 @@ fn run_console(max: i64) -> i64 {
         guard console_keys() else { break; }
         console_render();
         guard result == RUN_BUDGET else { break; }
+        if unpaced { pace_idle(); continue; }
         let guest_ns = (vtime - v0) * 1000000000 / insns_per_second();
         let ahead = guest_ns - (clock_ns() - t0);
         if ahead > 0 {
@@ -282,6 +306,7 @@ fn run_serial(max: i64) -> i64 {
         }
         com_flush();
         guard !quit && result == RUN_BUDGET else { break; }
+        if unpaced { pace_idle(); continue; }
         let guest_ns = (vtime - v0) * 1000000000 / insns_per_second();
         let ahead = guest_ns - (clock_ns() - t0);
         if ahead > 0 {
@@ -301,6 +326,8 @@ fn main() {
     var show_screen = false;
     var show_ports = false;
     var headless = false;
+    var paced_arg = 0;           // 1 --paced, 2 --unpaced
+    var speed = 1;               // --speed: how many times the instructions in a second of guest time
     var dump_arg = 0;
     var com_arg = 0;
     var cpu_arg = 0;
@@ -320,6 +347,13 @@ fn main() {
         else if a[i] == "--screen" { show_screen = true; }
         else if a[i] == "--ports" { show_ports = true; }
         else if a[i] == "--headless" { headless = true; }
+        else if a[i] == "--paced" { paced_arg = 1; }
+        else if a[i] == "--speed" && i + 1 < a.len {
+            i++;
+            let n, ok = parse_int(a[i]);
+            if ok && n >= 1 && n <= 64 { speed = n; }
+        }
+        else if a[i] == "--unpaced" { paced_arg = 2; }
         else if a[i] == "--cpu" && i + 1 < a.len { i++; cpu_arg = i; }
         else if a[i] == "--faults" { log_faults = true; }
         else if a[i] == "--no-decode-cache" { dc_on = false; }
@@ -361,6 +395,7 @@ fn main() {
     guard read_file(path, img) else { write_stderr("g86m: cannot read image\n"); exit(2); }
     let rom = img.len == 65536 || img.len == 131072;
     let kernel = is_bzimage(img);
+    unpaced = paced_arg == 2;
     if kernel {
         var initrd: u8[>..] = [];
         if initrd_arg > 0 {
@@ -427,6 +462,9 @@ fn main() {
     }
     let t0 = clock_ns();
     if trace { trace_line(); }
+    // --speed N: a second of guest time is N times as many instructions, which is a CPU N
+    // times as fast under the same clock.
+    tick_insns = tick_insns * speed;
     let result = if interactive { run_console(max) } else if serial_console { run_serial(max) } else { run_until(max) };
     com_flush();
     let ms = (clock_ns() - t0) / 1000000;
