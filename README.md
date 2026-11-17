@@ -109,11 +109,20 @@ each `--type` types at the keyboard. A scripted run is not paced and skips idle 
 ```
 
 A Linux kernel image is loaded and entered directly, and the terminal becomes its serial console:
-the boot log scrolls by, and after about 11 seconds there is a shell. **Ctrl-]** leaves.
+the boot log scrolls by, and after about 11 seconds there is a shell (7.5 seconds with `--jit`, on
+an arm64 host). **Ctrl-]** leaves.
 
 ```bash
 ./build/g86m --initrd images/initramfs-mini images/vmlinuz-lts
+./build/g86m --jit --initrd images/initramfs-mini images/vmlinuz-lts
 ```
+
+A kernel is run *unpaced*: real time is spent only on the guest time that passes while the machine
+is halted, so `sleep 3` takes three seconds and the boot takes as long as its instructions take.
+The guest's own clock runs ahead of the wall while it computes. `--paced` puts back a second of
+real time for every second of guest time (the boot then takes 21.6 seconds, whatever the host);
+`--unpaced` asks for the same for a disk image, which is paced unless told otherwise, because a
+program that waits by counting needs it.
 
 `--wait` and `--type` work here too, on the serial port instead of the screen. Each `--wait` looks
 only at what was printed after the previous one matched.
