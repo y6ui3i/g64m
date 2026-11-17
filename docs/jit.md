@@ -91,9 +91,17 @@ ADC; a condition the record does not give), a record the block made is written o
 and one it inherited by a call to *the flags' code* after the far way, which does it by
 the kind in w26. The way out calls that too, so Goose always finds EFLAGS right.
 
+Flags that nothing can see are not made (E071). `j_dead` looks ahead in the block: if an
+instruction that sets all six flags comes before any that reads one, has a memory operand
+(a way out) or ends the block, then a shift, a rotate, INC, DEC, IMUL, ADC or SBB here is
+the bare host instruction. Otherwise INC and DEC put only the carry of the block's own
+record into EFLAGS, and ADC and SBB take the carry from the record. `--jit-off 65536`
+turns the look ahead off.
+
 **Memory.** `j_mem` is the short path of `seg_read` and `seg_write` inline: the offset below
-`seg_top`, the access inside one page, the TLB's tag in the right half, then a load or store
-in RAM. Anything else (a TLB miss, a fault to come, a store into a page of code) goes to a way
+`seg_top`, the TLB's tag in the right half compared with the page of the access's *last*
+byte (which also says the access is inside one page: a tag has its index's low eight bits,
+and the next page has not; E072), then a load or store in RAM. Anything else (a TLB miss, a fault to come, a store into a page of code) goes to a way
 out placed after the block's body, which stores the registers changed so far, writes the
 flags out, and returns the address of *that* instruction and the count of instructions
 executed before it (the time for the rest is given back). The interpreter then executes that
@@ -137,7 +145,8 @@ without the JIT. The self-checks written for the JIT: `s_jit` (blocks without me
 `s_jitseg` (a segment's limit), `s_jitring` (the privilege level), `s_jitops` (8-bit
 operations, shifts, rotates, the arithmetic to memory, ADC, SBB, SETCC), `s_jitslot` (a block
 whose decode-cache entry goes and comes back), `s_jitchain` (blocks that lead to one another;
-the stops are taken here), `s_jitfar` (the far way's four tests), `s_jitflags` (the record from block to block), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
+the stops are taken here), `s_jitfar` (the far way's four tests), `s_jitflags` (the record from block to block), `s_jitdead` (flags never seen, the carry
+alone, and what a fault's handler finds), `s_jitstr` (string instructions, 16-bit moves, IMUL), `s_jittsc`
 (RDTSC), and `s_cslimit` (blocks at the code segment's limit). The JIT's self-checks are
 also run with room for 70,000 bytes of code, so that it fills up while they run.
 
@@ -149,24 +158,28 @@ before the eighth arrival anywhere (the first stop sweep). The count of instruct
 blocks, printed with `--jit`, shows the last. A fourth: an instruction the assembler encodes
 another way than the one meant (`test al, imm` and `mov cx, dx` have two encodings each).
 
-## Where it stands (2026-11-18, after E069)
+## Where it stands (2026-11-18, after E072)
 
-Linux boot to the shell prompt, Apple M1:
+Linux boot to the shell prompt, Apple M1, medians of five in one hour:
 
 | | Host instructions | Cycles |
 |---|---:|---:|
-| Interpreter (main before the JIT) | 145.7 billion | 29.0 billion |
-| `--jit` after E063 | 94.9 billion | 18.2 billion |
-| `--jit` after E065 (linked) | 74.7 billion | 15.0 billion |
-| `--jit` after E066 (kinds) | 58.0 billion | 12.95 billion |
-| `--jit` after E069 (the far way) | 48.6 billion | 5 to 8% under E066 the same hour |
+| Interpreter (main before the JIT) | 145.7 billion | 28.36 billion |
+| `--jit` after E066 (kinds) | 58.0 billion | 13.35 billion |
+| `--jit` after E069 (the far way) | 48.7 billion | about 12.4 billion |
+| `--jit` after E070 (the record kept) | 45.9 billion | 10.86 billion |
+| `--jit` after E071 (flags nothing reads) | 42.7 billion | 10.06 billion |
+| `--jit` after E072 | 41.1 billion | 9.72 billion |
 
-- 97.7% of the guest instructions run in blocks (1,613 of 1,651 million).
+- 66% fewer cycles than the interpreter. A guest instruction costs 25 host instructions
+  over the whole boot, where the interpreter's costs 88.
+- 97.7% of the guest instructions run in blocks (1,613 of 1,651 million); 250.8 million
+  blocks are begun, 6.4 instructions each.
 - Generated code is entered 16.5 million times in a boot; the far way finds a block 25.2
   million times; 34 thousand link slots are filled.
-- 65.7 thousand blocks are translated, 31.8 MB of code, no flush (the room is 64 MB).
-- A sample of the boot: generated code 63%, `exec_short` 11%, `exec_general` 9%,
-  `exec_one` (with `jit_blocks`) 7%.
+- 65.7 thousand blocks are translated, 22.6 MB of code, no flush (the room is 64 MB).
+- What generated code still comes back for, in millions (E069's count): an instruction
+  with no executor 6.95, a way out 2.5, the far way finding nothing 1.96.
 
 ## Tasks
 
@@ -183,9 +196,11 @@ started; this list is updated when one is done.
 | 4c | A block of one instruction where that is a jump | 4.5 million trips (E067) | done, E068 |
 | 5 | The flags' record kept across the end of a block | Up to thirty instructions at most block ends | done, E070: 5% of the instructions, 9% of the cycles, a fifth of the code |
 | 6 | The interpreter's cost of carrying the JIT, measured over layouts again | E062 read 1.1% in one layout; E060 0.1% in three; E063 0.1% in one | |
-| 7 | The code cache full: drop everything and start again | The Linux boot fills 32 MB once | done, E063 |
+| 7 | The code cache full: drop everything and start again | The Linux boot fills 32 MB once | done, E063; the room is 64 MB since E069 |
 | 8 | A page that is both stored into and run: its blocks are dropped and remade for ever | Not measured | |
 | 11 | A loop with no instruction for the general path in it never gets a block: arrivals are counted only where a run begins and where a block ends | Found in E065; the Linux boot hides it because the timer ends runs | |
-| 12 | What is still interpreted: REP string instructions, MUL and DIV, rotates through carry and by CL, 16-bit forms other than `mov`, the general path | 4.6% of the instructions, and what generated code comes back for | |
+| 12 | The instructions with no executor that blocks stop at: `mov eax, moffs` and back, group 83 with a prefix, MUL and DIV, REP string instructions, `push r/m` and `push imm`, LEAVE, PUSHF, CMPXCHG, BSWAP, SHRD and SHLD. The translator reads what `classify` left, so each needs a kind of its own above `K_LAST` that only the translator knows | 6.95 of the 16.5 million trips (E067, E069) | |
+| 13 | INC and DEC in a block that inherited a record: the carry alone, by a second entry of the flags' code | 29 million whole records written for one bit (E071) | |
+| 14 | A shift or rotate whose flags may be seen, after a record the block made: only what it keeps (the auxiliary carry, the overflow) written | 19 million (E071) | |
 | 10 | Blocks are made at many overlapping starts (71 thousand in a boot, 35 MB of code): a block for an address inside an existing block could enter that block's code part way | Translation time and the one flush | |
 | 9 | Whether `--jit` becomes the default on arm64 | After 4, with the suite run both ways | |

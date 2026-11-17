@@ -5228,3 +5228,110 @@ inherited; a way out that does not pass its kind shows only if the access really
 (`mov eax, [addr]` is an instruction with no executor: the block ended before it); and the
 flags' code set w26 to 0 for nothing, since the block that called it says so itself where
 it ends: taken out.
+
+## E071: Flags that nothing reads are not made (2026-11-18)
+
+- **Hypothesis**: E070's count: EFLAGS is written out 150 million times inside blocks, each
+  about thirty host instructions, for instructions that keep some of the old flags (shifts,
+  rotates, INC, DEC, IMUL) or read the carry (ADC, SBB). Three things, none of which changes
+  what the guest can see:
+  1. Where the instructions that follow in the block set all six flags before any reads
+     one, with no way out and no end of the block between, the flags of this instruction
+     are never seen: neither the old ones are written out nor its own made.
+  2. INC and DEC keep only the carry: of a record the block made, only the carry is put
+     into EFLAGS (six instructions).
+  3. ADC and SBB read only the carry and set all six: the carry is taken from the record,
+     and nothing is written out first.
+  **EFLAGS written out inside blocks under 60 million times, and the boot's host
+  instructions 5% or more under E070's.**
+- **What changed since last time**: E070 moved the writing from every block's end to where
+  it is needed; this is about the places that still need it.
+- **Next move for each result**:
+  - 5% or more → keep, then E072
+  - Under 2% → the look ahead finds few; count how far the next setter is and what is
+    between, before anything else
+  - A test fails with `--jit` only → `--jit-off 65536` turns the look ahead off; halve
+- **Cut-off**: The suite, the boot's count and time, cases in `s_jitflags` for each of the
+  three with the flags read afterwards and not, wrong builds.
+
+## E072: The page's end and the TLB's tag in one comparison (2026-11-18)
+
+- **Hypothesis**: A memory access of two or four bytes costs seventeen host instructions
+  before the load or store, three of them the test that it does not cross a page. The
+  TLB's tag at a page's index can only be that page's number or one with the same low
+  eight bits; the page of the access's last byte, where it crosses, is the next one. So
+  comparing the tag with the page of the *last* byte makes both tests at once: one `add`
+  for three instructions. **The boot's host instructions 2% or more under E071's.**
+- **What changed since last time**: Nothing in the design; it is the inline short path of
+  E061, two instructions shorter.
+- **Next move for each result**:
+  - 2% → keep
+  - Less → keep if the suite passes (it is not slower); memory accesses are then fewer
+    than thought
+- **Cut-off**: The suite (`s_pagecross`, `s_jitmem`), the boot's count, one wrong build.
+
+### Result (E071)
+
+2026-11-18. **Kept: the boot takes 42.7 billion host instructions (45.9, 7% fewer) and
+10.06 billion cycles (10.86).** By the card: the first branch.
+
+EFLAGS written out inside blocks, millions in a boot (`build/jitcount3.py`):
+
+| | E070 | E071 |
+|---|---:|---:|
+| Inline, from a record the block made | 89.9 | 20.7 |
+| Asked by a block that inherited whatever there was | 61.1 | 42.8 |
+| The flags' code found a record and wrote it (the way out's 16.5 included) | 60.5 | 43.2 |
+
+What is left inline: rotates 9.5 million and shifts 9.5 whose flags something may see (a
+memory operand follows, or the block ends). What is left asked: INC and DEC 29 million,
+which keep the carry of a record the block did not make and have the whole of it written.
+
+**What was built.** `j_dead` looks ahead from an instruction through the decode cache, as
+far as twelve instructions: true if one that sets all six flags and reads none comes
+before any that reads a flag, has a memory operand (a way out, after which the interpreter
+or a fault's handler would see EFLAGS), or ends the block. Between, instructions that touch
+no flag, and those that keep some without reading any (INC, DEC, shifts, rotates, IMUL,
+between registers), which by the same look ahead make none themselves. Where it is true,
+a shift, a rotate, INC, DEC, IMUL, ADC or SBB is the bare host instruction. Where it is
+not: INC and DEC put only the carry of the block's own record into EFLAGS; ADC and SBB
+take the carry from the record and write nothing out first. `--jit-off 65536` turns the
+look ahead off.
+
+**Two orders that mattered**, both found by reading before running: the flags' code and
+the inline writing use w6, where the place of a memory operand waits for the store, so
+whatever is written out is written before the place is worked out; and the way out of a
+memory operand has to leave with the record as it was, so for INC and DEC of memory the
+carry is settled after the operand's way out, not before.
+
+**Tests.** `s_jitdead`: nineteen blocks (the carry kept, the carry read, flags never
+seen, flags seen after an instruction that touches none and after one with no executor),
+and four in which the instruction after a shift, a rotate, an INC or an ADC faults on a
+segment's limit and the handler sums the EFLAGS in its frame. Sixteen wrong builds, each
+caught by it; five passed at first. ADC after a logical instruction and a shift by CL
+with the wrong count register were not in the test or had the same value in both
+registers; the end of the block taken for a setter needed an instruction with no executor
+that has a ModRM byte, since the look ahead refuses the others earlier. Two wrong builds
+were no wrong builds and were dropped: an INC between taken as touching no flag (it finds
+its own flags never seen: this became the rule above and found more), and the carry of an
+INC's record computed again (it is in EFLAGS already). Not covered by a wrong build: the
+guards that keep a block from being cut between the instruction and the setter (its
+length, the room for ways out). A block cut there would only show stale flags to an
+interrupt taken between the two blocks.
+
+### Result (E072)
+
+2026-11-18. **Kept: 41.1 billion host instructions (42.7, 3.8% fewer), 9.72 billion cycles
+(10.06).** By the card: the first branch. One wrong build (the tag compared with the page
+of the first byte), caught by `s_jitmem`. `tools/difftest.sh` has 123 lines, all ok.
+
+| Linux boot to the shell prompt, medians of five, one hour | Host instructions | Cycles |
+|---|---:|---:|
+| Interpreter (main before the JIT) | 145.7 billion | 28.36 billion |
+| `--jit`, E066 (this morning's main) | 58.0 billion | 13.35 billion |
+| `--jit`, E070 | 45.9 billion | 10.86 billion |
+| `--jit`, E071 | 42.7 billion | 10.06 billion |
+| `--jit`, E072 | 41.1 billion | 9.72 billion |
+
+With `--jit` the boot now takes 66% fewer cycles than the interpreter, and 27% fewer than
+this morning.

@@ -574,23 +574,27 @@ fn j_ea(mm: u32, disp: u32) {
 // The short path of seg_read and seg_write (state.goose), for n bytes at the offset in w16 in
 // segment sg: the offset below seg_top, the access inside one page, the TLB's tag for a read
 // or for a write at this privilege level. Leaves in x6 where the bytes are in RAM; anything
-// else goes to the way out made last. An entry in the TLB says the page is in RAM.
+// else goes to the way out made last. An entry in the TLB says the page is in RAM. Uses w17
+// and w7.
 fn j_mem(sg: u32, n: u32, write: bool) {
     a_ldrn(T2, 21, sg * 4);                              // seg_top[sg]
     a_op(3, 31, T1, T2, 0);
     j_out(C_HS);
     a_ldr(T2, BASE_AT + sg * 4);                         // the linear address
     a_op(0, T1, T1, T2, 0);
-    if n > 1 {
-        e(0x12002C00 | T1 << 5 | T2);                    // and w17, w16, #0xFFF
-        a_subsi(31, T2, 0x1000 - n);
-        j_out(C_HI);
-    }
     e(0x53000000 | 12 << 16 | 19 << 10 | T1 << 5 | T2);  // ubfx w17, w16, #12, #8
     a_op(5, T2, T2, R_MODE, 0);
     e(0x8B000000 | T2 << 16 | 2 << 10 | 20 << 5 | T2);   // add x17, x20, x17, lsl #2
     a_ldrn(T3, T2, if write { 4096 } else { 0 });        // the tag
-    e(0x6B400000 | T1 << 16 | 12 << 10 | T3 << 5 | 31);  // cmp w6, w16, lsr #12
+    if n > 1 {
+        // Against the page of the access's last byte: where that is the next page, the tag
+        // cannot be it (a tag has its index's low eight bits), so an access across two
+        // pages leaves here too (E072).
+        a_addi(7, T1, n - 1);
+        e(0x6B400000 | 7 << 16 | 12 << 10 | T3 << 5 | 31);   // cmp w6, w7, lsr #12
+    } else {
+        e(0x6B400000 | T1 << 16 | 12 << 10 | T3 << 5 | 31);  // cmp w6, w16, lsr #12
+    }
     j_out(C_NE);
     a_ldrn(T3, T2, if write { 6144 } else { 2048 });     // the page in RAM
     e(0x12002C00 | T1 << 5 | T2);                        // and w17, w16, #0xFFF
@@ -687,6 +691,73 @@ fn j_get8(rd: u32, i: u32) {
 fn j_set8(i: u32, rs: u32) {
     if i < 4 { e(0x33001C00 | rs << 5 | g(i)); jd |= 1 << i; }
     else { e(0x33181C00 | rs << 5 | g(i - 4)); jd |= 1 << (i - 4); }
+}
+
+// Are the flags as they are after the instruction before address `from` never seen? True if
+// the instructions from there on, which the block will hold, set all six flags before any
+// reads one, with no way out between (so with no memory operand) and no end of the block.
+// `cnt` is how many instructions the block has before `from`. (E071.)
+fn j_dead(from: u32, cnt: u32) -> bool {
+    if jit_off & 65536 != 0 || j_pairing { return false; }
+    // The block must not be cut short before those instructions for want of room for ways
+    // out (jit_translate); they add none, the instruction at hand a few at most.
+    if sx_n + 4 >= SX_MAX - 2 || st_n + 12 >= ST_MAX - 8 { return false; }
+    var p = from;
+    for k: u32 in 12 {
+        if cnt + k >= JIT_MAX || p >> 12 != jp0 >> 12 { return false; }
+        let slot: i64 = p & (DC_HALF - 1) | DC_HALF;
+        if dc[slot].tag != p { return false; }
+        var kind = dc[slot].pre.kind;
+        if kind == K_BLOCK { kind = jit_kind[slot - DC_HALF]; }
+        let mm = dc[slot].m;
+        let op = dc[slot].pre.op;
+        if mm & 0x0C != 0x0C && kind != K_MOV_R_I && kind != K_NOP && kind != K_LEA && kind != K_ALU_A_I
+            && kind != K_TEST_A_I && kind != K_ALU8_A_I && kind != K_TEST8_A_I && kind != K_INC && kind != K_DEC { return false; }
+        if kind - 1 >= K_LAST || !jit_plain(kind, mm, op) { return false; }
+        // Sets all six, reads none.
+        if kind >= K_ALU_RM_R_OP && kind < K_ALU_RM_I_OP + 8 { return true; }
+        if kind == K_TEST || kind == K_TEST_I || kind == K_ALU_A_I || kind == K_TEST_A_I || kind == K_NEG { return true; }
+        if kind == K_ALU8_RM_R || kind == K_ALU8_R_RM || kind == K_ALU8_RM_I || kind == K_ALU8_A_I { return true; }
+        if kind == K_TEST8 || kind == K_TEST8_I || kind == K_TEST8_A_I { return true; }
+        // Touches no flag; or keeps some and reads none into its result (INC, DEC, a shift,
+        // a rotate, IMUL, between registers): those will find their own flags never seen,
+        // by the same look ahead, and make none.
+        if !(kind == K_MOV_R_R || kind == K_MOV_R_R_89 || kind == K_MOV_R_I || kind == K_NOP || kind == K_LEA
+            || kind == K_MOV_RM_I || kind == K_MOVZX8 || kind == K_MOVZX16 || kind == K_MOV8_R_RM
+            || kind == K_MOV8_RM_R || kind == K_MOV8_RM_I || kind == K_MOV16_R_RM || kind == K_MOV16_RM_R
+            || kind == K_NOT || kind == K_INC || kind == K_DEC || kind == K_INC_RM || kind == K_DEC_RM
+            || kind == K_SHL_I || kind == K_SHR_I || kind == K_SAR_I || kind == K_SHIFT_CL || kind == K_SHIFT_I
+            || kind == K_IMUL) { return false; }
+        p = dc_next[slot];
+    }
+    return false;
+}
+var j_pairing = false;       // the instruction being generated is the first of a pair: a jump reads its flags
+
+// The carry of the record the block made, into EFLAGS: all an INC or a DEC keeps of the old
+// flags. (What else of EFLAGS is stale is what the INC or DEC sets.) A record the block
+// inherited is written out whole, by the flags' code.
+fn j_settle_cf() {
+    if jf == F_ANY { j_settle(); return; }
+    if jf != F_MEM && jf != F_INC && jf != F_DEC {
+        a_ldr(T1, FLAGS_AT);
+        e(0x121F7800 | T1 << 5 | T1);        // and w16, w16, #0xFFFFFFFE
+        if jf != F_LOGIC {
+            j_carry(T2);
+            a_op(5, T1, T1, T2, 0);
+        }
+        a_str(T1, FLAGS_AT);
+    }
+    jf = F_MEM;
+}
+
+// The carry flag as 0 or 1 into rd, from the record the block made (not for F_ANY).
+fn j_carry(rd: u32) {
+    if jf == F_MEM || jf == F_INC || jf == F_DEC { a_ldr(rd, FLAGS_AT); e(0x12000000 | rd << 5 | rd); }
+    else if jf == F_LOGIC { a_movi(rd, 0); }
+    else if jf == F_ADD || jf == F_ADD8 { a_op(3, 31, R_R, R_A, 0); a_cset(rd, C_LO); }
+    else if jf == F_SUB || jf == F_SUB8 { a_op(3, 31, R_A, R_B, 0); a_cset(rd, C_LO); }
+    else { a_mov(rd, R_A); }
 }
 
 // Can this entry's instruction go into a block, as anything but its last?
@@ -796,15 +867,18 @@ fn j_alu8(aop: u8, test: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, t
 }
 
 // ADC and SBB, 32-bit. The carry comes from EFLAGS and the flags go straight back to it.
-fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool, b_imm: bool, imm: u32) {
+fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool, b_imm: bool, imm: u32, dead: bool) {
     let regs = mm & 0x0C == 0x0C;
     let rm = mm >> 7 & 7;
     let store = to_rm && !regs;
-    j_settle();
+    // A record the block inherited is written out; of one it made, only the carry is
+    // wanted, since all six flags are set here (E071).
+    if jf == F_ANY { j_settle(); }
     if !regs {
         j_operand(mm, disp, p, cnt, 4, store);
         a_load(4, T4);
     }
+    j_carry(7);
     if to_rm {
         if regs { a_mov(R_A, g(rm)); } else { a_mov(R_A, T4); }
         if b_imm { a_movi(R_B, imm); } else { a_mov(R_B, g(reg)); }
@@ -812,20 +886,25 @@ fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool,
         a_mov(R_A, g(reg));
         if regs { a_mov(R_B, g(rm)); } else { a_mov(R_B, T4); }
     }
-    a_ldr(T1, FLAGS_AT);
-    e(0x12000000 | T1 << 5 | T2);            // and w17, w16, #1: CF
     if sbb {
-        a_op(3, 31, 31, T2, 0);              // the host's carry is the opposite of a borrow
+        a_op(3, 31, 31, 7, 0);               // the host's carry is the opposite of a borrow
         e(0x7A000000 | R_B << 16 | R_A << 5 | R_R);      // sbcs
     } else {
-        a_subsi(31, T2, 1);                  // the host's carry is CF
+        a_subsi(31, 7, 1);                   // the host's carry is CF
         e(0x3A000000 | R_B << 16 | R_A << 5 | R_R);      // adcs
     }
     // The result to memory now: its place is in x6, which the flags below use as scratch.
     // (A store leaves the host's flags alone.)
     if store { a_store(4, R_R); }
+    if dead {
+        // Its flags are never seen; nor are the old ones, which the record no longer gives.
+        jf = F_MEM;
+        if !store { if to_rm { a_mov(g(rm), R_R); } else { a_mov(g(reg), R_R); } }
+        return;
+    }
     a_cset(T2, if sbb { C_LO } else { C_HS });
     a_cset(T3, C_VS);
+    a_ldr(T1, FLAGS_AT);
     a_movi(T4, 0xFFFFF72A);
     a_op(4, T1, T1, T4, 0);
     a_op(5, T1, T1, T2, 0);                  // CF
@@ -836,6 +915,7 @@ fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool,
     a_op(5, T1, T1, T2, 0);
     j_szp(T1, R_R, T2, false);
     a_str(T1, FLAGS_AT);
+    jf = F_MEM;
     if store { return; }
     if to_rm { a_mov(g(rm), R_R); jd |= 1 << rm; }
     else { a_mov(g(reg), R_R); jd |= 1 << reg; }
@@ -844,15 +924,24 @@ fn j_adc(sbb: bool, mm: u32, disp: u32, p: u32, cnt: u32, reg: u32, to_rm: bool,
 // A shift of a 32-bit operand by a constant from 1 to 31: which is 4 or 6 SHL, 5 SHR, 7 SAR.
 // AF, and OF unless the count is one, stay as they were, so what was in the record is
 // written out first.
-fn j_shift(which: u32, n: u32, mm: u32, disp: u32, p: u32, cnt: u32) {
+fn j_shift(which: u32, n: u32, mm: u32, disp: u32, p: u32, cnt: u32, nx: u32) {
     let regs = mm & 0x0C == 0x0C;
     let rm = mm >> 7 & 7;
-    j_settle();
     var v = g(rm);
+    let dead = j_dead(nx, cnt + 1);
+    if !dead { j_settle(); }
     if !regs {
         j_operand(mm, disp, p, cnt, 4, true);
         a_load(4, T4);
         v = T4;
+    }
+    if dead {
+        // Its flags are never seen.
+        if which == 5 { a_lsr(v, v, n); }
+        else if which == 7 { e(0x13007C00 | n << 16 | v << 5 | v); }
+        else { a_lsl(v, v, n); }
+        if !regs { a_store(4, T4); }
+        return;
     }
     if which == 5 { a_lsr(R_R, v, n); }
     else if which == 7 { e(0x13007C00 | n << 16 | v << 5 | R_R); }      // asr
@@ -872,13 +961,18 @@ fn j_shift(which: u32, n: u32, mm: u32, disp: u32, p: u32, cnt: u32) {
 
 // A shift of a register by CL. The count is known only when it runs: nothing changes for a
 // count of zero, and OF only for a count of one. So the flags go straight to EFLAGS.
-fn j_shift_cl(which: u32, rm: u32) {
+fn j_shift_cl(which: u32, rm: u32, dead: bool) {
+    let shv: u32 = if which == 5 { 0x1AC02400 } else if which == 7 { 0x1AC02800 } else { 0x1AC02000 };
+    if dead {
+        // Its flags are never seen. (The host takes the count modulo 32, as the guest does.)
+        e(shv | g(1) << 16 | g(rm) << 5 | g(rm));
+        return;
+    }
     j_settle();
     e(0x12001000 | g(1) << 5 | T1);          // and w16, w9, #31: the count
     let skip = jc.len;
     e(0x34000000 | T1);                      // cbz w16
     a_mov(7, g(rm));
-    let shv: u32 = if which == 5 { 0x1AC02400 } else if which == 7 { 0x1AC02800 } else { 0x1AC02000 };
     e(shv | T1 << 16 | 7 << 5 | R_R);
     // CF: the last bit shifted out. (A shift by a register takes its count modulo 32.)
     if which == 5 || which == 7 { a_subi(T2, T1, 1); } else { e(0x4B0003E0 | T1 << 16 | T2); }
@@ -905,9 +999,14 @@ fn j_shift_cl(which: u32, rm: u32) {
 
 // ROL (left) or ROR of a register by a constant from 1 to 31. CF, and OF for ROL at every
 // count and for ROR at a count of one; the rest of EFLAGS stays.
-fn j_rotate(left: bool, n: u32, rm: u32) {
-    j_settle();
+fn j_rotate(left: bool, n: u32, rm: u32, dead: bool) {
     let by = if left { 32 - n } else { n };
+    if dead {
+        // Its flags are never seen.
+        e(0x13800000 | g(rm) << 16 | by << 10 | g(rm) << 5 | g(rm));
+        return;
+    }
+    j_settle();
     e(0x13800000 | g(rm) << 16 | by << 10 | g(rm) << 5 | R_R);          // ror
     a_mov(g(rm), R_R);
     jd |= 1 << rm;
@@ -1040,15 +1139,29 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
         jd |= 1 << SP | 1 << (op & 7);
     }
     else if kind == K_INC || kind == K_DEC || kind == K_INC_RM || kind == K_DEC_RM {
-        // CF is the one before: what is in the record is written out first.
-        j_settle();
         let up = kind == K_INC || kind == K_INC_RM;
         let in_mem = (kind == K_INC_RM || kind == K_DEC_RM) && !regs;
         let r = if kind == K_INC || kind == K_DEC { (op & 7) as! u32 } else { rm };
-        if in_mem { j_operand(mm, disp, p, cnt, 4, true); a_load(4, R_A); } else { a_mov(R_A, g(r)); }
-        a_movi(R_B, 1);
-        if up { a_addi(R_R, R_A, 1); jf = F_INC; } else { a_subi(R_R, R_A, 1); jf = F_DEC; }
-        if in_mem { a_store(4, R_R); } else { a_mov(g(r), R_R); jd |= 1 << r; }
+        let dead = j_dead(dc_next[slot], cnt + 1);
+        // A record the block inherited is written out whole, before the place in memory is
+        // worked out (the flags' code uses the register that holds it).
+        if !dead && jf == F_ANY { j_settle(); }
+        if in_mem { j_operand(mm, disp, p, cnt, 4, true); a_load(4, T4); }
+        if dead {
+            // Its flags are never seen: the old ones stay as they are, wherever they are.
+            if in_mem {
+                if up { a_addi(T4, T4, 1); } else { a_subi(T4, T4, 1); }
+                a_store(4, T4);
+            } else if up { a_addi(g(r), g(r), 1); } else { a_subi(g(r), g(r), 1); }
+        } else {
+            // CF is the one before: of what is in the record, that is written out first.
+            // (After the way out, which leaves with the record as it is.)
+            j_settle_cf();
+            if in_mem { a_mov(R_A, T4); } else { a_mov(R_A, g(r)); }
+            a_movi(R_B, 1);
+            if up { a_addi(R_R, R_A, 1); jf = F_INC; } else { a_subi(R_R, R_A, 1); jf = F_DEC; }
+            if in_mem { a_store(4, R_R); } else { a_mov(g(r), R_R); jd |= 1 << r; }
+        }
     }
     else if kind == K_NOT {
         if regs { e(0x2A2003E0 | g(rm) << 16 | g(rm)); jd |= 1 << rm; }                     // mvn
@@ -1069,9 +1182,9 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     else if kind == K_TEST_I { j_alu32(4, true, mm, disp, p, cnt, reg, true, true, imm); }
     else if kind == K_ALU_A_I { j_alu32(op >> 3, false, 0x0C, 0, p, cnt, 0, true, true, imm); }
     else if kind == K_TEST_A_I { j_alu32(4, true, 0x0C, 0, p, cnt, 0, true, true, imm); }
-    else if kind == K_ALU_RM_R { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, true, false, 0); }
-    else if kind == K_ALU_R_RM { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, false, false, 0); }
-    else if kind == K_ALU_RM_I { j_adc(reg == 3, mm, disp, p, cnt, reg, true, true, imm); }
+    else if kind == K_ALU_RM_R { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, true, false, 0, j_dead(dc_next[slot], cnt + 1)); }
+    else if kind == K_ALU_R_RM { j_adc(op >> 3 == 3, mm, disp, p, cnt, reg, false, false, 0, j_dead(dc_next[slot], cnt + 1)); }
+    else if kind == K_ALU_RM_I { j_adc(reg == 3, mm, disp, p, cnt, reg, true, true, imm, j_dead(dc_next[slot], cnt + 1)); }
     else if kind == K_ALU8_RM_R { j_alu8(op >> 3, false, mm, disp, p, cnt, reg, true, false, 0, false); }
     else if kind == K_ALU8_R_RM { j_alu8(op >> 3, false, mm, disp, p, cnt, reg, false, false, 0, false); }
     else if kind == K_ALU8_RM_I { j_alu8(reg as! u8, false, mm, disp, p, cnt, reg, true, true, imm, false); }
@@ -1079,11 +1192,11 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     else if kind == K_TEST8 { j_alu8(4, true, mm, disp, p, cnt, reg, true, false, 0, false); }
     else if kind == K_TEST8_I { j_alu8(4, true, mm, disp, p, cnt, reg, true, true, imm, false); }
     else if kind == K_TEST8_A_I { j_alu8(4, true, mm, disp, p, cnt, 0, true, true, imm, true); }
-    else if kind == K_SHL_I { j_shift(4, imm, mm, disp, p, cnt); }
-    else if kind == K_SHR_I { j_shift(5, imm, mm, disp, p, cnt); }
-    else if kind == K_SAR_I { j_shift(7, imm, mm, disp, p, cnt); }
-    else if kind == K_SHIFT_CL { j_shift_cl(reg, rm); }
-    else if kind == K_SHIFT_I { if imm & 31 != 0 { j_rotate(reg == 0, imm & 31, rm); } }
+    else if kind == K_SHL_I { j_shift(4, imm, mm, disp, p, cnt, dc_next[slot]); }
+    else if kind == K_SHR_I { j_shift(5, imm, mm, disp, p, cnt, dc_next[slot]); }
+    else if kind == K_SAR_I { j_shift(7, imm, mm, disp, p, cnt, dc_next[slot]); }
+    else if kind == K_SHIFT_CL { j_shift_cl(reg, rm, j_dead(dc_next[slot], cnt + 1)); }
+    else if kind == K_SHIFT_I { if imm & 31 != 0 { j_rotate(reg == 0, imm & 31, rm, j_dead(dc_next[slot], cnt + 1)); } }
     else if kind == K_MOV16_R_RM {
         // The low half of a register from a register or from memory; the high half stays.
         if regs { e(0x33003C00 | g(rm) << 5 | g(reg)); }
@@ -1096,8 +1209,12 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
     else if kind == K_IMUL {
         // The product's low half; CF and OF say whether the whole product is more than that,
         // and the other flags stay, so the record is written out first.
-        j_settle();
         if regs { a_mov(T4, g(rm)); } else { j_operand(mm, disp, p, cnt, 4, false); a_load(4, T4); }
+        if j_dead(dc_next[slot], cnt + 1) {
+            e(0x1B007C00 | T4 << 16 | g(reg) << 5 | g(reg));     // mul wreg, wreg, w5
+            return;
+        }
+        j_settle();
         e(0x9B207C00 | T4 << 16 | g(reg) << 5 | R_R);    // smull x3, wreg, w5
         a_mov(g(reg), R_R);
         e(0x93407C00 | R_R << 5 | T1);                   // sxtw x16, w3
@@ -1219,7 +1336,9 @@ fn jit_translate(p0: u32, slot0: i64) {
             let first = jit_unpair(kind);
             if !jit_plain(first, mm, dc[slot].pre.op) { break; }
             let b = dc[slot].bytes;
+            j_pairing = true;
             jit_one(first, slot, p, n);
+            j_pairing = false;
             jit_jcc(jit_cc(K_JCC_MASK, b as! u32), nx, nx + (b >> 32) as! u32);
             last = p; n += 2; done = true;
         } else if kind - 1 < K_LAST && jit_plain(kind, mm, dc[slot].pre.op) {
