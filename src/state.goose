@@ -246,6 +246,9 @@ inline fn mem8(a: u32) -> u8 {
 // entries go, and its mark, and it is written by the short paths again.
 fn code_written(p: u32, n: u32) {
     let page: i64 = p >> 12;
+    // Whatever the JIT made of this page's instructions is no longer to be trusted (E059).
+    code_gen[page] += 1;
+    code_gen[(p + n - 1) >> 12] += 1;
     code_hits[page] += 1;
     if code_hits[page] >= 16 {
         code_forget(p >> 12);
@@ -271,6 +274,7 @@ fn code_forget(page: u32) {
     }
     code_mark[page] = 0;
     code_hits[page] = 0;
+    code_gen[page] += 1;
 }
 
 // Marks a physical page as holding entries, and takes it out of the write TLB.

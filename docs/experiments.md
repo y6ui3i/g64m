@@ -4343,3 +4343,122 @@ crosses as a slice, whose data pointer is the address of the guest's registers; 
 refused. By the card: the first branch. A call is less than half of one interpreted
 instruction, so a block does not have to be long to pay, and leaving generated code often
 is affordable; the design card is next.
+
+## E059: A JIT, first stage: blocks of instructions that touch no memory (2026-11-17)
+
+This card is the design as well as the first experiment. The stages after it are cards of
+their own.
+
+**Why generated code, and what the dull alternative is.** The interpreter is at 88 host
+instructions for a guest instruction, and E052 and E056 say what is left in it comes a
+fraction of a percent at a time. Generated code has no dispatch, no entry to look up, keeps
+the guest's registers in host registers and works the flags out only where something reads
+them. It is the one new technique this project takes on beside Goose itself; the interpreter
+stays whole and stays the default, and `--jit` turns the rest on.
+
+**The unit.** A block: instructions of 32-bit code that follow one another in one physical
+page, from the target of a jump to the next jump (included) or to the first instruction the
+translator does not know (excluded). It is found through the decode cache, whose entries say
+what each instruction is; nothing is decoded twice.
+
+**How it is entered.** The entry of a block's first instruction gets the kind `K_BLOCK`, and
+its own kind is kept beside it. The run dispatches it like any executor; the executor calls
+the generated code through C and gets back the next address and how many instructions ran,
+which the run counts where it counts a pair's second (E054). A block runs whole or not at
+all: it is given the run's time and the highest address the run may execute at, and if
+either is short it does nothing, and the general path runs its first instruction by its own
+kind.
+
+**What generated code may do.** It reads and writes the guest's registers and flags, and
+nothing else in this stage. It never faults and never calls back, so Goose's return out of
+`exec_one` does not have to cross it. The stage after this one adds memory operands the same
+way: the fast path inline, and for anything else the block stops before that instruction
+and the interpreter takes it.
+
+**Flags.** The translator knows which instruction set the flags last. The generated code
+keeps that instruction's operands and result in three host registers; a conditional jump at
+the block's end redoes the comparison on them with the host's own flags, and EFLAGS is
+written out only where the block is left.
+
+**When a block is made.** Each jump counts arrivals at its target; at the eighth, the
+block is translated.
+
+**When a block dies.** A store into a page that has decode-cache entries already goes the
+long way (E044); it now also moves the page's generation on, and a block made under another
+generation is dropped when it is next reached.
+
+- **Hypothesis**: The machinery above can be built in Goose with about forty lines of C, and
+  with `--jit` every test passes and the Linux boot stops at the same 1,651,240,001
+  instructions. Blocks without memory operands are short, so this stage is not expected to
+  be faster: the boot's cycles within 3% of the interpreter's either way, and a count of how
+  many instructions run in blocks (expected 10 to 20%).
+- **What changed since last time**: E058 showed the call. This is the first generated code
+  that executes guest instructions.
+- **Next move for each result**:
+  - Everything passes with `--jit`, the count is the same → the second stage: memory
+    operands with an exit to the interpreter, which is where the speed is
+  - A test fails only with `--jit` → the block's first wrong instruction, found by halving
+    the set of kinds the translator accepts
+  - Without `--jit` the boot is slower by 0.6% or more (the jumps now count arrivals) → the
+    counting moves out of the jump executors before anything else
+- **Cut-off**: This stage ends when the suite passes with and without `--jit`, or at three
+  wrong instructions that halving cannot find.
+
+### Result
+
+2026-11-17. **It works: with `--jit` every test passes and the Linux boot stops at the same
+1,651,240,001 instructions, 11.3% of them run in generated code. With it the boot is 0.7%
+faster than main; without it, the same source is 1.1% slower than main, which is over this
+card's line.** `tools/difftest.sh` has 97 lines, all ok, four of them with the JIT.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of three layouts |
+|---|---:|---:|
+| main (E057) | 145.6 billion | 27.35, 27.52, 27.41 billion |
+| This source, without `--jit` | 142.7 to 142.8 billion | 28.01, 27.52, 27.69 billion |
+| This source, with `--jit` | 144.0 to 144.1 billion | 27.48, 26.96, 27.30 billion |
+
+With `--jit`: 6,631 blocks, 1.15 MB of code, 186.8 million guest instructions in blocks.
+test386 with `--jit` is byte for byte the reference.
+
+**What was built.** `src/jit.c`, forty lines: map, copy, call. `src/jit.goose`, the
+translator: an emitter for the arm64 instructions it uses, the flags (the last
+flag-setting instruction's operands and result in three host registers; EFLAGS written out
+where a block is left; a conditional jump redoes the comparison with the host's flags, and
+where the condition cannot be had that way the block ends before the jump), and blocks of
+MOV between registers and of an immediate, LEA, the arithmetic and TEST between registers
+and with an immediate, INC and DEC, ending at a JMP, a conditional jump or a fused pair.
+A block is entered where the run finds a kind with no executor, so the interpreter's own
+path is not touched; it is counted there, and where it cannot run (the page was written
+since, or there is not the time or the room for all of it) its first instruction is run by
+its own kind.
+
+**Three designs of the entry, as in E053.** A `K_BLOCK` executor among the others, the
+count returned beside the address, and arrivals counted by the jump executors: 151.1
+billion host instructions without `--jit`, 3.8% over main. Taking the counting out of the
+jumps: 150.6. Undoing the three changes to the run one at a time: each was worth one to two
+billion, none was the culprit. Finding blocks where the run finds a kind with no executor
+(the branch is there already): 142.8 billion, under main. Arrivals are now counted where a
+run begins and where a block ends, which is less often and finds fewer blocks to start
+with; that is the stage's 11%.
+
+**The line this card set, and where it is.** "Without `--jit` slower by 0.6% or more: the
+counting moves out of the jump executors before anything else." That was done, and the
+instruction count is 1.9% under main's; the cycles are 0 to 2.4% over, by layout, 1.1% on
+average, and the layouts of this source differ among themselves by 1.8% where main's
+differ by 0.6%. The run's function is larger by the block's branch and its code has moved;
+E056 is the precedent for not chasing that by reformulation. It stands as an open cost of
+having the JIT in the source, to be weighed when the second stage says what the JIT gives.
+
+**Tests.** `s_jit`: thirty-odd blocks, one for each instruction the translator knows and
+each way a conditional jump is taken from a block's own flags, EFLAGS and the result summed
+against a trace run; INC after SUB in one block; a block changed in place too far from its
+first instruction for the store to empty that entry. `s_cslimit` now makes a block that
+runs past the segment's limit, which must not be run. Twenty-two wrong translators, each
+caught. Four passed at first, and one of those for a reason worth keeping: the changed
+instruction's result differed in bit 30 in four places of the sum, and the sum, which
+multiplies by three between terms, cancelled them exactly. The change is now in the low
+bits.
+
+By the card: the first branch. The second stage is memory operands: the fast path of
+`seg_read` and `seg_write` generated inline, and a block that leaves, with the state as the
+interpreter needs it, before an instruction whose operand is not on that path.

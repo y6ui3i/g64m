@@ -1102,6 +1102,10 @@ let K_SUB_RM_I_J = 93;   // SUB r/m, imm and Jcc
 let K_ALU8_A_I_J = 94;   // 8-bit arithmetic on AL and Jcc
 let K_TEST_I_J = 95;     // TEST r/m, imm32 and Jcc
 let K_LAST = 95;         // the largest kind with an executor
+// The first instruction of a block the JIT has translated (jit.goose). It is above K_LAST on
+// purpose: the run finds it where it finds a kind with no executor, off the path every other
+// instruction takes, and no executor has to know about blocks.
+let K_BLOCK = 254;
 
 // Byte k of the instruction, from its first eight.
 inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32; }
@@ -1822,6 +1826,9 @@ fn exec_short() {
         var p = a - lin_of;
         // The same address as the executor gave it, which for a pair has PAIR_RAN above it.
         var pr: u64 = p;
+        run_pmax = phys32 + off_max;
+        // Where a run begins is where a block may begin: the JIT counts the arrival (E059).
+        if jit_on && !moved { jit_arrive(a - lin_of); }
         let phys64: u64 = phys32;
         let off_max64: u64 = off_max;
         loop {
@@ -1863,11 +1870,29 @@ fn exec_short() {
             // recorded the operand: classify it now and, if it has an executor, run it with
             // that this time already. Or K_NONE.
             if kind - 1 >= K_LAST {
-                if kind != 0 { break; }
-                ins = dc[slot].pre;
-                classify(slot, code64(p));
-                kind = dc[slot].pre.kind;
-                if kind == K_NONE { break; }
+                if kind == K_BLOCK {
+                    // A block: all of it, if it is still good and there is the time and the
+                    // room; counted here. If not, its first instruction by its own kind.
+                    let n = jit_enter(slot, left);
+                    if n != 0 {
+                        p = jit_next;
+                        pr = p;
+                        left -= n;
+                        run_left = left;
+                        saved.ip = jit_next - pbase;
+                        ran = true;
+                        if left <= 0 { break; }
+                        jit_arrive(jit_next);
+                        continue;
+                    }
+                    kind = jit_kind[slot - DC_HALF];
+                } else {
+                    if kind != 0 { break; }
+                    ins = dc[slot].pre;
+                    classify(slot, code64(p));
+                    kind = dc[slot].pre.kind;
+                    if kind == K_NONE { break; }
+                }
             }
             pr = run_short(kind, slot, pbase, left);
             p = pr as! u32;
@@ -1964,7 +1989,9 @@ fn exec_general() -> bool {
                 if kind != 0 {
                     let pb = cpu.base[CS] - (a - key);
                     // One instruction is wanted here: of a pair, the first.
-                    cpu.ip = (run_short(kind, slot, pb, 0) as! u32) - pb;
+                    // Of a block, its first instruction by its own kind.
+                    let k1 = if kind == K_BLOCK { jit_kind[slot - DC_HALF] } else { kind };
+                    cpu.ip = (run_short(k1, slot, pb, 0) as! u32) - pb;
                     return true;
                 }
                 classify(slot, raw);
