@@ -1310,6 +1310,7 @@ fn classify(slot: i64, raw: u64) {
         dc[slot].mask = byte_mask(len);
         if jl != 0 { dc[slot].bytes = fd; }
         dc[slot].pre.kind = kind;
+        if jit_on && slot >= DC_HALF { jit_reclaim(slot); }
     } else {
         dc[slot].pre.kind = K_NONE;
     }
@@ -1879,7 +1880,9 @@ fn exec_short() {
                 ins = dc[slot].pre;
                 classify(slot, code64(p));
                 kind = dc[slot].pre.kind;
-                if kind == K_NONE { break; }
+                // No executor, or (the JIT took the entry back for a block it had,
+                // jit_reclaim) a block: either way the general path runs this one.
+                if kind >= K_BLOCK { break; }
             }
             pr = run_short(kind, slot, pbase, left);
             p = pr as! u32;
@@ -2030,6 +2033,9 @@ fn exec_general() -> bool {
             dc[slot].pre = ins;
             dc[slot].tag = key;
             if c32 && code_mark[key >> 12] == 0 { code_mark_page(key >> 12); }
+            // A new entry in this slot: whatever the JIT had counted or decided for the
+            // slot was about another instruction, or about this one before it was rewritten.
+            if c32 { dc_hot[slot - DC_HALF] = 0; }
             dc[slot].m = 0;
             dc[slot].disp = 0;
             dc_cur = slot;

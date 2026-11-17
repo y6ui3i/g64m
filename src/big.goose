@@ -32,14 +32,15 @@ var code_hits: u8[RAM_SIZE >> 12] = [0; RAM_SIZE >> 12];
 // The JIT's (jit.goose). For each physical page, a number that moves on whenever a store may
 // have changed an instruction in it; and for each entry of 32-bit code, how often a jump has
 // arrived at it and, once it heads a block, the block: where its code is, its entry's own
-// kind, how many instructions it is, where its last instruction begins, and the page's number
-// when it was made.
+// kind, how many instructions it is, where its last instruction begins, the page's number when it
+// was made, and (the slot may come to hold another instruction) the address it begins at.
 var code_gen: u32[RAM_SIZE >> 12] = [0; RAM_SIZE >> 12];
 var dc_hot: u8[DC_HALF] = [0; DC_HALF];
 var jit_code: i64[DC_HALF] = [0; DC_HALF];
 var jit_kind: u8[DC_HALF] = [0; DC_HALF];
 var jit_n: u8[DC_HALF] = [0; DC_HALF];
 var jit_last: u32[DC_HALF] = [0; DC_HALF];
+var jit_head: u32[DC_HALF] = [0xFFFFFFFF; DC_HALF];   // the address the slot's block begins at
 var jit_gen: u32[DC_HALF] = [0; DC_HALF];
 
 // Ports nothing answers: counted per port so a run can report what the guest probed.

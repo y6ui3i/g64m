@@ -323,7 +323,15 @@ fn main() {
         else if a[i] == "--cpu" && i + 1 < a.len { i++; cpu_arg = i; }
         else if a[i] == "--faults" { log_faults = true; }
         else if a[i] == "--no-decode-cache" { dc_on = false; }
-        else if a[i] == "--jit" { jit_init(); }
+        else if a[i] == "--jit" {
+            jit_init();
+            if !jit_on { write_stderr("g86m: --jit is not available on this host (it is for arm64); going on without it\n"); }
+        }
+        else if a[i] == "--jit-size" && i + 1 < a.len {
+            i++;
+            let n, ok = parse_int(a[i]);
+            if ok && n >= 70000 && n <= 33554432 { jit_room = n; }
+        }
         else if a[i] == "--jit-off" && i + 1 < a.len {
             i++;
             let n, ok = parse_int(a[i]);
@@ -451,7 +459,7 @@ fn main() {
         for code in post_trail { format(stats, " "); format_int(stats, code, 16, 2, '0'); }
         format(stats, " com ", com_out.len, " bytes");
     }
-    if jit_on { format(stats, " jit ", jit_blocks_made, " blocks, ", jit_ran, " instructions, ", jit_left, " left early, ", jit_used, " bytes"); }
+    if jit_on { format(stats, " jit ", jit_blocks_made, " blocks, ", jit_ran, " instructions, ", jit_left, " left early, ", jit_used, " bytes, ", jit_flushes, " flushes"); }
     format(stats, "\n");
     write_stderr(stats);
     if com_arg > 0 {
