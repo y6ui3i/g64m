@@ -45,6 +45,13 @@ rustx86 on one day:
 | M3 | FreeDOS to the `A:\>` prompt | done (the installer was declined, not run) |
 | M4 | 386 protected mode and paging; pass test386 | done (no task switching) |
 | M5 | 32-bit Linux and busybox | done (no disk, no network, no clock chip) |
+| M6 | A clock (CMOS/RTC) and an IDE disk | planned |
+| M7 | A network: NE2000, and libslirp on the host | planned |
+| M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
+| M9 | Browsing with NetSurf or Dillo | planned |
+| M10 | x86_64 | planned |
+
+Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Technology choices
 
