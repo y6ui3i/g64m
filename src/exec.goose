@@ -19,6 +19,9 @@ import fpu;
 // ---- Decode state that lives for one instruction ----
 
 // What the prefixes and the opcode of the instruction being executed say (see Pre in state.goose).
+// Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
+// tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
+var pad_ins: u8[6] = [0; 6];
 var ins: Pre = Pre { op: 0, plen: 0, osz: 16, asz32: false, lock: false, rep: 0, seg: -1, kind: 0 };
 var ea_seg = 3;              // segment register of the effective address (starts as DS)
 var dc_cur = -1;             // this instruction's entry in the decode cache, or -1 when it has none
@@ -1273,6 +1276,25 @@ inline fn short_write(mm: u32, v: u32) {
     else { seg_write(ea_seg, ea_off, 32, v); }
 }
 
+// Stores the result of an instruction that has set the flags already. A store to memory can
+// fault, and a faulting instruction leaves the flags as it found them, which nothing else puts
+// back for a short executor (E049): so the old flags, f0, are in place while the store is made.
+inline fn short_write_fl(mm: u32, v: u32, f0: u32) {
+    if mm & 0x0C == 0x0C { cpu.regs[mm >> 7 & 7] = v; return; }
+    let f1 = cpu.flags;
+    cpu.flags = f0;
+    seg_write(ea_seg, ea_off, 32, v);
+    cpu.flags = f1;
+}
+
+inline fn short_write8_fl(mm: u32, v: u32, f0: u32) {
+    if mm & 0x0C == 0x0C { set_r8((mm >> 7 & 7) as! u8, v as! u8); return; }
+    let f1 = cpu.flags;
+    cpu.flags = f0;
+    seg_write(ea_seg, ea_off, 8, v);
+    cpu.flags = f1;
+}
+
 // Where in RAM the 32-bit memory operand of the instruction is, if writing it can take
 // seg_write's short path: the same tests, and the write TLB, which for a page it holds says
 // that the page may be read as well. FFFFFFFFh when it cannot (and then nothing is known).
@@ -1303,8 +1325,12 @@ inline fn short_alu_rm(mm: u32, aop: u8, b: u32) {
         let r = alu(aop, b0 | b1 << 8 | b2 << 16 | b3 << 24, b, 32);
         ram[q] = r as! u8; ram[q + 1] = (r >> 8) as! u8; ram[q + 2] = (r >> 16) as! u8; ram[q + 3] = (r >> 24) as! u8;
     } else {
+        let f0 = cpu.flags;
         let r = alu(aop, seg_read(ea_seg, ea_off, 32), b, 32);
+        let f1 = cpu.flags;
+        cpu.flags = f0;
         seg_write(ea_seg, ea_off, 32, r);
+        cpu.flags = f1;
     }
 }
 
@@ -1323,7 +1349,12 @@ inline fn short_step_rm(mm: u32, up: bool) {
         ram[q] = r as! u8; ram[q + 1] = (r >> 8) as! u8; ram[q + 2] = (r >> 16) as! u8; ram[q + 3] = (r >> 24) as! u8;
     } else {
         let v = seg_read(ea_seg, ea_off, 32);
-        seg_write(ea_seg, ea_off, 32, if up { inc(v, 32) } else { dec(v, 32) });
+        let f0 = cpu.flags;
+        let r = if up { inc(v, 32) } else { dec(v, 32) };
+        let f1 = cpu.flags;
+        cpu.flags = f0;
+        seg_write(ea_seg, ea_off, 32, r);
+        cpu.flags = f1;
     }
 }
 
@@ -1351,22 +1382,30 @@ inline fn short_write16(mm: u32, v: u32) {
 // Returns the linear address at which the next instruction begins; base is the code segment's.
 // The caller keeps that in a local for the whole run, so that finding the next instruction does
 // not wait on a load of cpu.ip that this one has just stored (E026), nor on this instruction's
-// entry (E028: the address comes from dc_next). cpu.ip is stored all the same, for CALL to
-// push, for a fault to be reported against, and for the end of the run.
+// entry (E028: the address comes from dc_next). cpu.ip is not kept up here, nor by the run:
+// exec_short notes in saved.ip where each instruction begins and sets cpu.ip from it when the
+// run ends or faults (E049).
+//
+// The conditional jumps store cpu.ip when they are taken all the same, and that store is not
+// to be tidied away. With nothing but `nx += imm` on the taken path the compiler makes a
+// conditional select of it; the next instruction's address is then data that waits for the
+// flags, where a branch is predicted and the host runs ahead. Without the store the Linux
+// boot takes 14% more cycles (E049; E031 looked for this and could not see it, because the
+// store was there).
 inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
     let mm = dc[slot].m;
     let imm = dc[slot].imm;
     let reg = mm >> 4 & 7;
     var nx = dc_next[slot];
-    cpu.ip = nx - base;
     match kind {
         1 => { ea_short(mm, dc[slot].disp); cpu.regs[reg] = seg_read(ea_seg, ea_off, 32); },
         2 => { ea_short(mm, dc[slot].disp); seg_write(ea_seg, ea_off, 32, cpu.regs[reg]); },
         3 => {
             let aop = dc[slot].pre.op >> 3;
             short_ea(mm, slot);
+            let f0 = cpu.flags;
             let r = alu(aop, short_read(mm), cpu.regs[reg], 32);
-            if aop != 7 { short_write(mm, r); }
+            if aop != 7 { short_write_fl(mm, r, f0); }
         },
         4 => {
             let aop = dc[slot].pre.op >> 3;
@@ -1377,26 +1416,28 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         5 => {
             let aop = reg as! u8;
             short_ea(mm, slot);
+            let f0 = cpu.flags;
             let r = alu(aop, short_read(mm), imm, 32);
-            if aop != 7 { short_write(mm, r); }
+            if aop != 7 { short_write_fl(mm, r, f0); }
         },
         6 => { ea_short(mm, dc[slot].disp); cpu.regs[reg] = ea_off; },
         7 => { short_ea(mm, slot); alu(4, short_read(mm), cpu.regs[reg], 32); },
-        8 => { short_ea(mm, slot); short_write(mm, shift(reg as! u8, short_read(mm), imm as! u8, 32)); },
+        8 => { short_ea(mm, slot); let f0 = cpu.flags; short_write_fl(mm, shift(reg as! u8, short_read(mm), imm as! u8, 32), f0); },
         9 => {
             // By CL. The three shifts by a count from 1 to 31 in one step, as for a constant
             // count; a count of zero (which changes nothing) and the rotates as before.
             short_ea(mm, slot);
             let n: u32 = r8(1) & 31;
-            if n == 0 || reg < 4 { short_write(mm, shift(reg as! u8, short_read(mm), r8(1), 32)); }
-            else if reg == 5 { short_write(mm, shr32(short_read(mm), n)); }
-            else if reg == 7 { short_write(mm, sar32(short_read(mm), n)); }
-            else { short_write(mm, shl32(short_read(mm), n)); }
+            let f0 = cpu.flags;
+            if n == 0 || reg < 4 { short_write_fl(mm, shift(reg as! u8, short_read(mm), r8(1), 32), f0); }
+            else if reg == 5 { short_write_fl(mm, shr32(short_read(mm), n), f0); }
+            else if reg == 7 { short_write_fl(mm, sar32(short_read(mm), n), f0); }
+            else { short_write_fl(mm, shl32(short_read(mm), n), f0); }
         },
         10 => { if cond(dc[slot].disp as! u8) { nx += imm; cpu.ip = nx - base; } },
-        11 => { nx += imm; cpu.ip = nx - base; },
-        12 => { push_w(nx - base, 32); nx += imm; cpu.ip = nx - base; },
-        13 => { let to = pop_w(32); cpu.ip = to; nx = to + base; },
+        11 => { nx += imm; },
+        12 => { push_w(nx - base, 32); nx += imm; },
+        13 => { let to = pop_w(32); nx = to + base; },
         14 => {},
         15 => { push_w(cpu.regs[dc[slot].pre.op & 7], 32); },
         16 => { let v = pop_w(32); cpu.regs[dc[slot].pre.op & 7] = v; },
@@ -1417,8 +1458,9 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
             let aop = dc[slot].pre.op >> 3;
             short_ea(mm, slot);
             let b: u32 = r8(reg as! u8);
+            let f0 = cpu.flags;
             let r = alu(aop, short_read8(mm), b, 8);
-            if aop != 7 { short_write8(mm, r); }
+            if aop != 7 { short_write8_fl(mm, r, f0); }
         },
         25 => {
             let aop = dc[slot].pre.op >> 3;
@@ -1430,8 +1472,9 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         26 => {
             let aop = reg as! u8;
             short_ea(mm, slot);
+            let f0 = cpu.flags;
             let r = alu(aop, short_read8(mm), imm, 8);
-            if aop != 7 { short_write8(mm, r); }
+            if aop != 7 { short_write8_fl(mm, r, f0); }
         },
         27 => { short_ea(mm, slot); let b: u32 = r8(reg as! u8); alu(4, short_read8(mm), b, 8); },
         28 => { short_ea(mm, slot); alu(4, short_read8(mm), imm, 8); },
@@ -1445,9 +1488,9 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         32 => { let d = dc[slot].disp; if (cpu.flags & d & 0xFFF != 0) != (d >> 31 != 0) { nx += imm; cpu.ip = nx - base; } },
         33 => { let lt = (cpu.flags >> 7 ^ cpu.flags >> 11) & 1; if lt != dc[slot].disp { nx += imm; cpu.ip = nx - base; } },
         34 => { let le = ((cpu.flags >> 7 ^ cpu.flags >> 11) | cpu.flags >> 6) & 1; if le != dc[slot].disp { nx += imm; cpu.ip = nx - base; } },
-        35 => { short_ea(mm, slot); short_write(mm, shl32(short_read(mm), imm)); },
-        36 => { short_ea(mm, slot); short_write(mm, shr32(short_read(mm), imm)); },
-        37 => { short_ea(mm, slot); short_write(mm, sar32(short_read(mm), imm)); },
+        35 => { short_ea(mm, slot); let f0 = cpu.flags; short_write_fl(mm, shl32(short_read(mm), imm), f0); },
+        36 => { short_ea(mm, slot); let f0 = cpu.flags; short_write_fl(mm, shr32(short_read(mm), imm), f0); },
+        37 => { short_ea(mm, slot); let f0 = cpu.flags; short_write_fl(mm, sar32(short_read(mm), imm), f0); },
         38 => { cpu.regs[reg] = cpu.regs[mm >> 7 & 7]; },
         39 => { cpu.regs[mm >> 7 & 7] = cpu.regs[reg]; },
         // The numbers with no executor are named, so that the kinds are one unbroken range and
@@ -1474,7 +1517,7 @@ inline fn run_short(kind: u8, slot: i64, base: u32) -> u32 {
         64 => { short_ea(mm, slot); short_step_rm(mm, true); },
         65 => { short_ea(mm, slot); short_step_rm(mm, false); },
         66 => { short_ea(mm, slot); short_write(mm, ~short_read(mm)); },
-        67 => { short_ea(mm, slot); short_write(mm, alu(5, 0, short_read(mm), 32)); },
+        67 => { short_ea(mm, slot); let f0 = cpu.flags; short_write_fl(mm, alu(5, 0, short_read(mm), 32), f0); },
         68 => { short_ea(mm, slot); short_write(mm, imm); },
         69 => { short_ea(mm, slot); short_write8(mm, imm); },
         70 => { short_ea(mm, slot); cpu.regs[reg] = cpu.regs[reg] & 0xFFFF0000 | short_read16(mm); },
@@ -1580,16 +1623,20 @@ var pending_has_err = false;
 // happen in between, except that virtual time reaches chain_until, the moment the run loop
 // worked out that something else is due. The last instruction of a run is left for the caller to
 // count, as a single instruction would be.
+// Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
+// tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
+var pad_chain: u8[4] = [0; 4];
 var chain_until = 0;
 
 // Runs short executors for as long as it can. True when it ran at least one instruction and the
 // last one is still to be counted by the caller; false when the instruction at hand is not one
 // of them, and nothing has been done about it.
-// Within a run, only the instruction pointer and the flags are noted at the start of each
-// instruction, not the whole CPU: a short executor changes nothing else before the last point
-// at which it can fault (it reads before it writes a register, and writes memory before it
-// moves the stack pointer). light_save tells step, which undoes a faulting instruction, that
-// `saved` holds just those two.
+// Within a run only the instruction pointer is noted at the start of each instruction, in
+// saved.ip, and cpu.ip is left behind until the run ends (E049). Nothing else needs putting
+// back: a short executor changes nothing before the last point at which it can fault. It reads
+// before it writes a register, writes memory before it moves the stack pointer, and has the old
+// flags in place while it stores a result to memory (short_write_fl). light_save tells step,
+// which undoes a faulting instruction, that `saved` holds the instruction pointer and no more.
 //
 // It is a 64-bit number, 0 or 1, and not a bool, on purpose. Goose packs globals with no
 // padding, so one more byte here moves every global declared after it, in this file and in the
@@ -1615,9 +1662,8 @@ fn exec_short() -> bool {
     var a = base + cpu.ip;
     // The virtual time is counted in a local too, and the global only stored (E027).
     var vt = vtime;
-    // From here until this function returns, `saved` is good for the instruction pointer and
-    // the flags only; that is all a short executor needs put back, the first one included,
-    // for which `saved` is still whole.
+    // From here until this function returns, `saved` is good for the instruction pointer
+    // only: a short executor that faults has changed nothing else (see light_save).
     light_save = 1;
     // One pass for each page of code the run is on (E042). What follows is worked out anew
     // for each page and is constant inside it.
@@ -1684,21 +1730,21 @@ fn exec_short() -> bool {
                 kind = dc[slot].pre.kind;
                 if kind == K_NONE { break; }
             }
-            shadow = false;
             p = run_short(kind, slot, pbase);
-            if left <= 1 { light_save = 0; return true; }
+            // Only a run's first instruction can have had interrupts held off for it, and
+            // that run is one instruction long: this is where it ends.
+            if left <= 1 { cpu.ip = p - pbase; shadow = false; light_save = 0; return true; }
+            saved.ip = p - pbase;
             left -= 1;
             vt += 1;
             vtime = vt;
-            saved.ip = p - pbase;
-            saved.flags = cpu.flags;
             ran = true;
         }
         if !moved { break; }
     }
     // The instruction at hand is for the general path, which wants the whole CPU saved.
     light_save = 0;
-    if ran { saved = cpu; }
+    if ran { cpu.ip = saved.ip; saved = cpu; }
     return false;
 }
 
@@ -1776,7 +1822,11 @@ fn exec_general() -> bool {
             if kind < K_NONE {
                 // The executor reckons in physical addresses: the base it is given is the
                 // code segment's, less what a linear address is above the physical one.
-                if kind != 0 { run_short(kind, slot, cpu.base[CS] - (a - key)); return true; }
+                if kind != 0 {
+                    let pb = cpu.base[CS] - (a - key);
+                    cpu.ip = run_short(kind, slot, pb) - pb;
+                    return true;
+                }
                 classify(slot, raw);
             }
             cpu.ip += ins.plen;
@@ -2195,10 +2245,11 @@ fn step() {
     var err = fault_err;
     for attempt in 3 {
         if light_save != 0 {
-            // The fault was in a run of short instructions: put back what they change, and
-            // make `saved` whole again.
+            // The fault was in a run of short instructions. The executor that faulted had
+            // changed nothing yet, so there is only the instruction pointer to set, which a
+            // run does not keep up. `saved` is made whole again.
             cpu.ip = saved.ip;
-            cpu.flags = saved.flags;
+            shadow = false;
             saved = cpu;
             light_save = 0;
         } else {

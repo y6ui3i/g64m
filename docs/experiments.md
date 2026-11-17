@@ -3721,3 +3721,291 @@ What the comparison is and is not:
 By the card: none of the three branches named this one. The nearest is the first, and what is
 to be said is "behind in the fragment, ahead as a program, and ahead of rustx86's JIT on this
 boot". The next cards stay on E043's list.
+
+## E049: What a run writes down after every instruction (2026-11-17)
+
+- **Hypothesis**: Between two instructions of a run the loop stores five things and loads
+  one: `cpu.ip` (at the start of the executor), `shadow`, `vtime`, `saved.ip` and
+  `saved.flags` (with a load of `cpu.flags`). Three of the five are there only so that a
+  fault can put the instruction pointer and the flags back, and one only for the first
+  instruction of a run. If `cpu.ip` is stored after the executor and not before, it still
+  holds the faulting instruction's own address when a fault comes, and `saved.ip` is not
+  needed; if the few executors that set the flags before a store to memory put the old flags
+  back around that store, `saved.flags` is not needed; `shadow` can only be set for the
+  first instruction, and a run with it set is one instruction long, so it can be cleared
+  where that run returns. That leaves two stores (`cpu.ip`, `vtime`): about 4 host
+  instructions fewer for each guest instruction, **4% of the boot's host instructions and
+  1% or more of its cycles** (a store is cheap; E047 saw 0.36% of the instructions buy
+  nothing).
+- **What changed since last time**: E023 and E026 to E029 shortened what the loop waits for
+  (loads on the path to the next entry). This takes out stores nothing waits for, by changing
+  who is responsible for a fault's undo: the executor, not the loop. Not tried before.
+- **Next move for each result**:
+  - Cycles down by 0.6% or more over padded builds of both sides → keep; the memory operand
+    (E050) next, measured the same way
+  - Host instructions down and cycles within 0.6% → keep only if every layout of the new
+    source is at or under the old one's mean (a change that removes work and cannot be told
+    from nothing is still less code in the loop); otherwise not kept
+  - A test fails or the boot's count changes → an executor that changes the flags or
+    `cpu.ip` before its last fault and is not on the list; find it with a wrong build of the
+    one suspected
+- **Cut-off**: The same day. `tools/difftest.sh`, test386, the boot's count; a test in which
+  each executor that sets flags before a store faults on that store, and wrong builds that
+  leave the old flags out; four padded layouts of each side, six rounds.
+
+### Result
+
+2026-11-17. **Kept: 4.2% fewer host instructions and about 1.7% fewer cycles, in every
+layout. On the way: without a store on its taken path a conditional jump becomes a select,
+and that alone costs 14%.** `tools/difftest.sh` has 82 lines, all ok (two of them new); the boot stops at
+1,651,240,001 instructions as before.
+
+**The first build was 14% slower with 4.3% fewer instructions.** It stored `cpu.ip` once,
+after the executor, and so took `cpu.ip = nx - base` out of every executor, the conditional
+jumps included. Putting the loop's stores back one at a time changed nothing (33.95 to 34.45
+billion cycles against main's 29.7); aligning the CPU state changed nothing (see below); a
+profile showed no one place, only the loads on the way to the next instruction all a little
+heavier. What the slow builds had in common was the taken path of a conditional jump: with
+nothing on it but `nx += imm`, the compiler makes a conditional select, the next
+instruction's address is then data that waits for the flags, and the host cannot run ahead.
+With the store back on the taken path only (it is live because the run no longer stores
+`cpu.ip` itself) the same source is faster than main. **This is E031's hypothesis, and it was
+right**: E031 added a store where there already was one, saw nothing move, and concluded the
+jump was not what the loop waits on. It is; main had the branch by accident. The store now
+has a comment that says why it is there.
+
+**As kept.** A run notes where each instruction begins in `saved.ip` (as before) and leaves
+`cpu.ip` behind until it ends or faults; `saved.flags` and the per-instruction store of
+`shadow` are gone; the executors that set flags before a store to memory (ADC and SBB to
+memory, the shifts and rotates, NEG, the 8-bit arithmetic, and the slow paths of the
+read-modify-write helpers) have the old flags in place while they store. Per instruction the
+loop now stores two things, `vtime` and `saved.ip`.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of four layouts |
+|---|---:|---:|
+| main | 164.1 billion | 29.38, 29.46, 29.55, 29.49 billion |
+| E049 | 157.1 to 157.5 billion | 28.88, 28.87, 29.00, 29.06 billion |
+
+The slowest layout of E049 is under the fastest of main. By the card: the first branch.
+
+**Tests.** `s_flagro`: thirteen instructions, one for each executor that sets flags before a
+store, each faulting on a read-only page after a CMP; the handler checks the flags in its
+frame and the address the fault is reported against. `s_shadow`: a timer interrupt waiting
+behind an STI is taken after exactly one more instruction. Seventeen wrong builds, each
+caught: twelve that store with the new flags in place (one for each executor), `cpu.ip` not
+set at a fault, at the end of a run, or when a run is out of time, `saved.ip` not noted, and
+the shadow not cleared. Two of them passed at first: nothing looked at the address in a
+fault's frame when the handler does not return to it, and nothing ran a short executor
+behind an STI with an interrupt waiting.
+
+**Found on the way: the CPU state is three bytes off alignment.** Goose packs globals with
+no padding, and `cpu` begins at an address that is 3 modulo 4, so every guest register, the
+flags, the TLB arrays and the rest of `state.goose` are loaded and stored unaligned, and the
+compiler needs an extra instruction to form each address. One pad byte before `cpu`, on
+main, in a build made only to be timed: 157.8 billion host instructions against 164.1, and
+29.0 billion cycles against 29.65. That is the next card.
+
+## E050: The globals back on their alignment, and a check that keeps them there (2026-11-17)
+
+- **Hypothesis**: E017's addendum aligned the globals by declaring the widest first, for 2%
+  of the boot's host instructions. Thirty cards have added globals since, and nothing shows
+  where they landed. Read from the C the compiler generates (the globals are one packed
+  struct; `offsetof` gives each one's place): `cpu`, `saved` and `seg_top` are at 7 modulo
+  8; `ram`, the decode cache, `dc_next` and `code_mark` at 1; `vtime` at 2; `ins`, `ea_seg`,
+  `ea_off` and `dc_cur` at 2; `chain_until` and `light_save` at 6; `timer_at` at 5. The TLB
+  arrays and `cr` are aligned, by luck. For a field off its alignment the compiler forms the
+  address with an extra instruction, and a load or store that straddles a 64-byte line costs
+  the host more. One pad byte before `cpu` alone, on main, in a build made only to be timed
+  (E049's result): 3.8% fewer host instructions and 2% fewer cycles, while it pushed the TLB
+  arrays off their alignment. With every one of the globals above at a multiple of 8:
+  **4% or more of the host instructions and 2% or more of the cycles**.
+- **What changed since last time**: E015 tried eight paddings in front of the whole block
+  and E017 reordered declarations, both without seeing the layout. This reads the layout,
+  pads in front of each group that is off (a `u8` array of the size wanted), and adds a check
+  to `tools/difftest.sh` that fails when a listed global is off its alignment, so that the
+  next global added in front of them is noticed.
+- **Next move for each result**:
+  - Cycles down by 0.6% or more over padded code layouts of both sides → keep, with the check
+  - Instructions down and cycles not → keep all the same if no layout is slower (it is E017's
+    rule: the instruction count is the measure that repeats), and say so
+  - bench.bin or test386 slower by more than their spread → some global of the 16-bit path is
+    now off; find it with the layout tool before giving up a pad
+- **Cut-off**: The same day. Pads only, no code: the tests must pass unchanged and the boot's
+  count stay; four layouts of each side, six rounds; bench.bin and test386 timed too.
+
+### Result
+
+2026-11-17. **Kept: 3.7% fewer host instructions and about 3.4% fewer cycles on the boot, in
+every layout; the 16-bit benchmark and test386 gain too.** Pads only: four `u8` arrays, 23
+bytes in all. `tools/difftest.sh` has 83 lines, all ok (the new one is the layout check); the
+boot's count is unchanged.
+
+**The layout is not what the declarations suggest.** `tools/layout.sh` asks the C compiler
+for `offsetof` each global in the struct the Goose compiler generates. The struct is packed,
+but a growable array (`u8[>..]`) is a member aligned to 8, so alignment is restored behind
+each one: `cr` and the TLB arrays were aligned because `tty` and `stop_message` are declared
+just before them, and a pad in front of `cpu` moves nothing behind those two. The pads that
+came out, after three rounds of build and look: 3 bytes before `timer_on`, 6 before `ins`, 4
+before `chain_until`, 7 before `cpu`, 7 before `ram`, 6 before `vtime`. E049's trial with
+one byte before `cpu` had the registers aligned and everything from `ram` on still off.
+
+| | Host instructions | Cycles |
+|---|---:|---:|
+| Linux boot, E049, four code layouts | 157.2 billion | medians of six rounds: 29.31, 29.30, 29.31, 29.37 billion |
+| Linux boot, E050, four code layouts | 151.4 billion | 28.34, 28.32, 28.30, 28.34 billion |
+| bench.bin (16-bit), E049 | 97.91 billion | 14.61, 14.61, 14.62 billion |
+| bench.bin, E050 | 91.35 billion | 14.33, 14.40, 14.33 billion |
+| test386, E049 | 17.66 billion | 2.83, 2.85, 2.84 billion |
+| test386, E050 | 16.93 billion | 2.77, 2.77, 2.76 billion |
+
+(The machine was a little slower for this table than for E049's: E049 reads 29.3 here and
+28.9 there. Each table's two sides were run interleaved.) By the card: the first branch.
+
+**The check.** `tools/layout.sh --check` fails when one of twenty-one watched globals is off
+its alignment, and `tools/difftest.sh` runs it; with the pad before `cpu` one byte short it
+names `cpu`, `saved` and `seg_top`. It reads the compiler's generated C under `GOOSE_HOME`,
+and is skipped where that is not to be found.
+
+**What this says about earlier cards.** E015 called alignment "one extra instruction per
+access, which turned out not to matter (1.5%)", and E017's addendum got 2% by reordering.
+Both were right about the size then; the boot was 584 and 466 billion host instructions, and
+the same extra instruction is a larger share of 157 billion. And both worked blind: E017's
+order was undone by the globals added since, and nothing said so. From main at the start of
+today (164.1 billion instructions, 29.4 to 29.7 billion cycles) the two cards together are
+at 151.4 billion and 28.3 billion: **7.7% fewer instructions, about 4.5% fewer cycles.**
+
+## E051: The memory operand's short path in fewer tests (2026-11-17)
+
+- **Hypothesis**: E043's fourth candidate, the part of it that is a few lines. The short
+  path of `seg_read`, `seg_write` and `rmw_place` tests, in order: the offset against
+  `seg_top`; that the access does not cross a page; the TLB tag, at an index that includes a
+  test of `cpu.cpl`; that the place is in RAM. Two of these can go. (1) Crossing: compare
+  the tag with the page of the access's *last* byte. An entry at the index of the first
+  byte's page can only hold a page with the same low eight bits, and the next page has
+  others, so an access that crosses never matches (Bochs and QEMU take the tag from the last
+  byte for this). (2) The privilege level: the index's ninth bit kept in a global, set where
+  the level changes, in place of a load of a byte, a comparison and a select at every
+  access. The test for RAM stays: it is what takes the bounds checks off the four loads. By
+  E037's rate (3.6% of the instructions gave 1.8% of the cycles): about 5 host instructions
+  for each of the accesses, which are about one for every two guest instructions, **1.5% of
+  the host instructions and under 1% of the cycles**.
+- **What changed since last time**: E037 made the segment test one bound; this is the same
+  kind of change on the next two tests. Measured with padded layouts (E047's instrument),
+  which E037 did not have.
+- **Next move for each result**:
+  - Cycles down by 0.6% or more, or instructions down and no layout slower → keep; then the
+    stack window is the last of E043's list, and it is decided by a count of what a PUSH and
+    a POP still cost after this
+  - No layout faster and some slower → not kept; the tests were predicted and free
+  - A test fails → a place where the level changes without the global following (a fault
+    that puts the CPU state back; the boot protocol's entry), or an access that crosses
+- **Cut-off**: The same day; `tools/difftest.sh`, the boot's count, wrong builds (the tag
+  from the first byte in each of the three places; the global not following a change of
+  level, and not following a fault's undo), four layouts of each side, six rounds.
+
+### Result
+
+2026-11-17. **Not kept: 0.75% fewer host instructions and about 0.5% more cycles, in every
+layout; each half alone is slower too.** `src/` is as it was after E050. The two tests
+written for it stay, because what they check is true of the code as it is.
+
+| Linux boot to the shell prompt | Host instructions | Cycles: median of six rounds, for each of four layouts |
+|---|---:|---:|
+| E050 | 151.4 to 151.6 billion | 28.31, 28.50, 28.32, 28.35 billion |
+| E051 | 150.3 to 150.5 billion | 28.46, 28.46, 28.63, 28.49 billion |
+
+The fastest run of each layout says the same: 28.12 to 28.21 against 28.26 to 28.36. Then
+each half by itself, one layout, six rounds:
+
+| | Host instructions | Cycles, median |
+|---|---:|---:|
+| E050 | 151.38 billion | 28.37 billion |
+| The tag from the last byte only | 150.24 billion | 28.50 billion |
+| The level in a global only | 151.35 billion | 28.66 billion |
+| Both (E051) | 150.23 billion | 28.66 billion |
+
+All of the instructions saved are the crossing test's, and taking it out costs cycles: the
+test was a branch the host predicted, off the path to the load, and what replaced it is an
+addition on the way to the tag comparison. The global for the level saves nothing (a load
+in place of a load, a comparison and a select) and costs 1%; why was not looked into. By the
+card: the second branch, and "the tests were predicted and free" is the reading.
+
+**What this closes.** The stack window is not tried. Its whole gain would be tests of the
+same kind taken off PUSH and POP (the segment bound, the crossing, the tag), and this card
+says those tests cost nothing where they are; it would add a cached translation to keep
+true across every flush for that. That was the last item of E043's list. The 16-bit general
+path (E044) is not tried again either: nine formulations were measured there, and E050 has
+since given bench.bin 2% of its cycles back from another side.
+
+**Tests kept.** `s_pagecross`: loads, stores and an ADD that cross from a page into the
+next, where the two are not next to each other in RAM, checked against loads that do not
+cross; three wrong builds (the tag taken from the first byte in `seg_read`, `seg_write` and
+`rmw_place`) fail it and passed everything before it. `s_modeundo`: a far return to ring 3
+that faults after CS is loaded, then a store from ring 3 into the page of ring 0's stack; a
+wrong build that did not put the level's global back failed only this, and only once the
+test aimed at the pushes of the fault's own delivery (every later change of level repairs
+the global, so the window is those three pushes).
+
+## E052: What still takes the general path (2026-11-17)
+
+- **Hypothesis**: E040 counted 49.7 million runs in a boot, each ended by a trip through the
+  general path at 39 cycles of entry before the instruction itself, and 12.9 million of them
+  ended by an instruction with no executor. E042 has since taken away most of the ends at a
+  page of code, so what ends a run now is mostly such an instruction, and each one costs its
+  own general execution, the entry, and the start of a new run. E025 was the last card to
+  ask which instructions these are, twenty-seven cards ago. If a handful of opcodes make up
+  most of them, executors for those are worth a card; if they are spread over the opcode
+  map, this line of work is finished. A count by opcode (with the operand-size prefix and
+  REP told apart) of every instruction of 32-bit code that the general path executes in a
+  boot, and of how many times it is entered at all.
+- **What changed since last time**: E025 chose from a count made before runs crossed pages,
+  before the string executors and before the code-write change. Nothing has counted since.
+- **Next move for each result**:
+  - A few opcodes (five or fewer) are 60% or more of the general path's instructions, and
+    those are 1% or more of all guest instructions → executors for them, next card, sized at
+    the count times 40 cycles
+  - Spread out, or under 1% of all instructions → no card; the optimizations that can be
+    done without changing the unit of execution are done, and the next one is the fusion of
+    pairs or nothing
+- **Cut-off**: The same day; one counting build, one boot. The counting build is a copy and
+  `src/` is not touched.
+
+### Result
+
+2026-11-17. **Spread out, and small: no card.** One counting build (a copy; `src/` untouched),
+one boot, the same 1,651,240,001 instructions.
+
+- The general path is entered 24.7 million times in a boot (49.7 million in E040, before runs
+  crossed pages). 1.0 million of those run a short executor singly, and 23.8 million execute
+  an instruction of 32-bit code the long way: **1.44% of all guest instructions**.
+- No opcode stands out. The first five are 30% of them and it takes nineteen to reach 60%:
+
+  | Opcode | Times | Share of the general path's instructions | Share of all |
+  |---|---:|---:|---:|
+  | A1 (`mov eax, [addr]`) | 2.11 million | 8.9% | 0.13% |
+  | 89 (`mov r/m, r`) | 1.91 million | 8.0% | 0.12% |
+  | 8B (`mov r, r/m`) | 1.26 million | 5.3% | 0.08% |
+  | FF (the group: indirect CALL and JMP, PUSH) | 1.01 million | 4.2% | 0.06% |
+  | 83 with a 16-bit operand | 0.93 million | 3.9% | 0.06% |
+  | C9 (LEAVE), F7, 31, 96 (XCHG), REPE CMPSB, 8D, 6A, C7, 9C (PUSHF), 0F B1 (CMPXCHG), ... | 0.2 to 0.8 million each | under 3.5% each | under 0.05% each |
+
+  Several in the list have executors (89, 8B, 31, 8D): those are first executions, which
+  always go the long way, and forms the executors leave out (a segment override, 16-bit
+  addressing).
+- At E040's 39 cycles an entry, all 24.7 million entries are 1.0 billion cycles, 3.4% of the
+  boot, and the largest single opcode is a tenth of that.
+
+By the card: the second branch. **What can be done without changing the unit of execution
+is done.** Today's three cards against main at the start of the day:
+
+| Linux boot to the shell prompt | Host instructions | Cycles |
+|---|---:|---:|
+| Main this morning (E046) | 164.1 billion | 29.4 to 29.7 billion |
+| After E049 and E050 | 151.4 billion | 28.3 to 28.5 billion |
+
+What is left is the fusion of pairs (a compare and the conditional jump after it as one
+executor), which changes what a run counts, notes and undoes; E049's finding belongs to its
+card, because a fused pair has to stay a branch on its taken path for the same reason.
+
+`tools/difftest.sh` on the source as it stands has 87 lines, all ok (four self-checks more
+than this morning, each run on the debug and the release build, and the layout check).

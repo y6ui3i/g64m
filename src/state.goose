@@ -57,6 +57,9 @@ struct Cpu {
     spare: u8,           // makes the size 128 bytes, so that what follows stays aligned
 }
 
+// Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
+// tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
+var pad_cpu: u8[7] = [0; 7];
 var cpu: Cpu = Cpu { regs: [0; 8], segs: [0; 6], base: [0; 6], limit: [0xFFFF; 6],
                      attr: [0x10093, 0x1009B, 0x10093, 0x10093, 0x10093, 0x10093],
                      ip: 0, flags: 2, cpl: 0, halted: false, fault: false, spare: 0 };

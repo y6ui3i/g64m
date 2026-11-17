@@ -17,6 +17,18 @@ mkdir -p build tests/expected
 "$GOOSE" build -o build/g86m src/g86m.goose >/dev/null || exit 2
 
 fail=0
+
+# The globals of the inner loop are where the pads in src/ mean them to be (E050).
+if tools/layout.sh --check > build/layout.out 2>&1; then
+    echo "ok    layout: the watched globals are aligned"
+elif [ $? -eq 1 ]; then
+    fail=1
+    echo "FAIL  layout: a global is off its alignment; see tools/layout.sh"
+    sed 's/^/    |/' build/layout.out
+else
+    echo "skip  layout (the generated C could not be read)"
+fi
+
 for asm in tests/asm/t_*.asm tests/asm/u_*.asm tests/asm/v_*.asm tests/asm/s_*.asm; do
     name=$(basename "$asm" .asm)
     nasm -w-other -I tests/asm/ -f bin -o "build/$name.bin" "$asm" || exit 2
@@ -55,7 +67,7 @@ done
 # Self-checking tests, for what the oracle cannot judge. A test passes when the console says OK and nothing else.
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro) cpu="--cpu i686" ;; *) cpu="" ;; esac
     for exe in build/g86m-debug build/g86m; do
         out=$("$exe" $cpu --max 2000000 "$bin" 2>/dev/null)
         if [ "$out" = "OK" ]; then

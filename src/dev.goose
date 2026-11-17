@@ -121,6 +121,9 @@ var pit: Channel[3] = [Channel { reload: 0, mode: 3, access: 3, write_hi: false,
                        Channel { reload: 18, mode: 2, access: 1, write_hi: false, read_hi: false, latched: false, latch: 0, pending: 0 },
                        Channel { reload: 0, mode: 3, access: 3, write_hi: false, read_hi: false, latched: false, latch: 0, pending: 0 }];
 
+// Padding: Goose packs globals, and what follows is to sit at a multiple of 8 (E050;
+// tools/layout.sh shows where each global is, and tools/difftest.sh checks these).
+var pad_timer: u8[3] = [0; 3];
 var timer_on = true;         // channel 0 is counting
 var timer_at = 262144;       // the virtual time at which channel 0 next reaches zero
 
