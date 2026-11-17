@@ -1,0 +1,84 @@
+# Roadmap
+
+M5 left g86m with a 32-bit Linux kernel and a busybox shell on a serial console: no disk, no
+network, no clock chip, no screen beyond 80x25 text. The stages after it go to a graphical
+desktop that can browse the web, still as an i686, and only then to x86_64.
+
+| Stage | Goal | Done when |
+|---|---|---|
+| M6 | A clock and a disk | `date` in the guest shows the host's date; a root file system on an IDE disk is mounted and written |
+| M7 | A network | `wget https://...` from the serial console fetches a page through the host |
+| M8 | A screen | X (Xfbdev, twm, xterm) comes up in a window on the host, with keyboard and mouse |
+| M9 | A browser | NetSurf or Dillo shows a page fetched over HTTPS |
+| M10 | x86_64 | A 64-bit Linux kernel boots to a shell |
+
+## Why 32-bit first
+
+**The oracle stays.** Every stage so far was checked against rustx86, line for line at every
+instruction boundary. rustx86 has the devices M6 to M8 need: CMOS, IDE, NE2000, the Bochs VBE
+interface (dispi), VGA, the 8042 with a mouse. It has no long mode. Going to x86_64 first would
+leave g86m without its strongest test at the point where it needs one most.
+
+**Each stage shows something.** A date, a fetched page, a window, a browsed site: each is a
+milestone that can be seen and written about, and each is checked on its own.
+
+**The devices carry over.** Once the 32-bit desktop works, x86_64 is a new CPU and SSE2 on top of
+devices that already work. Doing it the other way would build the CPU against no oracle and the
+devices on a CPU that is still moving.
+
+## The stages
+
+### M6: a clock and a disk
+
+- **CMOS/RTC** (ports 70h and 71h), reading the host's time. HTTPS checks a certificate's dates,
+  so M7 fails without it.
+- **IDE** (PIO first), backed by an image file. X and a browser do not fit well in an
+  initramfs, and a disk that is written lets the guest keep what it was given.
+- Oracle: rustx86's `cmos.rs` and `ide.rs`; Linux's own probing of both.
+
+### M7: a network
+
+- **NE2000** on the ISA bus: the simplest card Linux still drives, and the one rustx86 has
+  (`ne2000.rs`, `dp8390.rs`). PCI and virtio-net wait until there is a reason.
+- **The host side** is the larger part. A user-mode network stack lets the guest reach the
+  outside without root: [libslirp](https://gitlab.freedesktop.org/slirp/libslirp), the C library
+  QEMU uses, linked the way `console.c` and `jit.c` are. It would be the project's third new
+  technology (after Goose and the JIT), and its use is to be recorded in the README when it is
+  taken. macOS's vmnet was not chosen: it needs root or an entitlement.
+- Before the screen because it can be checked from the serial console, with a script, and
+  needs no window.
+
+### M8: a screen
+
+- **Bochs VBE** (dispi) with a linear frame buffer, which Linux drives with `bochs-drm` or
+  `vesafb`; the host draws it with **SDL2**, which the README already names as the library for a
+  screen.
+- **The 8042's second port** for a PS/2 mouse; the keyboard side is there already.
+- The guest: Xfbdev (or Xorg's fbdev driver), twm and xterm, built for i686 with Buildroot.
+- 128 MB of RAM (what g86m has now) is enough for this and for M9.
+- M7 and M8 do not depend on each other; the order can be swapped if a window is wanted first.
+
+### M9: a browser
+
+- **NetSurf or Dillo.** Both run on i686 without SSE, on X or a frame buffer, and speak HTTPS.
+  Sites that need much JavaScript are out of reach and not a goal.
+- **Firefox and Chromium are not a goal.** Chromium dropped 32-bit Linux long ago and Firefox has
+  ended it too; both need SSE2, and both need more memory and speed than an emulator gives.
+
+### M10: x86_64
+
+- **SSE2** is required: the x86_64 ABI passes floats in XMM registers, so no 64-bit user space
+  runs without it. This is likely the largest part.
+- **Long mode**: REX prefixes and a 64-bit operand size through the ALU, RIP-relative
+  addressing, four-level paging, EFER, STAR/LSTAR, FS/GS base and SWAPGS, SYSCALL/SYSRET, the
+  64-bit IDT and TSS.
+- **128-bit products and quotients** (`MUL`, `IMUL`, `DIV` on 64-bit operands): Goose has no
+  128-bit integer, so they are done in 32-bit halves or in a few lines of C.
+- **A new oracle**, since rustx86 has no long mode:
+  - user-mode instructions, against real hardware: single-step a static ELF under ptrace on an
+    x86_64 Linux host and compare the registers after each instruction, as test386 was compared
+    with real hardware;
+  - system instructions (entering long mode, paging), against QEMU's TCG stepping one
+    instruction at a time.
+- Steps: 64-bit user-mode instructions and SSE2 first, run as a user-mode emulator of static ELF
+  binaries against the ptrace oracle; then long mode and paging against QEMU; then the kernel.
