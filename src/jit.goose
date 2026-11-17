@@ -29,6 +29,9 @@ var jit_on = false;
 var jit_mem = 0;             // where the code is mapped
 var jit_used = 0;            // how much of it holds code
 var jit_blocks_made = 0;     // blocks translated
+var jit_room = 33554432;     // how much of the mapping is used before the code is dropped: --jit-size makes it
+                             // small, so that a test can see the code fill up
+var jit_flushes = 0;         // times the code filled up and was dropped
 var jit_left = 0;
 // For finding a wrong translation: groups of kinds the translator is told to leave alone
 // (--jit-off, one bit each; see jit_plain).
@@ -874,7 +877,7 @@ fn jit_unpair(kind: u8) -> u8 {
 fn jit_translate(p0: u32, slot0: i64) {
     let s0 = slot0 - DC_HALF;
     dc_hot[s0] = 255;                        // whatever comes of it, this is not tried again
-    if jit_used + 65536 > JIT_SIZE { return; }
+    if jit_used + 65536 > jit_room { jit_flush(); }
     jc = [];
     jf = F_MEM;
     jd = 0;
@@ -892,10 +895,17 @@ fn jit_translate(p0: u32, slot0: i64) {
     var n: u32 = 0;
     var last = p0;
     var done = false;
+    // Whether what stopped the block may be otherwise later: an instruction not in the decode
+    // cache, or in it and not yet classified.
+    var again = false;
     while !done && n < JIT_MAX && sx_n < SX_MAX - 2 && st_n < ST_MAX - 8 {
         let slot: i64 = p & (DC_HALF - 1) | DC_HALF;
-        if dc[slot].tag != p || p >> 12 != p0 >> 12 { break; }
-        let kind = dc[slot].pre.kind;
+        if p >> 12 != p0 >> 12 { break; }
+        if dc[slot].tag != p { again = true; break; }
+        // An instruction that begins another block is taken by its own kind: blocks may
+        // overlap.
+        var kind = dc[slot].pre.kind;
+        if kind == K_BLOCK { kind = jit_kind[slot - DC_HALF]; }
         let mm = dc[slot].m;
         let nx = dc_next[slot];
         if kind == K_JMP {
@@ -941,9 +951,17 @@ fn jit_translate(p0: u32, slot0: i64) {
             jit_one(kind, slot, p, n);
             last = p; n += 1;
             p = nx;
-        } else { break; }
+        } else {
+            if kind == 0 { again = true; }
+            break;
+        }
     }
-    if n < 2 { return; }
+    if n < 2 {
+        // One instruction is not worth a block. If what follows it may be translated later,
+        // this address is counted afresh and tried again.
+        if again { dc_hot[s0] = 0; }
+        return;
+    }
     if !done { jit_leave(p, n); }
     jit_exits();
     jit_write(jit_mem + jit_used, jc[..]);
@@ -952,9 +970,32 @@ fn jit_translate(p0: u32, slot0: i64) {
     jit_kind[s0] = dc[slot0].pre.kind;
     jit_n[s0] = n as! u8;
     jit_last[s0] = last;
+    jit_head[s0] = p0;
     jit_gen[s0] = code_gen[p0 >> 12];
     dc[slot0].pre.kind = K_BLOCK;
     jit_blocks_made += 1;
+}
+
+// The code is full: every block is dropped, and translation starts over from an empty map.
+// Moving every page's generation on makes each block stale where it is next reached, and
+// nothing of the generated code is running now (blocks are translated between runs of them).
+fn jit_flush() {
+    for i in RAM_SIZE >> 12 { code_gen[i] += 1; }
+    jit_used = 48;                           // the way in stays (jit_init)
+    jit_flushes += 1;
+}
+
+// An entry of the decode cache has just been classified. If the slot's block is this very
+// instruction's and its page has not been written since, the entry heads that block again:
+// entries come and go (two addresses can want one slot), and a block is too dear to make
+// twice.
+fn jit_reclaim(slot: i64) {
+    let s = slot - DC_HALF;
+    let p = dc[slot].tag;
+    if jit_head[s] != p || jit_gen[s] != code_gen[p >> 12] || dc[slot].pre.kind - 1 >= K_LAST { return; }
+    jit_kind[s] = dc[slot].pre.kind;
+    dc[slot].pre.kind = K_BLOCK;
+    dc_hot[s] = 255;
 }
 
 // The run has come to physical address p at its start or from a block, which is where a block

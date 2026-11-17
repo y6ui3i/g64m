@@ -4732,3 +4732,80 @@ everything the general path executes, and whatever follows them up to the next p
 block begins. A block that leaves early (918 thousand times) is a TLB miss or a page
 fault. And between blocks the flags are written out and the registers stored and loaded
 again; the card's next step is the count of host instructions for a block run.
+
+## E063: Blocks through the heads of other blocks, and a refused translation tried again (2026-11-17)
+
+`docs/jit.md` now holds the JIT's design, its state and a list of tasks; this is its first.
+
+- **Hypothesis**: A count on main with `--jit`: a chain of blocks stops 80 million times
+  because the next instruction is not a block, and for 50 million of those the instruction
+  is one the translator knows. Its translation was refused, because the block would have
+  been one instruction long, and `dc_hot` then says "never again". Why it was one long, by
+  the kind of the instruction after it: in 15 million it was already the first instruction
+  of another block (`K_BLOCK`, which the translator does not look inside); in most of the
+  rest it is a kind the translator knows now, or knew then and could not see (an entry not
+  yet classified, or not in the cache). If a block is translated through the head of
+  another, by that head's own kind, and a refusal for a reason that may pass makes the
+  address be counted afresh, most of the 50 million go: **blocks run one after another 4 or
+  more times in place of 2.5, and the boot's cycles 5% or more under E062's.**
+- **What changed since last time**: E062 added kinds. This adds none; it is about which
+  addresses get a block.
+- **Next move for each result**:
+  - 5% or more → keep; task 3 (the unknown kinds) next, then task 4
+  - Under 5% with the chain longer → keep, and task 4 (from block to block in generated
+    code) moves ahead of task 3: the cost is then between blocks, not at the chain's end
+  - The chain no longer → the count misled; count again what the 50 million are
+- **Cut-off**: The same day; the suite with `--jit`, the boot's count, the counts again.
+
+### Result
+
+2026-11-17. **Kept: with `--jit` the Linux boot takes 37% fewer cycles than the interpreter
+and 35% fewer host instructions; 90% of its instructions run in blocks.** `tools/difftest.sh`
+has 111 lines, all ok. The card asked for 5% under E062 and a chain of 4; it got 20% under
+E062 and a chain of 3.7, because the count behind the card had found only half of what was
+wrong.
+
+| Linux boot to the shell prompt, medians of six | Host instructions | Cycles |
+|---|---:|---:|
+| main before the JIT (E057) | 145.8 billion | 28.10 billion |
+| This source, without `--jit` | 147.4 billion | 28.14 billion |
+| `--jit`, E062 | 123.5 billion | 23.2 billion (in these rounds) |
+| `--jit`, through the heads of blocks and tried again | 112.9 billion | 22.0 billion |
+| `--jit`, and a block survives its entry | 94.9 billion | 17.73 billion |
+
+**Three steps, each from a count.**
+
+1. *As the card said*: the translator takes an instruction that begins another block by its
+   own kind, and a refusal for a reason that may pass (the next instruction not in the
+   decode cache, or not classified) makes the address be counted afresh. 71.5% of the
+   instructions in blocks, from 68.4%; 8.6% fewer host instructions.
+2. *The count again*: 48 million chain stops were still at an instruction the translator
+   knows and had refused for good, followed by an instruction it also knows. The reason is
+   not in the translator. **`dc_hot` belongs to a slot of the decode cache, and the entry in
+   a slot changes**: an entry is driven out by another address that wants the slot, or
+   emptied by a store, and made again; the new entry found the slot marked "tried, never
+   again" by its predecessor. With the count reset when a slot gets a new entry, blocks came
+   back at once, and the code filled its 32 MB half way through the boot, every block being
+   translated again each time its entry came back; translation stopped, and the share in
+   blocks fell to 43%.
+3. *So*: a block outlives its entry. The slot remembers the address its block begins at;
+   when an entry is classified and the slot's block is that address's and its page has not
+   been written, the entry heads the block again (`jit_reclaim`). And when the code is full,
+   every page's generation is moved on and translation starts from empty (`jit_flush`):
+   the boot does that once. 89.6% in blocks.
+
+Also done, from the list in `docs/jit.md`: `--jit` on a host that is not arm64 says so and
+does nothing (`jit_alloc` returns 0 there).
+
+**Tests.** `s_jitslot`: two pieces of code 20000h apart, which want the same slot; the
+first has a block, the second takes the slot, the first's entry is made anew and gets its
+block back, in the run that classifies it. `--jit-size N` makes the room for code small,
+and the suite runs the JIT's self-checks once more with 70,000 bytes, so that the code is
+dropped while they run. Five wrong builds: three caught (a block given back to another
+address; a flush that drops nothing, by the small-room runs; the run executing the given-back
+entry by its kind, which is "a block" and has no executor, by `s_jitslot`). Two are not
+wrong: without the step through another block's head there are fewer blocks and the same
+answers; and a block given back in spite of its page's generation is dropped where it is
+next reached, by the check there.
+
+By the card: the first branch. Task 3 (the unknown kinds) is next, then task 4.

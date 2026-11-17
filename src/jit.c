@@ -16,14 +16,20 @@
 typedef struct { const uint8_t *data; int64_t len; } jit_bytes;
 typedef struct { uint32_t *data; int64_t len; } jit_regs;
 
-// Maps size bytes that can hold code. Returns the address, or 0.
+// Maps size bytes that can hold code. Returns the address, or 0; 0 always on a host that is
+// not arm64, for which jit.goose generates nothing (so --jit does nothing there).
 int64_t jit_alloc(int64_t size) {
+#if !defined(__aarch64__)
+    (void)size;
+    return 0;
+#else
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
 #ifdef __APPLE__
     flags |= MAP_JIT;
 #endif
     void *p = mmap(0, (size_t)size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
     return p == MAP_FAILED ? 0 : (int64_t)p;
+#endif
 }
 
 // Copies code to address at, inside a mapping from jit_alloc.

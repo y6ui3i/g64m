@@ -128,6 +128,24 @@ else
     fail=1
     echo "FAIL  jit: $bad of $count self-checks"
 fi
+# The JIT's own self-checks once more with room for very little code, so that the code fills
+# up and is dropped while they run (E063).
+bad=0
+count=0
+for bin in build/s_jit*.bin; do
+    out=$(build/g86m --jit --jit-size 70000 --max 2000000 "$bin" 2>/dev/null)
+    count=$((count + 1))
+    if [ "$out" != "OK" ]; then
+        bad=$((bad + 1))
+        echo "  $(basename "$bin" .bin) with --jit --jit-size 70000: console was \"$out\""
+    fi
+done
+if [ $bad -eq 0 ]; then
+    echo "ok    jit: $count self-checks with the code filling up"
+else
+    fail=1
+    echo "FAIL  jit: $bad of $count self-checks with the code filling up"
+fi
 if [ -f build/s_pairs.bin ]; then
     bad=0
     k=1200
