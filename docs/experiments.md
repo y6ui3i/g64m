@@ -4297,3 +4297,49 @@ its result, one for DEC of memory); `s_flagro` has a jump after two of its fault
 so that a pair whose first instruction faults on its store is checked for flags and
 address. Nine wrong builds, each caught; two passed at first (the AL pair in the test was a
 CMP, which stores nothing; TEST with an immediate was told from CMP only by test386).
+
+## E058: Goose calls code it generated (2026-11-17)
+
+- **Hypothesis**: "Goose cannot call generated code" (E048) is true of Goose by itself: it has
+  no function pointers. It can call C (`extern fn`, `c_sources`), and C can map memory that
+  may be executed and jump to it. So a few lines of C are enough for a Goose program to
+  write arm64 instructions into a buffer and run them: one function that maps the memory,
+  one that copies bytes into it (on macOS a thread must switch the mapping between writable
+  and executable, and the instruction cache has to be told), one that calls an address with
+  a pointer to the guest state. What decides whether a JIT for g86m is worth designing is
+  what such a call costs. A run of the interpreter executes about 32 guest instructions at
+  18 cycles each; if entering generated code costs under 20 cycles, a block of a few
+  instructions already pays, and if it costs hundreds (a slice passed by value, a wrapper
+  that saves every register) only long blocks would.
+- **What changed since last time**: Nothing in g86m generates code. This uses the one new
+  thing the project allows itself here: executable memory through a C extension. The dull
+  alternative is what g86m is now (an interpreter with fused pairs, E054); it is not given
+  up, and the probe is a separate program under `probe/`.
+- **Next move for each result**:
+  - It runs, and a call costs under 20 cycles → a card for the design: what a block is, how
+    generated code reaches the guest's registers and RAM, and how it leaves when an
+    instruction would fault (it cannot use Goose's return out of `exec_one`)
+  - It runs, and a call costs 20 to 200 cycles → the design has to chain blocks inside the
+    generated code so as to leave it seldom; say so in the design card
+  - It cannot be made to run (the mapping is refused, or Goose cannot hand the state's
+    address to C) → reported as not possible on this machine, with what refused
+- **Cut-off**: The same day. A stub that adds one to a guest register, called 100 million
+  times, against the same loop in Goose; and a generated loop that does it 100 million times
+  in one call.
+
+### Result
+
+2026-11-17. **It runs, and a call costs about 8 cycles.** `probe/jit0.goose` writes two
+functions as arm64 instructions into a Goose array, `probe/jit0.c` (three functions, about
+thirty lines) maps memory with `MAP_JIT`, copies them in and calls them:
+
+| | 100 million times | Each |
+|---|---:|---:|
+| A generated stub (add one to a guest register in memory), called from Goose through C | 242 ms | 2.4 ns, about 8 cycles |
+| The same addition as a generated loop, in one call | 32 ms | 0.3 ns, one cycle |
+
+(The same loop written in Goose took no time: the compiler worked the sum out.) The state
+crosses as a slice, whose data pointer is the address of the guest's registers; nothing
+refused. By the card: the first branch. A call is less than half of one interpreted
+instruction, so a block does not have to be long to pay, and leaving generated code often
+is affordable; the design card is next.
