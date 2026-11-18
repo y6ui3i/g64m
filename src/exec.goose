@@ -1122,7 +1122,10 @@ let K_J_ROT1 = 106;      // D1 /0 and /1, of a register
 let K_J_MOVSX8 = 107;    // 0F BE
 let K_J_MOVSX16 = 108;   // 0F BF
 let K_J_MULDIV = 109;    // F7 /4 to /7
-let K_JLAST = 109;       // the largest kind the translator knows
+let K_J_CALL_RM = 110;   // FF /2: CALL through a register or memory
+let K_J_JMP_RM = 111;    // FF /4: JMP through one
+let K_J_CMOV = 112;      // 0F 40 to 0F 4F
+let K_JLAST = 112;       // the largest kind the translator knows
 // The first instruction of a block the JIT has translated (jit.goose). It is above K_LAST on
 // purpose: the run finds it where it finds a kind with no executor, off the path every other
 // instruction takes, and no executor has to know about blocks.
@@ -1254,6 +1257,8 @@ fn classify(slot: i64, raw: u64) {
         else if op == 0xF7 && mm >> 4 & 7 == 3 { kind = K_NEG; }
         else if op == 0xF7 && mm >> 4 & 7 >= 4 && jit_on { kind = K_J_MULDIV; }
         else if op == 0xFF && mm >> 4 & 7 == 6 && jit_on { kind = K_J_PUSH_RM; }
+        else if op == 0xFF && mm >> 4 & 7 == 2 && jit_on { kind = K_J_CALL_RM; }
+        else if op == 0xFF && mm >> 4 & 7 == 4 && jit_on { kind = K_J_JMP_RM; }
         else if op == 0x87 && mm & 0x0C == 0x0C && jit_on { kind = K_J_XCHG; }
         else if op == 0xFF && mm >> 4 & 7 == 0 { kind = K_INC_RM; }
         else if op == 0xFF && mm >> 4 & 7 == 1 { kind = K_DEC_RM; }
@@ -1267,6 +1272,7 @@ fn classify(slot: i64, raw: u64) {
             if op2 == 0xB6 { kind = K_MOVZX8; } else if op2 == 0xB7 { kind = K_MOVZX16; }
             else if op2 == 0xAF { kind = K_IMUL; }
             else if op2 >= 0x90 && op2 <= 0x9F { kind = K_SETCC; imm = op2 & 15; }
+            else if op2 >= 0x40 && op2 <= 0x4F && i686 && jit_on { kind = K_J_CMOV; imm = op2 & 15; }
             else if op2 == 0xBE && jit_on { kind = K_J_MOVSX8; }
             else if op2 == 0xBF && jit_on { kind = K_J_MOVSX16; }
         }

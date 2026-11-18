@@ -34,16 +34,25 @@ Counts are of the stretch from `startx` to the desktop, in millions of trips.
 
 | # | Item | Trips now | Kept for x86_64 | State |
 |---|---|---:|---|---|
-| P1 | Indirect CALL and JMP (FF /2, /4) end their block at the far way, as RET does | 12.5, and what follows each | the design | |
+| P1 | Indirect CALL and JMP (FF /2, /4) end their block at the far way, as RET does | 12.5, and what follows each | the design | done, E087 |
 | P2 | Why instructions that have executors are on the general path | | | counted, E086 |
 | P2a | An instruction that begins in a page's last fifteen bytes gets no entry in the decode cache, ever | 17.6 | whole (the decode cache) | |
 | P2b | 16-bit operands (prefix 66) of `cmp`, `test`, `add` and the immediate groups: only MOV has 16-bit kinds | 16.2 | the design | |
 | P2c | First executions: the decode cache (131,072 slots) loses entries under X's amount of code | 6.8 | whole | |
-| P3 | CMOVcc | 6.4 | the design | |
+| P3 | CMOVcc | 6.4 | the design | done, E087 |
 | P4 | IMUL by a constant, BT and its group, XCHG of a byte with memory, SHLD and SHRD, CMPXCHG, INC and DEC of a byte | 16.5 | the design | |
 | P5 | PUSHF and CLI in blocks (the kernel's "save the interrupt flag and turn it off") | 3.0 | the design | |
 | P6 | The strings with REP inside generated code | 4.9 | the design | |
 | P7 | The far way predicts: a RET goes back where its CALL was, which the block that called can leave word of | 119 arrivals, 30 host instructions each | the design and the stub | |
 | P8 | Count again. What an entry costs once the trips are fewer; whether MMX and SSE moves want a translation | | | |
+
+## How far
+
+| After | Entries, `startx` to the desktop | Host | Guest instructions a second |
+|---|---:|---:|---:|
+| E085 (the count) | 90.0 million | 12.26 s | 250 million |
+| E087 (P1, P3) | 73.1 million | 11.20 s | 280 million |
+
+`--speed 4` wants 305 million.
 
 After P8, or when the host keeps up with `--speed 4` under X, whichever is first: x86_64.

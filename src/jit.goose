@@ -789,6 +789,8 @@ fn jit_plain(kind: u8, mm: u32, op: u8) -> bool {
     if kind == K_IMUL { return jit_off & 4096 == 0; }
     if kind >= K_MOVS && kind <= K_STOS { return jit_off & 8192 == 0; }
     if kind == K_RDTSC { return jit_off & 16384 == 0; }
+    if kind == K_J_CALL_RM || kind == K_J_JMP_RM { return false; }      // they end a block (jit_translate)
+    if kind == K_J_CMOV { return jit_off & 262144 == 0; }
     if kind >= K_J_MOV_A_M && kind <= K_JLAST { return jit_off & 131072 == 0; }
     return false;
 }
@@ -1341,6 +1343,16 @@ fn jit_one(kind: u8, slot: i64, p: u32, cnt: u32) {
         else { a_mov(T4, g(rm)); }
         e((if n == 1 { 0x13001C00 } else { 0x13003C00 }) | T4 << 5 | g(reg));             // sxtb, sxth
     }
+    else if kind == K_J_CMOV {
+        // The condition first (it may write the flags out, which uses the scratch registers),
+        // then the source, which is read whether the condition holds or not, as the chip
+        // reads it; then the choice.
+        j_cond(imm as! u8);
+        var src = g(rm);
+        if !regs { j_operand(mm, disp, p, cnt, 4, false); a_load(4, 7); src = 7; }
+        a_subsi(31, T4, 0);
+        e(0x1A800000 | g(reg) << 16 | C_NE << 12 | src << 5 | g(reg));    // csel wreg, wsrc, wreg, ne
+    }
     else if kind == K_J_MULDIV { j_muldiv(reg, mm, disp, p, cnt, j_dead(dc_next[slot], cnt + 1)); }
     else if kind == K_SETCC {
         // The condition first: it may write the record out, which has to be before the way out.
@@ -1421,6 +1433,26 @@ fn jit_translate(p0: u32, slot0: i64) {
             a_store(4, T4);
             a_subi(g(SP), g(SP), 4);
             jit_leave(nx + dc[slot].imm);
+            last = p; n += 1; done = true;
+        } else if (kind == K_J_CALL_RM || kind == K_J_JMP_RM) && jit_off & 262144 == 0 {
+            // An indirect CALL or JMP (E087): where it goes is known when it runs, as a
+            // RET's is, and the far way finds the block there. The target is read first, into
+            // a register the push does not use; for a CALL the return address is then pushed
+            // as K_CALL pushes it.
+            jit_exit_here(p, n);
+            if mm & 0x0C == 0x0C { a_mov(27, g(mm >> 7 & 7)); }
+            else { j_operand(mm, dc[slot].disp, p, n, 4, false); a_load(4, 27); }
+            if kind == K_J_CALL_RM {
+                a_subi(T1, g(SP), 4);
+                j_mem(SS, 4, true);
+                a_movi(T4, nx);
+                a_op(2, T4, T4, 22, 0);
+                a_store(4, T4);
+                a_subi(g(SP), g(SP), 4);
+            }
+            j_pass(jf);
+            a_op(0, T1, 27, 22, 0);                      // where it goes, as an address
+            a_far();
             last = p; n += 1; done = true;
         } else if kind == K_RET {
             jit_exit_here(p, n);

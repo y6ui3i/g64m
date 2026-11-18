@@ -6120,3 +6120,56 @@ these: they are counted before this point.)
 - More than eight bytes is not it: 0.06 million.
 
 `docs/perf.md` has these as P2a, P2b and P2c.
+
+## E087: Indirect CALL and JMP, and CMOV, in blocks (2026-11-19)
+
+P1 and P3 of `docs/perf.md`.
+
+- **Hypothesis**: An indirect CALL or JMP (FF /2, /4) is a jump whose target is known
+  only when it runs, as a RET's is, and the far way exists for that (E069): the block ends
+  there, with the target read, the return address pushed for a CALL, and the far way
+  finding the next block. CMOVcc is a condition, as SETcc has it, and a select. Together
+  they are 19 million trips of the stretch from `startx` to the desktop, and each indirect
+  call that stays in generated code lets what follows it stay too. **Generated code is
+  entered 70 million times in that stretch (90 before), and the host takes 10% less time
+  for it.**
+- **What changed since last time**: E073's kinds were straight-line instructions; these two
+  end a block at an address not known to the translator.
+- **Next move for each result**:
+  - Both as said → keep; P2a next (the page's last bytes)
+  - Entries fall and the time does not → the far way's own cost is what was bought: P7
+    (prediction) moves up
+  - A test fails with `--jit` only → `--jit-off 262144` turns these off; halve
+- **Cut-off**: A self-check (calls and jumps through a register and through memory, into
+  another page and back; CMOV on every condition, taken and not, from a register and
+  from memory, summed against a trace run), wrong builds, the suite, the stretch timed
+  five times each way.
+
+### Result
+
+2026-11-19. **Kept: from `startx` to the desktop, generated code is entered 73.1 million
+times (90.0) and the host takes 11.20 seconds (12.26, 8.6% less).** The card said 70
+million and 10%: close to both; its first branch. The guest executes the same
+8,380,137,681 instructions of virtual time to that point before and after.
+
+| `startx` to the desktop, medians of three | Entries | The far way finds a block | Host |
+|---|---:|---:|---:|
+| Before | 90.0 million | 119.0 million | 12.26 s |
+| Indirect CALL and JMP, CMOV | 73.1 million | 136.3 million | 11.20 s |
+
+That is 280 million guest instructions a second of the host under X, where `--speed 4`
+wants 305.
+
+**What was built.** Three kinds, 110 to 112. An indirect CALL or JMP ends its block: the
+target is read into x27 (which the push does not use), a CALL pushes its return address as
+`K_CALL` does, and the far way takes the target. CMOVcc takes the condition as SETcc does,
+reads its source whether the condition holds or not, and selects with `csel`.
+`--jit-off 262144` turns them off.
+
+**Tests.** `s_jitind`: calls and jumps through a register and through memory, to this page
+and to a function above 64 KB, over instructions that must not run, in a code segment
+whose base is 1000h; CMOV on sixteen conditions from a register and from memory.
+`tools/difftest.sh` has 153 lines, all ok. Ten wrong builds, each caught; two passed at
+first. A target loaded as sixteen bits is the same below 64 KB; and a target taken as an
+address where it is an instruction pointer is the same where the code segment's base is
+0, which it was in every self-check of the JIT's but `s_csbase`.

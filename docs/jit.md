@@ -84,7 +84,8 @@ it off.
 decodes nothing. An instruction the interpreter has a short executor for has a kind from 1
 to `K_LAST`; one it has none for, but the translator knows, has a kind from there to
 `K_JLAST`, given only when the JIT is on, which a run leaves to the general path (E073).
-`--jit-off 131072` turns those off.
+`--jit-off 131072` turns those off. An indirect CALL or JMP ends its block at the far way,
+as a RET does (E087; `--jit-off 262144`).
 
 **Flags.** The translator knows which instruction set the flags last in the block. The
 generated code keeps that instruction's operands and result in w1 to w3 (the record), and
