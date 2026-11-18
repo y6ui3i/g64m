@@ -180,21 +180,23 @@ terminal it begins at the host's time, so `date` in the guest shows today's date
 scripted or headless run it begins at 2026-01-01, so that such a run is the same every time.
 `--rtc host` and `--rtc SECONDS` (since 1970) say otherwise.
 
-`--disk FILE` attaches an image as an IDE disk (the primary channel's master, PIO), read and
-written in place. `tools/images/make-disk.sh` makes an initramfs that has the driver and a
-32 MB ext2 image to be the root:
+`--disk FILE` attaches an image as an IDE disk (the primary channel's master, PIO).
+`tools/images/make-disk.sh` makes an initramfs that has the driver and a 32 MB ext2 image to be
+the root:
 
 ```bash
 ./build/g86m --jit --disk images/disk.img --initrd images/initramfs-disk images/vmlinuz-lts
 ```
 
-What is written there is in the image the next time. **Leave with `off`**, typed in the guest:
-it writes everything out, makes the root read-only and halts the machine, at which g86m stops.
-Ctrl-] stops g86m at once, and a file system that was being written may not survive it (ext2
-has no journal).
+**The image is never changed unless `--keep` is given.** What the guest writes is kept in
+memory for the run: it can be read back, and it is gone when g86m stops, however it stops. So
+nothing can break the image.
 
-With `--scratch` the guest's writes are kept in memory for the run and the image is never
-changed, so nothing can break it and nothing is kept: the way to try things out.
+With `--keep` the guest's writes go to the image, in place, and are there the next time. Then
+**leave with `off`**, typed in the guest: it writes everything out, makes the root read-only and
+halts the machine, at which g86m stops. Ctrl-] stops g86m at once, and a file system that was
+being written may not survive it (ext2 has no journal; that is how it came to be the other way
+round, E084).
 
 `--net` gives the machine a network card (an NE2000 on PCI) and, behind it, the host as a
 gateway, a DHCP server and a name server (10.0.2.2 and 10.0.2.3, the guest at 10.0.2.15), by
@@ -217,15 +219,14 @@ back. With the X disk that `tools/images/make-x-disk.sh` makes, the serial conso
 terminal and X comes up in the window:
 
 ```bash
-./build/g86m --jit --fb 1024x768 --scratch --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
+./build/g86m --jit --fb 1024x768 --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
 ```
 
 ```
 ~ # startx
 ```
 
-(Ctrl-C at the serial console ends X; without `--scratch`, `off` there ends the session with the
-disk whole.)
+(Ctrl-C at the serial console ends X; Ctrl-] ends g86m. With `--keep`, end with `off` instead.)
 
 ![X on g86m: icewm and an xterm](docs/img/m8-x.png)
 

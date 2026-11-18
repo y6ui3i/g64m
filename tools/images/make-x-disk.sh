@@ -3,7 +3,7 @@
 # the root on the IDE disk.
 #
 #   XROOT=/path/to/rustx86/images/disk-x.img tools/images/make-x-disk.sh
-#   build/g86m --jit --fb 1024x768 --scratch --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
+#   build/g86m --jit --fb 1024x768 --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
 #   ~ # startx
 #
 # The tree is the one rustx86's X disk is made of (its tools/images/sh/make-x-root.sh:

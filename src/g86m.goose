@@ -35,9 +35,10 @@
 //   --com FILE     write what the guest sent to COM1 to FILE when the run ends
 //   --initrd FILE  the initramfs for a Linux kernel
 //   --append TEXT  the Linux kernel command line (default: console=ttyS0 tsc=reliable)
-//   --disk FILE    the image of an IDE disk, which the guest reads and writes in place
-//   --scratch      with --disk: what the guest writes is kept in memory for this run only, and
-//                  the image is never changed
+//   --disk FILE    the image of an IDE disk. What the guest writes is kept in memory for this
+//                  run only, and the image is never changed, unless:
+//   --keep         with --disk: the guest's writes go to the image, in place (leave with `off`
+//                  in the guest: a stop while it writes can break the file system)
 //   --net          a network card (an NE2000 on PCI) behind which the host answers as a gateway,
 //                  a DHCP server and a name server, and connects for the guest (libslirp)
 //   --fb WxH       a frame buffer of W by H pixels for a Linux kernel to draw on (1024x768 is
@@ -455,7 +456,7 @@ fn main() {
     var cpu_arg = 0;
     var shot_arg = 0;
     var disk_arg = 0;
-    var disk_scratch: i32 = 0;   // --scratch: the disk's writes are not kept
+    var disk_scratch: i32 = 1;   // the disk's writes are not kept, unless --keep says so (E084)
     var rtc_arg = 0;             // 1 --rtc host, 2 --rtc with a number
     var initrd_arg = 0;
     var append_arg = 0;
@@ -483,7 +484,8 @@ fn main() {
         else if a[i] == "--unpaced" { paced_arg = 2; }
         else if a[i] == "--cpu" && i + 1 < a.len { i++; cpu_arg = i; }
         else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }
-        else if a[i] == "--scratch" { disk_scratch = 1; }
+        else if a[i] == "--keep" { disk_scratch = 0; }
+        else if a[i] == "--scratch" { disk_scratch = 1; }     // what is now the default: accepted, for command lines from before
         else if a[i] == "--fb" && i + 1 < a.len {
             i++;
             let t = a[i];
