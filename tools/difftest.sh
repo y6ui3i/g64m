@@ -357,7 +357,7 @@ fi
 # white pixels on it. No window is opened: this run is scripted.
 if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-mini ]; then
     rm -f build/fb.ppm
-    out=$(build/g86m --jit --headless --fb 1024x768 --shot build/fb.ppm --max 8000000000 --append "console=tty0 console=ttyS0" \
+    out=$(build/g86m --jit --headless --fb 1024x768 --shot build/fb.ppm --max 8000000000 --append "console=tty0 console=ttyS0 tsc=reliable" \
         --initrd images/initramfs-mini --wait "~ # " --type "cat /sys/class/graphics/fb0/virtual_size; dmesg | grep -c 'fb0: EFI VGA frame buffer device'\n" --wait "~ # " \
         images/vmlinuz-lts 2>"build/fb.err" | tr -d '\r')
     lit=$(tail -c +16 build/fb.ppm 2>/dev/null | tr -d '\000' | wc -c | tr -d ' ')

@@ -148,6 +148,10 @@ the boot log scrolls by, and after about 22 seconds there is a shell. **Ctrl-]**
 ./build/g86m --initrd images/initramfs-mini images/vmlinuz-lts
 ```
 
+The kernel's command line is `console=ttyS0 tsc=reliable` unless `--append` gives another:
+the TSC is the instruction count, and the machine has no other clock for the kernel to check it
+against but the timer, which the kernel itself keeps setting (E080).
+
 The 22 seconds are the guest's: guest time is counted in instructions, 76 million to the second
 for this machine, and the console paces it against real time. A faster host does not shorten
 them; a faster *guest* does. `--speed N` makes a second of guest time N times as many

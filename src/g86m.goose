@@ -33,7 +33,7 @@
 //   --dump FILE    write the first 1 MB of guest memory to FILE when the run ends
 //   --com FILE     write what the guest sent to COM1 to FILE when the run ends
 //   --initrd FILE  the initramfs for a Linux kernel
-//   --append TEXT  the Linux kernel command line (default: console=ttyS0)
+//   --append TEXT  the Linux kernel command line (default: console=ttyS0 tsc=reliable)
 //   --disk FILE    the image of an IDE disk, which the guest reads and writes in place
 //   --net          a network card (an NE2000 on PCI) behind which the host answers as a gateway,
 //                  a DHCP server and a name server, and connects for the guest (libslirp)
@@ -554,7 +554,11 @@ fn main() {
         if initrd_arg > 0 {
             guard read_file(a[initrd_arg], initrd) else { write_stderr("g86m: cannot read the initramfs\n"); exit(2); }
         }
-        let cmdline: const u8[:] = if append_arg > 0 { a[append_arg] } else { "console=ttyS0" };
+        // tsc=reliable: the kernel is not to check the TSC against the timer. The TSC here is the
+        // instruction count, which is what the timer runs on; and the timer is the one other
+        // clock this machine has, which the kernel sets anew for every event, so that its
+        // reading of it is no clock to check anything against (E080).
+        let cmdline: const u8[:] = if append_arg > 0 { a[append_arg] } else { "console=ttyS0 tsc=reliable" };
         let problem = linux_boot(img, initrd, cmdline);
         guard problem.len == 0 else { write_stderr(str("g86m: ", problem, "\n")); exit(2); }
         // No BIOS runs first: the interrupt controller is masked and the timer stopped.

@@ -5813,3 +5813,66 @@ card's driver is loaded if the root has the modules, and `udhcpc` is run in the 
 if the card is there. Nothing in the machine changed.
 
 **Not in the suite**: the run needs the world. The suite's X session (E078) is as it was.
+
+## E080: Where 632 microseconds go (2026-11-18)
+
+Task 15 of `docs/jit.md`, left open by E078.
+
+- **Hypothesis**: The kernel's two readings in the warning are 52 thousand instructions
+  apart over half a second: the PIT's time ran that much more than the TSC's in one case
+  and less in another, so it is jitter and not drift. The PIT's time as the kernel reads it
+  is the count of interrupts taken times the period, plus the counter's place in the
+  period. The counter's period starts anew where the interrupt is *raised*
+  (`timer_fire`: `timer_at = vtime + period`), so an interrupt raised late moves every
+  later period by its lateness. A run is planned to stop at `timer_at` exactly; **if with
+  the JIT a step can run past the moment it was given (`chain_until`) by tens of thousands
+  of instructions, `timer_fire` sees it as lateness, and a count of it shows steps of that
+  size only with `--jit` and X.**
+- **What changed since last time**: E078 tried `--jit-off` bits, which answer "which
+  translation"; this asks "does virtual time pass the plan at all", which no bit turns off.
+- **Next move for each result**:
+  - Lateness of thousands of instructions with the JIT and none without → where the time
+    was given: the count of instructions a call into generated code returned against the
+    time it was allowed, at the call that passes it
+  - No lateness beyond a few instructions either way → the periods are right and it is
+    the reading: what `pit_count` returns around the moment of the interrupt, next
+- **Cut-off**: One counting build (the largest lateness and how many above a thousand,
+  printed at the end), run twice: with `--jit` and X to the warning, and without `--jit`.
+
+### Result
+
+2026-11-18. **The hypothesis is wrong, and so was E078's "with `--jit` only".** The timer
+is never late: over a boot with X, the largest lateness `timer_fire` saw is 0, and no call
+into generated code ran past the time it was given. And the same counting run without
+`--jit` printed the warning too: E078 had concluded from one run each way.
+
+By the card's second branch, the reading. A second count:
+
+| A boot of 7 billion instructions, with `--jit` | With X | Without (no disk) |
+|---|---:|---:|
+| The kernel marks the TSC unstable | yes | no |
+| Channel 0's count written by the guest | 61,563 times | 14,119 times |
+| The timer's interrupt raised while the one before still waited | 146 | 0 |
+
+**The kernel does not leave the timer periodic.** It writes channel 0's count for every
+event it wants, tens of thousands of times in a boot. Its reading of that same counter as
+a clock ("pit": interrupts counted, times the period, plus the counter's place in the
+period) means nothing once the periods are of its own making, and it is against that
+reading that its watchdog checks the TSC, because this machine has no third clock (no
+HPET, no ACPI timer). An idle boot's events are regular enough for the two to agree by
+luck; X's are not. Nothing in the emulator's timer is off.
+
+**So the kernel is told: `tsc=reliable` is in the default command line.** The TSC here is
+the instruction count, the very thing the timer runs on. With it, X runs ninety seconds
+of guest time with no warning, the clock source stays `tsc`, and `pit` is no longer among
+those available. A command line given with `--append` is used as it is, as before.
+
+The plain Linux boot's count is 1,496,360,001 with the new default (1,492,980,001), the
+same with `--jit` and without. `tools/difftest.sh` has 150 lines, all ok.
+
+**What this cost and what it was.** Three counting runs and two cards' worth of looking in
+the wrong place (the JIT's bits in E078, lateness here), for a line of the kernel's log
+that the numbers in it would have explained sooner: the TSC's interval in the warning is
+504.000 ms, a whole number of ticks to within thirty instructions, and the PIT's is 504.67.
+The clock that was off was the one being trusted. Task 15 of `docs/jit.md` is closed as
+not the JIT's.
