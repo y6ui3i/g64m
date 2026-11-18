@@ -41,6 +41,10 @@ rustx86 on one day:
 A sixth counts where g86m's code is smaller than rustx86's (mostly what is not built yet;
 about a fifth is the language) and gives the reasons behind the [roadmap](docs/roadmap.md):
 [Goose の x86 エミュレータは Rust 版よりなぜ小さいのか](https://pocraft.net/?p=979).
+A seventh is the day the roadmap's first two stages were done: the JIT's trips back to the
+interpreter counted and halved, a clock, a disk, a network, and MMX and SSE2 for the guest's TLS,
+checked against rustx86:
+[Goose の x86 エミュレータで HTTPS を通す](https://pocraft.net/?p=982).
 
 | Stage | Goal | State |
 |---|---|---|
