@@ -5690,3 +5690,86 @@ exponent, the stack's top after an MMX instruction), and got a case each.
 
 **Besides.** `tools/oracle/trace32.rs` was copied into the rustx86 checkout and built
 there, as `tools/difftest.sh` says to; the copy is an untracked file in that repository.
+
+## E078: A screen (M8) (2026-11-18)
+
+- **Hypothesis**: Three parts make M8: a frame buffer the kernel draws on, a window on the
+  host that shows it and takes the keyboard and the mouse, and X in the guest. **`startx`
+  typed at the serial console brings up X in a window on the host: an xterm that can be
+  typed into and a pointer that follows the mouse.**
+- **What changed since last time**: Again the roadmap's choice of device does not survive
+  a look at the kernel. It named the Bochs VBE interface, for `bochs-drm` or `vesafb`.
+  rustx86's loader says what the kernel (Alpine's) has built in: `efifb` and `fbcon`, and
+  neither of those two. So there is no device at all: the loader declares a linear frame
+  buffer in the boot parameters (`screen_info`, as a boot loader that had asked the
+  firmware would), as the top of RAM, reserved in the memory map, in a pixel format that
+  the kernel's table of simple frame buffers does not have, so that `efifb` takes it. All
+  of that is rustx86's finding and is taken as it is. The window is SDL2, which the README
+  named from the start; like libslirp it is opened with `dlopen` when asked for. The mouse
+  is a PS/2 one on the 8042's second port, after rustx86's `mouse.rs`. The guest's X is
+  the tree rustx86's X disk is made of (Alpine's Xorg with the fbdev driver, icewm, xterm,
+  dillo), put on an ext2 image for the IDE disk of E075; the roadmap's Xfbdev and twm
+  built with Buildroot are not needed for it.
+- **Next move for each result**:
+  - X up, typed into, the pointer moves → keep; M8 is done
+  - The kernel's console does not appear on the frame buffer → the boot parameters'
+    fields against rustx86's, byte for byte, before the window is suspected
+  - The console appears and X does not start → `/var/log/Xorg.0.log` in the guest
+  - X starts and an instruction is missing (X is compiled like OpenSSL) → it is added
+    to `sse.goose` with a case in the trace tests
+- **Cut-off**: A scripted run that boots with the frame buffer and saves it as an image
+  (`--shot`), compared without a window: the kernel's console is on it. X and the window
+  by hand, with a saved image of X as the record.
+
+### Result
+
+2026-11-18. **Kept, with one part left for a hand: `startx` at the serial console brings up
+X (Xorg, icewm, an xterm) on the frame buffer; a line typed at the keyboard runs in the
+xterm; the pointer follows the mouse. All of that is shown by scripted runs that save the
+frame ([docs/img/m8-x.png](img/m8-x.png)). The window opens, shows the frame buffer and
+closes cleanly; typing and moving the mouse *in the window* have not been tried, because
+a script cannot press a key there.** `tools/difftest.sh` has 150 lines, all ok.
+
+```
+efifb: framebuffer at 0x7d00000, using 3072k, total 3072k
+efifb: mode is 1024x768x32, linelength=4096, pages=1
+Console: switching to colour frame buffer device 128x48
+fb0: EFI VGA frame buffer device
+serio: i8042 AUX port at 0x60,0x64 irq 12
+input: PS/2 Generic Mouse as /devices/platform/i8042/serio1/input/input3
+```
+
+- The kernel's console was on the frame buffer the first time it was run with one.
+- The mouse's port was not found at first: the driver proves the second port and its
+  interrupt by sending a byte round it (controller command D3h), which was not there.
+- X needed nothing new in the CPU: the instructions of E077 were enough.
+- From `startx` to the desktop is about ninety seconds of guest time on a fresh copy of
+  the disk; the first two saved frames were black because they were taken at thirty.
+- Scripted typing lost characters in X: `echo typed-in-x > /tmp/k; uname -a` arrived as
+  `echo  uname -a`. A script types as fast as the keyboard controller is read, two thousand
+  keys a second, and what reads the keyboard through the kernel's event queue drops what
+  it cannot take. `--keys` now types fifty a second of the guest's time.
+
+**What was built.** In `linux.goose`, `--fb WxH`: the top of RAM taken out of the memory
+map and declared in the boot parameters as rustx86 does it. `src/screen.c` (170 lines):
+SDL2 opened with `dlopen`, a streaming texture the frame buffer is copied to thirty times
+a second, and the window's events turned into scan codes, mouse movement and buttons; a
+click takes the pointer and Ctrl+Alt gives it back. In `dev.goose`, the 8042's second
+port and a three-button PS/2 mouse. For scripts and tests: `--shot FILE` saves the frame
+as a PPM, `--keys TEXT` types at the keyboard where `--type` goes to the serial port, and
+`--mouse X,Y,B` moves the mouse. `tools/images/make-x-disk.sh` puts the tree of rustx86's
+X disk on a 320 MB ext2 image with g86m's init.
+
+**Tests.** `s_mouse` on the bare ports. In the suite: a boot with the frame buffer whose
+saved frame has the console on it; and X from the disk, a line typed into the xterm that
+leaves a file the serial console reads, and thirty bytes counted from the mouse. No wrong
+builds were made for this one.
+
+**Open, and not M8's: with `--jit`, once X runs, the kernel's watchdog marks the TSC
+unstable** (`'tsc' skewed 632088 ns over watchdog 'pit' interval of 503369980 ns`) and
+goes on with another clock source. Without `--jit` it does not; a boot without X, with
+the JIT, runs ninety seconds of guest time without it; none of five `--jit-off` bits
+(RDTSC in blocks, the kinds of E073, the far way, the look ahead, linking) takes it away.
+632 microseconds are 48 thousand instructions. So the time that generated code reports,
+or the time the timer sees, is off by that much somewhere under a load the boot does not
+have. Nothing has gone wrong because of it that was seen. It is task 15 of `docs/jit.md`.

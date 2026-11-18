@@ -19,6 +19,10 @@
 //   --wait TEXT    script step: run until TEXT is on the text screen
 //   --type TEXT    script step: type TEXT at the keyboard (\n is Enter; \kNN presses the key
 //                  with scancode NN in hex, so \k3F is F5)
+//   --keys TEXT    script step: type TEXT at the keyboard, also where --type goes to the serial
+//                  port (a Linux kernel): what X reads
+//   --mouse X,Y,B  script step: the mouse moves X to the right and Y up, with buttons B held
+//                  (1 left, 2 right, 4 middle)
 //   --screen       print the text screen when the run ends
 //   --ports        report the I/O ports the guest used that nothing answered, and how often
 //                  each BIOS service was called
@@ -33,6 +37,9 @@
 //   --disk FILE    the image of an IDE disk, which the guest reads and writes in place
 //   --net          a network card (an NE2000 on PCI) behind which the host answers as a gateway,
 //                  a DHCP server and a name server, and connects for the guest (libslirp)
+//   --fb WxH       a frame buffer of W by H pixels for a Linux kernel to draw on (1024x768 is
+//                  usual); from a terminal, a window shows it and takes keyboard and mouse (SDL2)
+//   --shot FILE    write the frame buffer to FILE as a PPM image when the run ends
 //   --rtc WHEN     what the guest's clock starts at: host, or seconds since 1970. Without it,
 //                  the host's time in a terminal and 2026-01-01 in a scripted or headless run
 //
@@ -112,12 +119,15 @@ fn screen_text(out: u8[>..]&, trim: bool) {
 
 let STEP_WAIT = 1;
 let STEP_TYPE = 2;
+let STEP_KEYS = 3;       // typed at the keyboard, whatever the console is
+let STEP_MOUSE = 4;      // the mouse moved, or its buttons changed
 
 var step_kind: u8[>..];
 var step_arg: i64[>..];          // index of the step's text in args()
 var step_pos = 0;
 var step_started = false;        // the current type step has queued its keys
 var type_index = 0;              // next character of the current type step
+var keys_next = 0;               // when the next character of a --keys step may be typed
 var serial = false;              // the guest's console is its serial port: the script waits on and types to that
 var serial_seen = 0;             // how much of the serial output earlier wait steps have consumed
 var serial_searched = 0;         // how much of it the current wait step has searched without finding its text
@@ -127,7 +137,37 @@ fn script_poll() -> bool {
     let a = args();
     while step_pos < step_kind.len {
         let text = a[step_arg[step_pos]];
-        if serial {
+        if step_kind[step_pos] == STEP_KEYS {
+            // One character at a time, once the guest has taken the last one, and no more
+            // than fifty a second of the guest's time: what reads the keyboard through the
+            // kernel's event queue (X) loses keys that come two thousand a second.
+            if type_index < text.len && kbd_queued() == 0 && !kbd_full && vtime >= keys_next {
+                keys_next = vtime + insns_per_second() / 50;
+                var c = text[type_index];
+                if c == '\\' && type_index + 1 < text.len && text[type_index + 1] == 'n' {
+                    c = '\n';
+                    type_index++;
+                }
+                type_char(c);
+                type_index++;
+            }
+            if type_index < text.len || kbd_queued() > 0 || kbd_full { return false; }
+            type_index = 0;
+        } else if step_kind[step_pos] == STEP_MOUSE {
+            // "DX,DY,BUTTONS": to the right, up, and the buttons held (1 left, 2 right, 4 middle).
+            var v: i64[3] = [0; 3];
+            var k = 0;
+            var from = 0;
+            for j in text.len + 1 {
+                if j == text.len || text[j] == ',' {
+                    let n, ok = parse_int(text[from..j]);
+                    if ok && k < 3 { v[k] = n; }
+                    k += 1;
+                    from = j + 1;
+                }
+            }
+            mouse_move(v[0], v[1], v[2] as! u8);
+        } else if serial {
             if step_kind[step_pos] == STEP_WAIT {
                 // Each wait looks only at what came after the last one matched, so that waiting
                 // for the prompt a second time waits for a second prompt.
@@ -303,6 +343,68 @@ fn run_console(max: i64) -> i64 {
     return result;
 }
 
+// The window (screen.c): what was typed and moved there goes to the keyboard controller, and
+// every third call the frame buffer is shown, which is thirty times a second. False when the
+// window was closed.
+extern fn screen_open(w: i32, h: i32) -> i32;
+extern fn screen_show(pixels: const u8[:]);
+extern fn screen_poll(out: u32[:]) -> i32;
+extern fn screen_close();
+var screen_on = false;
+var screen_n = 0;
+var screen_buttons: u8 = 0;
+
+fn screen_tick() -> bool {
+    var ev: u32[64] = [0; 64];
+    let n = screen_poll(ev[..]);
+    var dx = 0;
+    var dy = 0;
+    var moved = false;
+    var open = true;
+    for k in n {
+        let e = ev[k];
+        let kind = e >> 24;
+        if kind == 1 {
+            if e & 0x100 != 0 { kbd_push(0xE0); }
+            kbd_push((e & 0x7F | (if e & 0x200 != 0 { 0x80 } else { 0 })) as! u8);
+        } else if kind == 2 {
+            let x: i64 = e & 0xFFF;
+            let y: i64 = e >> 12 & 0xFFF;
+            dx += if x >= 2048 { x - 4096 } else { x };
+            dy -= if y >= 2048 { y - 4096 } else { y };      // the mouse's "up" is the window's "down"
+            moved = true;
+        } else if kind == 3 {
+            screen_buttons = (e & 7) as! u8;
+            moved = true;
+        } else if kind == 4 {
+            open = false;
+        }
+    }
+    if moved { mouse_move(dx, dy, screen_buttons); }
+    screen_n += 1;
+    if screen_n % 3 == 0 {
+        let from: i64 = fb_base;
+        let size: i64 = fb_w * fb_h * 4;
+        screen_show(ram[from..from + size]);
+    }
+    return open;
+}
+
+// The frame buffer as a PPM image: a header, then red, green and blue for each pixel.
+fn shot_write(path: const u8[:]) -> bool {
+    var out: u8[>..] = [];
+    format(out, "P6\n", fb_w, " ", fb_h, "\n255\n");
+    let from: i64 = fb_base;
+    let n: i64 = fb_w * fb_h;
+    for k in n {
+        let at = from + k * 4;
+        out.push(ram[at + 1]);
+        out.push(ram[at + 2]);
+        out.push(ram[at + 3]);
+    }
+    return write_file(path, out);
+}
+
 // The serial console: the guest's serial port is the terminal. As run_console, but there is no
 // screen to draw: what the guest sends is written as it comes, and what is typed goes to the
 // port. Ctrl-] leaves.
@@ -321,6 +423,7 @@ fn run_serial(max: i64) -> i64 {
             com_receive(b as! u8);
         }
         com_flush();
+        if screen_on && !screen_tick() { quit = true; }
         guard !quit && result == RUN_BUDGET else { break; }
         if unpaced { pace_idle(); continue; }
         let guest_ns = (vtime - v0) * 1000000000 / insns_per_second();
@@ -347,6 +450,7 @@ fn main() {
     var dump_arg = 0;
     var com_arg = 0;
     var cpu_arg = 0;
+    var shot_arg = 0;
     var rtc_arg = 0;             // 1 --rtc host, 2 --rtc with a number
     var initrd_arg = 0;
     var append_arg = 0;
@@ -377,6 +481,19 @@ fn main() {
             ide_sectors = disk_open(a[i]);
             if ide_sectors < 1 { write_stderr("g86m: cannot open the disk image, or it has no sector\n"); exit(2); }
         }
+        else if a[i] == "--fb" && i + 1 < a.len {
+            i++;
+            let t = a[i];
+            var x = -1;
+            for k in t.len { if t[k] == 'x' { x = k; } }
+            if x > 0 {
+                let w, okw = parse_int(t[..x]);
+                let h, okh = parse_int(t[x + 1..]);
+                if okw && okh && w >= 320 && w <= 1920 && h >= 200 && h <= 1200 { fb_w = w as! u32; fb_h = h as! u32; }
+            }
+            if fb_w == 0 { write_stderr("g86m: --fb wants a size, as in 1024x768\n"); exit(2); }
+        }
+        else if a[i] == "--shot" && i + 1 < a.len { i++; shot_arg = i; }
         else if a[i] == "--net" {
             if net_open() != 0 { write_stderr("g86m: --net needs libslirp, which was not found (brew install libslirp)\n"); exit(2); }
             net_on = true;
@@ -417,8 +534,8 @@ fn main() {
             guard ok else { write_stderr("g86m: --max needs a number\n"); exit(2); }
             max = n;
         }
-        else if (a[i] == "--wait" || a[i] == "--type") && i + 1 < a.len {
-            step_kind.push(if a[i] == "--wait" { STEP_WAIT } else { STEP_TYPE });
+        else if (a[i] == "--wait" || a[i] == "--type" || a[i] == "--keys" || a[i] == "--mouse") && i + 1 < a.len {
+            step_kind.push(if a[i] == "--wait" { STEP_WAIT } else if a[i] == "--type" { STEP_TYPE } else if a[i] == "--keys" { STEP_KEYS } else { STEP_MOUSE });
             i++;
             step_arg.push(i);
         }
@@ -495,6 +612,11 @@ fn main() {
     // one, so that a run is the same run every time.
     if rtc_arg == 1 || (rtc_arg == 0 && (interactive || serial_console)) { rtc_base = con_time(); }
     net_pace = net_on && !interactive && !serial_console;
+    // A frame buffer and someone watching: a window for it.
+    if fb_w != 0 && kernel && serial_console {
+        if screen_open(fb_w as! i32, fb_h as! i32) == 0 { screen_on = true; }
+        else { write_stderr("g86m: no window for the frame buffer: SDL2 was not found (brew install sdl2)\r\n"); }
+    }
     if serial_console {
         write_stdout("g86m: Ctrl-] to quit\r\n");
         flush_stdout();
@@ -542,6 +664,10 @@ fn main() {
     if jit_on { format(stats, " jit ", jit_blocks_made, " blocks, ", jit_ran, " instructions, ", jit_calls, " entries, ", jit_links, " links, ", jit_ctx[1], " far, ", jit_used, " bytes, ", jit_flushes, " flushes"); }
     format(stats, "\n");
     write_stderr(stats);
+    if screen_on { screen_close(); }
+    if shot_arg > 0 && fb_w != 0 {
+        if !shot_write(a[shot_arg]) { write_stderr("g86m: cannot write the image\n"); }
+    }
     if com_arg > 0 {
         if !write_file(a[com_arg], com_out) { write_stderr("g86m: cannot write the serial output\n"); }
     }

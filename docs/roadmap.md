@@ -66,6 +66,11 @@ devices on a CPU that is still moving.
 - The guest: Xfbdev (or Xorg's fbdev driver), twm and xterm, built for i686 with Buildroot.
 - 128 MB of RAM (what g86m has now) is enough for this and for M9.
 - M7 and M8 do not depend on each other; the order can be swapped if a window is wanted first.
+- Where it stands (E078): X comes up and is typed into, by script. Not as written above:
+  the kernel has neither `bochs-drm` nor `vesafb` built in, only `efifb`, so there is no
+  Bochs VBE device; the loader declares a frame buffer in the boot parameters, as rustx86
+  found. And the guest's X is Alpine's Xorg with icewm, from rustx86's X disk, not Xfbdev
+  and twm from Buildroot. The window's keyboard and mouse are to be tried by hand.
 
 ### M9: a browser
 
