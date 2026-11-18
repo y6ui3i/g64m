@@ -13,6 +13,9 @@ Addition is affected as well as multiplication. The generated C has `gs_mul_u32`
 
 Reported upstream: [aardappel/goose#313](https://github.com/aardappel/goose/issues/313)
 (2026-11-12; reproduced on v2026.4 and on main at d5ae5bb).
+Fixed upstream by [aardappel/goose#317](https://github.com/aardappel/goose/pull/317), merged to
+`master` on 2026-11-15 (90b9170). No release has it yet: v2026.4, which g86m is pinned to, is
+from 2026-11-06, so the workaround below stays until the pin is moved.
 The text that was sent is in [upstream-goose-issue-313.md](upstream-goose-issue-313.md).
 
 ```goose

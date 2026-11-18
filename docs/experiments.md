@@ -6006,3 +6006,68 @@ Two sessions of the suite got `--keep`: the one that writes 2 MB and reads it ba
 second run (E075), and the one that leaves with `off` (E081). `tools/difftest.sh` has 151 lines,
 all ok. By hand: an image's checksum is the same after a session without `--keep` wrote 3 MB
 and was cut off.
+
+## E085: Where the time goes when X runs (2026-11-19)
+
+A count before any change, as E067 was for the boot. The owner's plan: make X on the
+32-bit machine quick with what will carry over to x86_64, then go to x86_64.
+
+- **Hypothesis**: The boot's profile (E073: 98% of the instructions in blocks, 11 million
+  trips) is not X's. X and what it draws with are compiled for SSE2, which the JIT does
+  not know and the interpreter runs on its general path, the slowest there is; and X moves
+  much memory with string instructions. **During X's start and while it draws, a third or
+  more of the host's time is the general path, and MMX and SSE instructions are most of
+  what it executes there.**
+- **What changed since last time**: Every count so far was of the boot to the first prompt.
+- **Next move for each result**:
+  - As said → the MMX and SSE instructions get a faster road first (which carries over to
+    x86_64 whole); by the list of which
+  - The general path is large and they are not most of it → the list says what is
+  - Generated code is nine tenths again → the JIT's own costs under X's code (ways out,
+    the far way finding nothing), counted as E067 did
+  - The host's time is not in the CPU at all (the disk, the window) → that, first
+- **Cut-off**: One counting build (the general path's instructions by opcode, and how many
+  instructions each road executes), run to three points: the prompt, X's desktop, and
+  after a terminal has scrolled and Dillo has drawn a page from the disk. One `sample` of
+  the second and of the third stretch. No window: the frame buffer is memory either way.
+
+### Result
+
+2026-11-19. **The hypothesis is wrong: MMX and SSE are 3% of what the general path executes
+while X starts and 1% or less of the host's time. What is true of X is what was true of
+the boot before E067: half the time is trips between generated code and Goose.**
+
+| Stretch (guest time includes idle) | Guest instr. in blocks | On the general path | of them MMX, SSE | Entries into generated code | Far way | Host |
+|---|---:|---:|---:|---:|---:|---:|
+| Boot to the prompt | 1.45 billion | 19.1 million | 0.2 million | 14.1 million | 20.4 million | 2.9 s |
+| `startx` to the desktop (90 s of guest time) | 3.09 billion | 118.7 million | 3.6 million | 90.0 million | 119.0 million | 12.5 s |
+| A terminal scrolling, Dillo drawing a table (45 s) | 1.57 billion | 74.1 million | 7.1 million | 51.1 million | 72.6 million | 8.0 s |
+
+- Generated code is entered once for 34 guest instructions under X; once for 103 in the
+  boot. The host gets through 250 million guest instructions a second in X and 500 in the
+  boot. At the default speed the guest is a CPU of 76 million a second, so X is slow
+  because the guest is; at `--speed 4` (305 million) the host cannot keep up with X.
+- A sample of the host while X starts (6,556 samples): generated code about 46%,
+  `exec_short` 16%, `exec_general` 13%, `exec_one` (with `jit_blocks`) 11%, `string_op`
+  2%, `two_byte` 2%, `sse_op` 0.3%. While it draws: about 50%, 15%, 14%, 9%; `sse_op` 1%.
+- The disk and the frame buffer are not in it: `ide_read` 0.6%.
+
+**What the general path executes while X starts, in millions** (each is a trip):
+
+| Instructions | Count | Why they are there |
+|---|---:|---|
+| Group FF: indirect CALL and JMP, `push r/m` | 12.5 | CALL and JMP through a register or memory have no kind; shared libraries call through tables |
+| `cmp r/m, r` (39), group 83, `mov` (89, 8B), C7, group 81 | 23.0 | have executors; here for a reason not yet counted (a prefix, more than eight bytes, the page's last bytes) |
+| CMOVcc (0F 40 to 4F) | 6.4 | no kind |
+| IMUL by a constant (6B, 69) | 4.7 | no kind |
+| BT, BTS, BTR, the BT group | 3.9 | no kind |
+| XCHG of a byte with memory (86) | 3.4 | no kind |
+| SHLD, SHRD | 2.6 | no kind |
+| REP MOVSB and the other strings with REP | 4.9 | REP has no kind |
+| PUSHF, CLI | 3.0 | no kind |
+| CMPXCHG | 1.9 | no kind |
+| INC and DEC of a byte (FE), shifts (C1) by the long way | 3.7 | |
+| An executor's instruction run by the general path because the run had no time or the entry was a block | 22.4 | |
+
+By the card: the second and third branches together. The plan that follows from it is
+[docs/perf.md](perf.md).
