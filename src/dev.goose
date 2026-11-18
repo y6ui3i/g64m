@@ -230,13 +230,75 @@ var kbd_config: u8 = 0x45;   // command byte: interrupt on, system flag, transla
 var port_b: u8 = 0;          // port 61h (speaker gate and friends)
 var refresh: u8 = 0;
 
-// Moves the next queued byte into the output buffer and raises IRQ 1.
+// The controller's second port: a PS/2 mouse (E078). Its bytes wait in a queue of their own
+// and reach the guest through the same output buffer, marked as the mouse's in the status
+// register, with IRQ 12. After rustx86's mouse.rs: a plain three-button mouse that answers
+// what a driver asks while it looks for something fancier, and, once told to, reports
+// movement in packets of three bytes.
+var aux_queue: u8[KBD_QUEUE] = [0; KBD_QUEUE];
+var aux_head = 0;
+var aux_tail = 0;
+var kbd_out_aux = false;     // the byte in the output buffer is the mouse's
+var mouse_on = false;        // reporting
+var mouse_arg = false;       // the next byte to the mouse is a command's argument
+var pad_mouse: u8[5] = [0; 5];
+
+// Moves the next queued byte into the output buffer and raises its interrupt: the keyboard's
+// first, IRQ 1; then the mouse's, IRQ 12.
 fn kbd_pump() {
-    if kbd_full || kbd_head == kbd_tail { return; }
-    kbd_out = kbd_queue[kbd_head];
-    kbd_head = (kbd_head + 1) % KBD_QUEUE;
-    kbd_full = true;
-    if kbd_config & 1 != 0 { raise_irq(1); }
+    if kbd_full { return; }
+    if kbd_head != kbd_tail {
+        kbd_out = kbd_queue[kbd_head];
+        kbd_head = (kbd_head + 1) % KBD_QUEUE;
+        kbd_full = true;
+        kbd_out_aux = false;
+        if kbd_config & 1 != 0 { raise_irq(1); }
+    } else if aux_head != aux_tail {
+        kbd_out = aux_queue[aux_head];
+        aux_head = (aux_head + 1) % KBD_QUEUE;
+        kbd_full = true;
+        kbd_out_aux = true;
+        if kbd_config & 2 != 0 { raise_irq(12); }
+    }
+}
+
+fn aux_push(v: u8) {
+    let next = (aux_tail + 1) % KBD_QUEUE;
+    if next == aux_head { return; }
+    aux_queue[aux_tail] = v;
+    aux_tail = next;
+    kbd_pump();
+}
+
+// A byte the guest sends to the mouse (controller command D4h, then the byte).
+fn mouse_command(v: u8) {
+    if mouse_arg { mouse_arg = false; aux_push(0xFA); return; }
+    aux_push(0xFA);                              // every command is acknowledged
+    match v {
+        0xFF => { aux_push(0xAA); aux_push(0x00); mouse_on = false; },      // reset: passed, and it is a mouse
+        0xF2 => { aux_push(0x00); },                                        // which kind: the plain one
+        0xF4 => { mouse_on = true; },
+        0xF5, 0xF6 => { mouse_on = false; },
+        0xF3, 0xE8 => { mouse_arg = true; },                                // sample rate, resolution: an argument follows
+        0xE9 => { aux_push(if mouse_on { 0x20 } else { 0 }); aux_push(2); aux_push(100); },
+        0xEB => { aux_push(0x08); aux_push(0); aux_push(0); },
+        _ => {},
+    }
+}
+
+// The mouse moved by dx to the right and dy up, with its buttons as given (1 left, 2 right,
+// 4 middle): one packet, if the guest has asked for reports and the queue has room for all
+// three bytes.
+fn mouse_move(dx0: i64, dy0: i64, buttons: u8) {
+    if !mouse_on || (aux_tail - aux_head + KBD_QUEUE) % KBD_QUEUE > KBD_QUEUE - 4 { return; }
+    let dx = if dx0 > 255 { 255 } else if dx0 < -255 { -255 } else { dx0 };
+    let dy = if dy0 > 255 { 255 } else if dy0 < -255 { -255 } else { dy0 };
+    var b: u8 = 0x08 | buttons & 7;
+    if dx < 0 { b |= 0x10; }
+    if dy < 0 { b |= 0x20; }
+    aux_push(b);
+    aux_push(dx as! u8);
+    aux_push(dy as! u8);
 }
 
 fn kbd_push(v: u8) {
@@ -258,6 +320,11 @@ fn kbd_read_data() -> u8 {
 
 fn kbd_write_data(v: u8) {
     if kbd_command == 0x60 { kbd_config = v; kbd_command = 0; return; }
+    if kbd_command == 0xD4 { kbd_command = 0; mouse_command(v); return; }
+    // The byte comes back as if a device had sent it: the mouse (D3h), which is how a driver
+    // finds out that the second port and its interrupt are there, or the keyboard (D2h).
+    if kbd_command == 0xD3 { kbd_command = 0; aux_push(v); return; }
+    if kbd_command == 0xD2 { kbd_command = 0; kbd_push(v); return; }
     if kbd_command != 0 { kbd_command = 0; return; }       // data for a command not modelled
     // A byte for the keyboard itself (LEDs, typematic, reset ...): acknowledge it.
     if v == 0xFF { kbd_push(0xFA); kbd_push(0xAA); return; }
@@ -267,7 +334,10 @@ fn kbd_write_data(v: u8) {
 fn kbd_write_command(v: u8) {
     match v {
         0x20 => { kbd_push(kbd_config); },
-        0x60, 0xD1 => { kbd_command = v; },
+        0x60, 0xD1, 0xD2, 0xD3, 0xD4 => { kbd_command = v; },
+        0xA7 => { kbd_config |= 0x20; },             // the second port off,
+        0xA8 => { kbd_config &= ~0x20; },            // and on
+        0xA9 => { kbd_push(0x00); },                 // its test: passed
         0xAA => { kbd_push(0x55); },
         0xAB => { kbd_push(0x00); },
         0xD0 => { kbd_push(0x02); },
@@ -1029,7 +1099,7 @@ fn port_in8(port: u16) -> u8 {
             refresh ^= 0x10;
             return port_b & 0x0F | refresh | (if ch2_out() { 0x20 } else { 0 });
         },
-        0x64 => { return if kbd_full { 0x1D } else { 0x1C }; },
+        0x64 => { return if !kbd_full { 0x1C } else if kbd_out_aux { 0x3D } else { 0x1D }; },
         0x70 => { return cmos_index; },
         0x71 => { return cmos_read(); },
         0x1F0..0x1F8 => { if ide_sectors > 0 { return ide_read(port - 0x1F0); } note_unknown(port); return 0xFF; },

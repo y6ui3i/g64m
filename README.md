@@ -57,6 +57,7 @@ checked against rustx86:
 | M6 | A clock and a disk | done (E074, E075): the host's date, and a root file system on an IDE disk |
 
 | M7 | A network | done (E076, E077): `wget https://...` in the guest fetches a page through the host. MMX and SSE2 came with it, which the guest's OpenSSL is compiled for |
+| M8 | A screen | done by script (E078): X comes up on a frame buffer, takes the keyboard and the mouse; the window on the host is to be tried by hand |
 
 What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M6 | A clock (CMOS/RTC) and an IDE disk | planned |
@@ -71,9 +72,10 @@ Why the stages are in this order, and how each is checked, is in [docs/roadmap.m
 
 Goose was the only new technology in the project until E059; there is now a second, behind an
 option: code generated at run time (below). The rest is a C compiler (clang) and, once a screen is
-needed, SDL2. Four small files of C do what Goose cannot: the terminal's raw mode
+needed, SDL2. Five small files of C do what Goose cannot: the terminal's raw mode
 (`console.c`), executable memory (`jit.c`), reading and writing a disk image in place
-(`disk.c`), and the host side of the network (`net.c`).
+(`disk.c`), the host side of the network (`net.c`), and the window (`screen.c`, SDL2, opened
+with `dlopen` as libslirp is).
 
 A third new technology came with M7: **libslirp**, the user-mode TCP/IP stack QEMU uses, for the
 host side of `--net`. The dull alternatives were a tap device or macOS's vmnet, which need root
@@ -197,6 +199,24 @@ out through the host's own sockets:
 ~ # wget -q -O - https://example.com/ | grep title
 ```
 
+`--fb 1024x768` gives a Linux kernel a frame buffer of that size, and, started from a terminal, a
+window on the host that shows it and takes the keyboard and the mouse (SDL2, opened when the
+option is given: `brew install sdl2`). A click in the window takes the pointer; Ctrl+Alt gives it
+back. With the X disk that `tools/images/make-x-disk.sh` makes, the serial console stays in the
+terminal and X comes up in the window:
+
+```bash
+./build/g86m --jit --fb 1024x768 --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
+```
+
+```
+~ # startx
+```
+
+![X on g86m: icewm and an xterm](docs/img/m8-x.png)
+
+`--shot FILE` saves the frame buffer as a PPM image when the run ends, with or without a window.
+
 `--unpaced` is the other way to stop waiting: real time is then spent only on the guest time that
 passes while the machine is halted, so the boot takes 7.5 seconds with `--jit` at the default
 speed and `sleep 3` still takes three, but the guest's clock runs ahead of the wall while it
@@ -229,7 +249,8 @@ To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 | [src/sse.goose](src/sse.goose) | MMX and SSE2 of the i686 machine |
 | [src/bios.goose](src/bios.goose) | Power-on setup and the BIOS services the emulator performs: screen, disk, keyboard, time |
 | [src/dev.goose](src/dev.goose), [src/disk.c](src/disk.c), [src/net.c](src/net.c) | Interrupt controllers, timer, keyboard controller, CMOS clock, IDE disk, PCI and the network card, I/O port dispatch; the disk's image file and the host side of the network in C |
-| [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs) |
+| [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs, frame buffer) |
+| [src/screen.c](src/screen.c) | The window for the frame buffer: SDL2, keys and mouse |
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |
 | [src/g86m.goose](src/g86m.goose) | The run loop, interrupt delivery, pacing, the serial console, the session script, the command line |

@@ -30,6 +30,14 @@ fn e820(index: u32, base: u32, size: u32, kind: u32) {
     set_mem32(at + 16, kind);
 }
 
+// The frame buffer the kernel is told of (E078): fb_w by fb_h pixels of four bytes (nothing,
+// red, green, blue) at fb_base, which is the top of RAM, kept out of the memory map. There
+// is no device behind it: the boot parameters say it is there, as a boot loader that had
+// asked the firmware would, and the kernel's efifb draws on it. 0 by 0 for none.
+var fb_w: u32 = 0;
+var fb_h: u32 = 0;
+var fb_base: u32 = 0;
+
 // Sets the machine up to run the kernel in img. Returns a message on failure, "" on success.
 fn linux_boot(img: u8[:], initrd: u8[:], cmdline: const u8[:]) -> const u8[:] {
     if img[0x211] & 1 == 0 { return "the kernel is not loaded high (a zImage, not a bzImage)"; }
@@ -49,11 +57,18 @@ fn linux_boot(img: u8[:], initrd: u8[:], cmdline: const u8[:]) -> const u8[:] {
     copy_to(CMDLINE_AT, cmdline);
     set_mem8(CMDLINE_AT + (cmdline.len as! u32), 0);
 
+    // The frame buffer takes whole megabytes off the top of memory.
+    var top: u32 = RAM_SIZE;
+    if fb_w != 0 {
+        top -= (fb_w * fb_h * 4 + 0xFFFFF) & 0xFFF00000;
+        fb_base = top;
+    }
+
     // The initramfs goes near the top of memory, page-aligned, with a megabyte to spare above.
     var initrd_at: u32 = 0;
     if initrd.len > 0 {
-        if initrd.len + 0x200000 > RAM_SIZE - KERNEL_AT { return "the initramfs does not fit in memory"; }
-        initrd_at = (RAM_SIZE - (initrd.len as! u32) - 0x100000) & 0xFFFFF000;
+        if initrd.len + 0x200000 > top - KERNEL_AT { return "the initramfs does not fit in memory"; }
+        initrd_at = (top - (initrd.len as! u32) - 0x100000) & 0xFFFFF000;
         copy_to(initrd_at, initrd);
     }
 
@@ -71,8 +86,23 @@ fn linux_boot(img: u8[:], initrd: u8[:], cmdline: const u8[:]) -> const u8[:] {
     e820(0, 0x00000000, 0x0009FC00, 1);
     e820(1, 0x0009FC00, 0x00000400, 2);
     e820(2, 0x000A0000, 0x00060000, 2);
-    e820(3, KERNEL_AT, RAM_SIZE - KERNEL_AT, 1);
+    e820(3, KERNEL_AT, top - KERNEL_AT, 1);
     set_mem8(ZERO_PAGE + 0x1E8, 4);
+    if fb_w != 0 {
+        e820(4, top, RAM_SIZE - top, 2);
+        set_mem8(ZERO_PAGE + 0x1E8, 5);
+        // screen_info: a linear frame buffer of the kind a UEFI boot loader reports (70h),
+        // which is the kind this kernel has a driver for. Red at bit 8, green at 16, blue at
+        // 24: an order the kernel's table of "simple" frame buffers does not list, so that
+        // the EFI driver gets it and not a driver the kernel has not. (rustx86's finding.)
+        set_mem8(ZERO_PAGE + 0x0F, 0x70);
+        set_mem32(ZERO_PAGE + 0x12, fb_w | fb_h << 16);                  // width and height, 16 bits each
+        set_mem32(ZERO_PAGE + 0x16, 32 | (fb_base & 0xFFFF) << 16);      // bits to a pixel; the base's low half
+        set_mem32(ZERO_PAGE + 0x1A, fb_base >> 16 | ((fb_w * fb_h * 4 + 0xFFFF) >> 16 & 0xFFFF) << 16);   // its high half; the size in 64 KB
+        set_mem32(ZERO_PAGE + 0x24, fb_w * 4 | 8 << 16 | 8 << 24);       // bytes to a line; red: 8 bits at 8
+        set_mem32(ZERO_PAGE + 0x28, 8 | 16 << 8 | 8 << 16 | 24 << 24);   // green: 8 at 16; blue: 8 at 24
+        set_mem32(ZERO_PAGE + 0x2C, 8);                                  // nothing: 8 at 0
+    }
 
     // The protocol wants flat 4 GB segments: selector 10h for code, 18h for data. The kernel
     // reloads its segment registers early on, so the table has to be in memory, not only in

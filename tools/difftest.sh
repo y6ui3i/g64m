@@ -352,6 +352,51 @@ else
     echo "skip  linux on a network (libslirp or the images are not there)"
 fi
 
+# Linux on a frame buffer (M8). The loader tells the kernel of one, the kernel's efifb takes
+# it and puts its console there; the run's last frame is saved and has to have the console's
+# white pixels on it. No window is opened: this run is scripted.
+if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-mini ]; then
+    rm -f build/fb.ppm
+    out=$(build/g86m --jit --headless --fb 1024x768 --shot build/fb.ppm --max 8000000000 --append "console=tty0 console=ttyS0" \
+        --initrd images/initramfs-mini --wait "~ # " --type "cat /sys/class/graphics/fb0/virtual_size; dmesg | grep -c 'fb0: EFI VGA frame buffer device'\n" --wait "~ # " \
+        images/vmlinuz-lts 2>"build/fb.err" | tr -d '\r')
+    lit=$(tail -c +16 build/fb.ppm 2>/dev/null | tr -d '\000' | wc -c | tr -d ' ')
+    if echo "$out" | grep -q "^1024,768$" && echo "$out" | grep -q "^1$" && [ "$(wc -c < build/fb.ppm | tr -d ' ')" = 2359312 ] && [ "$lit" -gt 20000 ]; then
+        echo "ok    linux on a frame buffer (g86m): efifb at 1024x768, the console drawn ($lit bytes of the frame are not black)"
+    else
+        fail=1
+        echo "FAIL  linux on a frame buffer (g86m): no fb0, or nothing drawn ($lit bytes of the frame are not black)"
+        echo "$out" | tail -6 | sed 's/^/    |/'
+        tail -1 "build/fb.err" | sed 's/^/  stderr:   /'
+    fi
+else
+    echo "skip  linux on a frame buffer (images/vmlinuz-lts and images/initramfs-mini are not there)"
+fi
+
+# X (M8): from the X disk, startx; then a line typed at the keyboard, which only X's terminal
+# reads, leaves a file that the serial console finds; and the mouse's interrupt has counted
+# the packets of eight moves. The disk is a copy. tools/images/make-x-disk.sh makes it.
+if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-disk ] && [ -f images/disk-x.img ]; then
+    cp images/disk-x.img build/disk-x-test.img
+    out=$(build/g86m --jit --headless --fb 1024x768 --shot build/x.ppm --max 40000000000 --disk build/disk-x-test.img --initrd images/initramfs-disk \
+        --wait "~ # " --type "startx >/tmp/x.log 2>&1 &\n" --wait "~ # " \
+        --type "sleep 90; grep ' 12:' /proc/interrupts | tr -s ' ' | cut -d' ' -f3 > /tmp/m0; echo x-is-up\n" --wait "x-is-up" --wait "~ # " \
+        --mouse "-25,15,0" --mouse "-25,15,0" --mouse "-25,15,0" --mouse "-25,15,0" --mouse "-25,15,0" --mouse "-25,15,0" --mouse "-25,15,0" --mouse "-25,15,0" \
+        --mouse "0,0,1" --mouse "0,0,0" --keys "echo typed-in-x > /tmp/k\n" \
+        --type "sleep 3; echo got-\$(cat /tmp/k); echo moved-\$((\$(grep ' 12:' /proc/interrupts | tr -s ' ' | cut -d' ' -f3) - \$(cat /tmp/m0)))\n" --wait "moved-" --wait "~ # " \
+        images/vmlinuz-lts 2>"build/x.err" | tr -d '\r')
+    if echo "$out" | grep -q "^got-typed-in-x$" && echo "$out" | grep -q "^moved-30$"; then
+        echo "ok    x (g86m): Xorg, icewm and an xterm from the disk; a line typed into the xterm; thirty bytes from the mouse"
+    else
+        fail=1
+        echo "FAIL  x (g86m): what was typed did not reach the xterm, or the mouse's packets were not counted"
+        echo "$out" | tail -6 | sed 's/^/    |/'
+        tail -1 "build/x.err" | sed 's/^/  stderr:   /'
+    fi
+else
+    echo "skip  x (images/disk-x.img is not there; tools/images/make-x-disk.sh makes it)"
+fi
+
 # The interactive console, driven through a pseudo-terminal. It takes the images that are there.
 if command -v python3 >/dev/null; then
     python3 -I tools/console_test.py build/g86m images 2>/dev/null || fail=1

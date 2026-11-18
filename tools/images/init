@@ -7,8 +7,9 @@ bb=/bin/busybox
 $bb mount -t proc proc /proc
 $bb mount -t sysfs sys /sys
 $bb mount -t devtmpfs dev /dev 2>/dev/null
-$bb mkdir -p /dev/pts
+$bb mkdir -p /dev/pts /dev/shm
 $bb mount -t devpts devpts /dev/pts 2>/dev/null
+$bb mount -t tmpfs shm /dev/shm 2>/dev/null
 $bb --install -s /bin 2>/dev/null
 export TERM=xterm
 $bb stty rows 24 cols 80 < /dev/ttyS0 2>/dev/null
@@ -17,6 +18,12 @@ $bb ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 where="the initramfs"
 if [ -e /.g86m-disk ]; then
     where="/dev/sda"
+    # What X reads the keyboard and the mouse through, where the disk has the modules: a
+    # plain PS/2 mouse (proto=bare saves the driver a second and a half of asking for more).
+    $bb insmod /lib/modules/i2c-core.ko 2>/dev/null
+    $bb insmod /lib/modules/psmouse.ko proto=bare 2>/dev/null
+    $bb insmod /lib/modules/mousedev.ko 2>/dev/null
+    $bb insmod /lib/modules/evdev.ko 2>/dev/null
 else
     # In the order the modules depend on one another.
     # (probe_mask=1: the primary channel only. Without PCI the driver would try five more
