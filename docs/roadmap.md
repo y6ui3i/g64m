@@ -83,6 +83,11 @@ devices on a CPU that is still moving.
 
 ### M10: x86_64
 
+- **The name changes when this stage is done**, and not before: once a 64-bit Linux kernel
+  boots to a shell, g86m is renamed **g64m**. The repository, the directory, the
+  executable, `src/g86m.goose` and the messages are changed together, in one step. Decided
+  2026-11-19.
+
 - **SSE2** is required: the x86_64 ABI passes floats in XMM registers, so no 64-bit user space
   runs without it. This is likely the largest part. (Done for the i686 in E077, for M7; the
   64-bit forms and XMM8 to XMM15 are what is left of it here.)

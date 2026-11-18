@@ -6006,3 +6006,170 @@ Two sessions of the suite got `--keep`: the one that writes 2 MB and reads it ba
 second run (E075), and the one that leaves with `off` (E081). `tools/difftest.sh` has 151 lines,
 all ok. By hand: an image's checksum is the same after a session without `--keep` wrote 3 MB
 and was cut off.
+
+## E085: Where the time goes when X runs (2026-11-19)
+
+A count before any change, as E067 was for the boot. The owner's plan: make X on the
+32-bit machine quick with what will carry over to x86_64, then go to x86_64.
+
+- **Hypothesis**: The boot's profile (E073: 98% of the instructions in blocks, 11 million
+  trips) is not X's. X and what it draws with are compiled for SSE2, which the JIT does
+  not know and the interpreter runs on its general path, the slowest there is; and X moves
+  much memory with string instructions. **During X's start and while it draws, a third or
+  more of the host's time is the general path, and MMX and SSE instructions are most of
+  what it executes there.**
+- **What changed since last time**: Every count so far was of the boot to the first prompt.
+- **Next move for each result**:
+  - As said → the MMX and SSE instructions get a faster road first (which carries over to
+    x86_64 whole); by the list of which
+  - The general path is large and they are not most of it → the list says what is
+  - Generated code is nine tenths again → the JIT's own costs under X's code (ways out,
+    the far way finding nothing), counted as E067 did
+  - The host's time is not in the CPU at all (the disk, the window) → that, first
+- **Cut-off**: One counting build (the general path's instructions by opcode, and how many
+  instructions each road executes), run to three points: the prompt, X's desktop, and
+  after a terminal has scrolled and Dillo has drawn a page from the disk. One `sample` of
+  the second and of the third stretch. No window: the frame buffer is memory either way.
+
+### Result
+
+2026-11-19. **The hypothesis is wrong: MMX and SSE are 3% of what the general path executes
+while X starts and 1% or less of the host's time. What is true of X is what was true of
+the boot before E067: half the time is trips between generated code and Goose.**
+
+| Stretch (guest time includes idle) | Guest instr. in blocks | On the general path | of them MMX, SSE | Entries into generated code | Far way | Host |
+|---|---:|---:|---:|---:|---:|---:|
+| Boot to the prompt | 1.45 billion | 19.1 million | 0.2 million | 14.1 million | 20.4 million | 2.9 s |
+| `startx` to the desktop (90 s of guest time) | 3.09 billion | 118.7 million | 3.6 million | 90.0 million | 119.0 million | 12.5 s |
+| A terminal scrolling, Dillo drawing a table (45 s) | 1.57 billion | 74.1 million | 7.1 million | 51.1 million | 72.6 million | 8.0 s |
+
+- Generated code is entered once for 34 guest instructions under X; once for 103 in the
+  boot. The host gets through 250 million guest instructions a second in X and 500 in the
+  boot. At the default speed the guest is a CPU of 76 million a second, so X is slow
+  because the guest is; at `--speed 4` (305 million) the host cannot keep up with X.
+- A sample of the host while X starts (6,556 samples): generated code about 46%,
+  `exec_short` 16%, `exec_general` 13%, `exec_one` (with `jit_blocks`) 11%, `string_op`
+  2%, `two_byte` 2%, `sse_op` 0.3%. While it draws: about 50%, 15%, 14%, 9%; `sse_op` 1%.
+- The disk and the frame buffer are not in it: `ide_read` 0.6%.
+
+**What the general path executes while X starts, in millions** (each is a trip):
+
+| Instructions | Count | Why they are there |
+|---|---:|---|
+| Group FF: indirect CALL and JMP, `push r/m` | 12.5 | CALL and JMP through a register or memory have no kind; shared libraries call through tables |
+| `cmp r/m, r` (39), group 83, `mov` (89, 8B), C7, group 81 | 23.0 | have executors; here for a reason not yet counted (a prefix, more than eight bytes, the page's last bytes) |
+| CMOVcc (0F 40 to 4F) | 6.4 | no kind |
+| IMUL by a constant (6B, 69) | 4.7 | no kind |
+| BT, BTS, BTR, the BT group | 3.9 | no kind |
+| XCHG of a byte with memory (86) | 3.4 | no kind |
+| SHLD, SHRD | 2.6 | no kind |
+| REP MOVSB and the other strings with REP | 4.9 | REP has no kind |
+| PUSHF, CLI | 3.0 | no kind |
+| CMPXCHG | 1.9 | no kind |
+| INC and DEC of a byte (FE), shifts (C1) by the long way | 3.7 | |
+| An executor's instruction run by the general path because the run had no time or the entry was a block | 22.4 | |
+
+By the card: the second and third branches together. The plan that follows from it is
+[docs/perf.md](perf.md).
+
+## E086: Why instructions with executors reach the general path (2026-11-19)
+
+P2 of `docs/perf.md`, its first half: a count.
+
+- **Hypothesis**: 23 million executions of `cmp`, `mov` and the immediate groups are on
+  the general path while X starts, though `classify` knows those opcodes. Each has a reason
+  that can be read where the general path decodes it: no entry could be made (the page's
+  last bytes, a limit), the entry is new (first and second execution), or `classify`
+  refused it (a 16-bit operand, LOCK, REP, more than eight bytes, a form it leaves out).
+  **One or two reasons are most of the 23 million, and they are refusals, not new
+  entries.**
+- **What changed since last time**: E085 counted by opcode; this by reason.
+- **Next move for each result**:
+  - More than eight bytes is the largest → `classify` reads the immediate from memory
+    beyond the eighth byte
+  - A 16-bit operand is the largest → 16-bit forms of the commonest kinds, in the
+    translator only
+  - New entries are most → the decode cache is being emptied: by what (stores into pages
+    of code, slots fought over), counted next
+- **Cut-off**: One counting build, one run from the prompt to the desktop.
+
+### Result
+
+2026-11-19. **Half right: one reason is large, and so are two that are not refusals.** Of
+the general path's 118.7 million instructions from `startx` to the desktop, in millions:
+
+| Why | All | `cmp`, `mov`, `add`, `test`, the immediate groups |
+|---|---:|---:|
+| Refused by `classify` for its form (no kind for the opcode) | 50.4 | 2.3 |
+| No entry possible: the instruction is in the page's last fifteen bytes | 17.6 | 8.4 |
+| A 16-bit operand (prefix 66) | 16.2 | 12.2 |
+| No entry yet (a first execution) | 6.8 | 2.9 |
+| REP | 4.9 | |
+| LOCK | 0.4 | |
+
+(The 22.4 million executions of an executor's instruction by the general path are not in
+these: they are counted before this point.)
+
+- **The page's last fifteen bytes.** An instruction that begins there gets no entry, ever,
+  because a cached instruction's bytes are read sixteen at a time from one page. One
+  instruction in 270 begins there; a loop that has one pays a trip every time round.
+- **16-bit operands.** `cmp`, `test`, `add` and the immediate groups with prefix 66: only
+  MOV has 16-bit kinds.
+- **First executions**: 6.8 million in ninety seconds is the decode cache losing entries
+  to other addresses (131,072 slots, one address each) faster than the boot ever did.
+- More than eight bytes is not it: 0.06 million.
+
+`docs/perf.md` has these as P2a, P2b and P2c.
+
+## E087: Indirect CALL and JMP, and CMOV, in blocks (2026-11-19)
+
+P1 and P3 of `docs/perf.md`.
+
+- **Hypothesis**: An indirect CALL or JMP (FF /2, /4) is a jump whose target is known
+  only when it runs, as a RET's is, and the far way exists for that (E069): the block ends
+  there, with the target read, the return address pushed for a CALL, and the far way
+  finding the next block. CMOVcc is a condition, as SETcc has it, and a select. Together
+  they are 19 million trips of the stretch from `startx` to the desktop, and each indirect
+  call that stays in generated code lets what follows it stay too. **Generated code is
+  entered 70 million times in that stretch (90 before), and the host takes 10% less time
+  for it.**
+- **What changed since last time**: E073's kinds were straight-line instructions; these two
+  end a block at an address not known to the translator.
+- **Next move for each result**:
+  - Both as said → keep; P2a next (the page's last bytes)
+  - Entries fall and the time does not → the far way's own cost is what was bought: P7
+    (prediction) moves up
+  - A test fails with `--jit` only → `--jit-off 262144` turns these off; halve
+- **Cut-off**: A self-check (calls and jumps through a register and through memory, into
+  another page and back; CMOV on every condition, taken and not, from a register and
+  from memory, summed against a trace run), wrong builds, the suite, the stretch timed
+  five times each way.
+
+### Result
+
+2026-11-19. **Kept: from `startx` to the desktop, generated code is entered 73.1 million
+times (90.0) and the host takes 11.20 seconds (12.26, 8.6% less).** The card said 70
+million and 10%: close to both; its first branch. The guest executes the same
+8,380,137,681 instructions of virtual time to that point before and after.
+
+| `startx` to the desktop, medians of three | Entries | The far way finds a block | Host |
+|---|---:|---:|---:|
+| Before | 90.0 million | 119.0 million | 12.26 s |
+| Indirect CALL and JMP, CMOV | 73.1 million | 136.3 million | 11.20 s |
+
+That is 280 million guest instructions a second of the host under X, where `--speed 4`
+wants 305.
+
+**What was built.** Three kinds, 110 to 112. An indirect CALL or JMP ends its block: the
+target is read into x27 (which the push does not use), a CALL pushes its return address as
+`K_CALL` does, and the far way takes the target. CMOVcc takes the condition as SETcc does,
+reads its source whether the condition holds or not, and selects with `csel`.
+`--jit-off 262144` turns them off.
+
+**Tests.** `s_jitind`: calls and jumps through a register and through memory, to this page
+and to a function above 64 KB, over instructions that must not run, in a code segment
+whose base is 1000h; CMOV on sixteen conditions from a register and from memory.
+`tools/difftest.sh` has 153 lines, all ok. Ten wrong builds, each caught; two passed at
+first. A target loaded as sixteen bits is the same below 64 KB; and a target taken as an
+address where it is an instruction pointer is the same where the code segment's base is
+0, which it was in every self-check of the JIT's but `s_csbase`.
