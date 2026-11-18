@@ -7,6 +7,7 @@
 #
 #   MODLOOP=/path/to/modloop-lts tools/images/make-disk.sh
 #   build/g86m --disk images/disk.img --initrd images/initramfs-disk images/vmlinuz-lts
+#   (with --keep, what the guest writes stays in the image)
 #
 # The kernel (Alpine's linux-lts) has the drivers only as modules. They are taken from
 # Alpine's modloop-lts of the same kernel version, a squashfs of all its modules, so that

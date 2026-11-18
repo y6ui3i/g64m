@@ -309,11 +309,11 @@ fi
 # starts from the same one every time.
 if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-disk ] && [ -f images/disk.img ]; then
     cp images/disk.img build/disk-test.img
-    one=$(build/g86m --jit --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
+    one=$(build/g86m --jit --keep --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
         --wait "~ # " --type "mount | grep -c '^/dev/sda on / type ext2 (rw'\n" --wait "~ # " \
         --type "echo written-by-the-guest > /hello; dd if=/dev/urandom of=/blob bs=1k count=2000 2>/dev/null; md5sum < /blob; sync\n" --wait "~ # " \
         images/vmlinuz-lts 2>"build/disk.err" | tr -d '\r')
-    two=$(build/g86m --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
+    two=$(build/g86m --keep --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
         --wait "~ # " --type "cat /hello; md5sum < /blob\n" --wait "~ # " \
         images/vmlinuz-lts 2>>"build/disk.err" | tr -d '\r')
     sum=$(echo "$one" | grep -E '^[0-9a-f]{32} ' | head -1)
@@ -332,20 +332,20 @@ else
     echo "skip  linux on a disk (images/initramfs-disk and images/disk.img are not there; tools/images/make-disk.sh makes them)"
 fi
 
-# The two ways to leave a disk whole (E081). With --scratch the image is the same file after
-# a session that wrote to it and was cut off. Without it, `off` in the guest writes
+# The two ways to leave a disk whole (E081, E084). Unless --keep is given the image is the
+# same file after a session that wrote to it and was cut off. With --keep, `off` in the guest writes
 # everything out, makes the root read-only and halts, at which g86m stops by itself; the
 # next boot finds what was written and a file system it has nothing to say about.
 if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-disk ] && [ -f images/disk.img ]; then
     cp images/disk.img build/disk-test.img
     before=$(cksum < build/disk-test.img)
-    build/g86m --jit --scratch --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
+    build/g86m --jit --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
         --wait "~ # " --type "dd if=/dev/urandom of=/junk bs=1k count=2000 2>/dev/null; sync; echo wrote-\$((1+1))\n" --wait "wrote-2" \
         images/vmlinuz-lts >/dev/null 2>"build/scratch.err"
-    one=$(build/g86m --jit --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
+    one=$(build/g86m --jit --keep --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
         --wait "~ # " --type "echo kept-by-off > /kept; off\n" --wait "this never comes" \
         images/vmlinuz-lts 2>&1 | tr -d '\r')
-    two=$(build/g86m --jit --scratch --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
+    two=$(build/g86m --jit --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
         --wait "~ # " --type "cat /kept; dmesg | grep -c -E 'EXT2-fs.*(error|unchecked)'\n" --wait "~ # " \
         images/vmlinuz-lts 2>>"build/scratch.err" | tr -d '\r')
     if [ "$(echo "$one" | grep -c 'written')" -ge 1 ] && echo "$one" | grep -q "System halted" && echo "$one" | grep -q "halted true" \
@@ -355,14 +355,14 @@ if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-disk ] && [ -f images/disk
         after=bad
     fi
     cp images/disk.img build/disk-test2.img
-    build/g86m --jit --scratch --headless --max 8000000000 --disk build/disk-test2.img --initrd images/initramfs-disk \
+    build/g86m --jit --headless --max 8000000000 --disk build/disk-test2.img --initrd images/initramfs-disk \
         --wait "~ # " --type "dd if=/dev/urandom of=/junk bs=1k count=2000 2>/dev/null; echo wrote-\$((1+1))\n" --wait "wrote-2" \
         images/vmlinuz-lts >/dev/null 2>>"build/scratch.err"
     if [ "$(cksum < build/disk-test2.img)" = "$before" ] && [ "$after" = ok ]; then
-        echo "ok    leaving a disk whole (g86m): --scratch leaves the image as it was; off halts the machine and the next boot finds a clean file system"
+        echo "ok    leaving a disk whole (g86m): the image is as it was unless --keep is given; with it, off halts the machine and the next boot finds a clean file system"
     else
         fail=1
-        echo "FAIL  leaving a disk whole (g86m): the image changed under --scratch, or off did not leave a clean file system"
+        echo "FAIL  leaving a disk whole (g86m): the image changed without --keep, or off did not leave a clean file system"
         echo "$one" | tail -3 | sed 's/^/    |/'
         echo "$two" | tail -4 | sed 's/^/    |/'
     fi

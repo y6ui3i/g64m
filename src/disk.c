@@ -1,6 +1,7 @@
 // The file behind the guest's disk (dev.goose, the IDE disk): opened once, then read and
 // written in place, a sector at a time, so that what the guest has written is in the file
-// when the write returns. Or, with --scratch, never written at all (E081).
+// when the write returns (--keep). Or, as it is unless --keep is given, never written at all:
+// the guest's writes stay in this process (E081, E084).
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -12,7 +13,7 @@ typedef struct { const uint8_t *data; int64_t len; } disk_bytes;
 typedef struct { uint8_t *data; int64_t len; } disk_buf;
 
 static int disk_fd = -1;
-// With --scratch: the image mapped privately, so that what is written goes to memory of this
+// Without --keep: the image mapped privately, so that what is written goes to memory of this
 // process (a copy of the page written) and never to the file.
 static uint8_t *disk_map;
 static int64_t disk_bytes_n;

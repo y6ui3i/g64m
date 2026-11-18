@@ -5982,3 +5982,27 @@ in), so it shows nothing about the cause. What would show it is the owner's sess
 gave 141, which is 128 plus 13, SIGPIPE. The card's second branch named that number as
 what would tell; it came from the run before the fix, and confirms the cause. With the fix,
 the owner opened the same page again and the machine stayed up.
+
+## E084: The image is not changed unless asked (2026-11-18)
+
+- **What happened**: `images/disk-x.img` was broken twice in an hour (E081, E082): by
+  Ctrl-], and by the limit of `--max`. `--scratch` and `off` were there after the first
+  time; the second session used neither, because the command line that had been given
+  before did not.
+- **Hypothesis**: A safeguard that has to be asked for is not used the first time it is
+  needed. Turned round: **`--disk FILE` alone never changes the image, however the run
+  ends; `--keep` is what writes it, and then `off` is the way out.** The owner chose this.
+- **What changed since last time**: E075 made writing in place the default because M6's
+  condition was a file system that is written. It still is, with `--keep`.
+- **Next move for each result**: holds → keep. A use that needed the old default without
+  saying so → it gets `--keep` (the suite's own, here).
+- **Cut-off**: The suite: an image unchanged after a session that wrote and was cut off,
+  with no option; writes kept and a clean file system after `off`, with `--keep`.
+
+### Result
+
+2026-11-18. **Kept.** `--scratch` is still accepted and now says what is the case anyway.
+Two sessions of the suite got `--keep`: the one that writes 2 MB and reads it back in a
+second run (E075), and the one that leaves with `off` (E081). `tools/difftest.sh` has 151 lines,
+all ok. By hand: an image's checksum is the same after a session without `--keep` wrote 3 MB
+and was cut off.
