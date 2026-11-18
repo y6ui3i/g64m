@@ -5773,3 +5773,147 @@ the JIT, runs ninety seconds of guest time without it; none of five `--jit-off` 
 632 microseconds are 48 thousand instructions. So the time that generated code reports,
 or the time the timer sees, is off by that much somewhere under a load the boot does not
 have. Nothing has gone wrong because of it that was seen. It is task 15 of `docs/jit.md`.
+
+## E079: A browser (M9) (2026-11-18)
+
+- **Hypothesis**: Everything M9 needs is there since E078: the X disk has Dillo, the
+  network of E076 carries HTTPS, and the CPU has what Alpine's binaries are compiled for.
+  What is missing is small: the disk's init does not bring the network up. With the card's
+  driver loaded and `udhcpc` run there, **`dillo https://example.com/` in X shows the
+  page: its heading is on the saved frame.**
+- **What changed since last time**: Nothing in the machine. The init of
+  `tools/images/init` learns the network, for both roots.
+- **Next move for each result**:
+  - The page on the frame → keep; M9 is done
+  - Dillo stops at an instruction → it is added, with a case in the trace tests (E077's
+    fourth branch)
+  - Dillo runs and shows an error page → its message: name resolution, the certificate
+    (the guest's date is 2026-01-01 in a scripted run: `--rtc host`), or its HTTPS helper
+  - Dillo does not fit in 128 MB with X → what `free` says, before more memory is given
+- **Cut-off**: One scripted run with `--net --rtc host --fb`, the frame saved. It needs the
+  world, so it is not in the suite.
+
+### Result
+
+2026-11-18. **Kept: Dillo, in X, shows `https://example.com/`
+([docs/img/m9-dillo.png](img/m9-dillo.png)). M9 is done.** By the card: its first branch.
+
+- The window's title is "Dillo: Example Domain" and the page's paragraph is on the frame.
+  The page's heading is not: the title bar has its text, the page area does not show it
+  (the card said the heading would be on the frame; what is there is the title and the
+  body). Whether Dillo leaves it out of this page on real hardware too was not looked at.
+- Dillo's log names the certificate chain it checked (Cloudflare's issuing CA up to
+  Comodo's root), with the guest's clock at the host's time (`--rtc host`).
+- No instruction was missing. With X, icewm, an xterm and Dillo, 31 of 103 MB are used.
+- The run: 13.0 billion guest instructions, 130 seconds on the host (the network's idle
+  time is slept), 145,570 sectors read from the disk.
+
+**What was built.** Fourteen lines in `tools/images/init`: on either root, the network
+card's driver is loaded if the root has the modules, and `udhcpc` is run in the background
+if the card is there. Nothing in the machine changed.
+
+**Not in the suite**: the run needs the world. The suite's X session (E078) is as it was.
+
+## E080: Where 632 microseconds go (2026-11-18)
+
+Task 15 of `docs/jit.md`, left open by E078.
+
+- **Hypothesis**: The kernel's two readings in the warning are 52 thousand instructions
+  apart over half a second: the PIT's time ran that much more than the TSC's in one case
+  and less in another, so it is jitter and not drift. The PIT's time as the kernel reads it
+  is the count of interrupts taken times the period, plus the counter's place in the
+  period. The counter's period starts anew where the interrupt is *raised*
+  (`timer_fire`: `timer_at = vtime + period`), so an interrupt raised late moves every
+  later period by its lateness. A run is planned to stop at `timer_at` exactly; **if with
+  the JIT a step can run past the moment it was given (`chain_until`) by tens of thousands
+  of instructions, `timer_fire` sees it as lateness, and a count of it shows steps of that
+  size only with `--jit` and X.**
+- **What changed since last time**: E078 tried `--jit-off` bits, which answer "which
+  translation"; this asks "does virtual time pass the plan at all", which no bit turns off.
+- **Next move for each result**:
+  - Lateness of thousands of instructions with the JIT and none without → where the time
+    was given: the count of instructions a call into generated code returned against the
+    time it was allowed, at the call that passes it
+  - No lateness beyond a few instructions either way → the periods are right and it is
+    the reading: what `pit_count` returns around the moment of the interrupt, next
+- **Cut-off**: One counting build (the largest lateness and how many above a thousand,
+  printed at the end), run twice: with `--jit` and X to the warning, and without `--jit`.
+
+### Result
+
+2026-11-18. **The hypothesis is wrong, and so was E078's "with `--jit` only".** The timer
+is never late: over a boot with X, the largest lateness `timer_fire` saw is 0, and no call
+into generated code ran past the time it was given. And the same counting run without
+`--jit` printed the warning too: E078 had concluded from one run each way.
+
+By the card's second branch, the reading. A second count:
+
+| A boot of 7 billion instructions, with `--jit` | With X | Without (no disk) |
+|---|---:|---:|
+| The kernel marks the TSC unstable | yes | no |
+| Channel 0's count written by the guest | 61,563 times | 14,119 times |
+| The timer's interrupt raised while the one before still waited | 146 | 0 |
+
+**The kernel does not leave the timer periodic.** It writes channel 0's count for every
+event it wants, tens of thousands of times in a boot. Its reading of that same counter as
+a clock ("pit": interrupts counted, times the period, plus the counter's place in the
+period) means nothing once the periods are of its own making, and it is against that
+reading that its watchdog checks the TSC, because this machine has no third clock (no
+HPET, no ACPI timer). An idle boot's events are regular enough for the two to agree by
+luck; X's are not. Nothing in the emulator's timer is off.
+
+**So the kernel is told: `tsc=reliable` is in the default command line.** The TSC here is
+the instruction count, the very thing the timer runs on. With it, X runs ninety seconds
+of guest time with no warning, the clock source stays `tsc`, and `pit` is no longer among
+those available. A command line given with `--append` is used as it is, as before.
+
+The plain Linux boot's count is 1,496,360,001 with the new default (1,492,980,001), the
+same with `--jit` and without. `tools/difftest.sh` has 150 lines, all ok.
+
+**What this cost and what it was.** Three counting runs and two cards' worth of looking in
+the wrong place (the JIT's bits in E078, lateness here), for a line of the kernel's log
+that the numbers in it would have explained sooner: the TSC's interval in the warning is
+504.000 ms, a whole number of ticks to within thirty instructions, and the PIT's is 504.67.
+The clock that was off was the one being trusted. Task 15 of `docs/jit.md` is closed as
+not the JIT's.
+
+## E081: A disk that an unclean stop cannot break (2026-11-18)
+
+- **What happened**: The owner ran X from `images/disk-x.img`, left with Ctrl-], and the
+  next boot could not use the disk: `EXT2-fs (sda): error: ext2_lookup: deleted inode
+  referenced: 40961`, no `/dev`, `sh: can't open /dev/ttyS0` for ever. `e2fsck -fn` on the
+  host: "Filesystem still has errors". The guest writes the image in place (E075), ext2
+  has no journal, the init writes on every boot (busybox's links), and there is no way to
+  stop the machine from inside (E075's "not done"). So every way out was an unclean one.
+- **Hypothesis**: Two things, either of which would have prevented it. `--scratch`: the
+  disk's writes are kept in memory and the image is never changed, which is what trying X
+  wants. And a clean way out for when the writes are wanted: a command in the guest that
+  syncs, makes the root read-only and powers off, at which the emulator stops. **With
+  `--scratch`, an image is byte for byte the same after a session that wrote to it and was
+  cut off; with `off` in the guest, g86m exits by itself and `e2fsck` passes the image.**
+- **What changed since last time**: E075 tested persistence with `sync` and a kill, and
+  `e2fsck` passed by luck of where the kill fell.
+- **Next move for each result**:
+  - Both hold → keep; the README says which to use when
+  - The kernel does not halt on `poweroff -f` → what it does instead, from the serial log
+- **Cut-off**: A checksum of the image before and after a scratch session; `e2fsck -fn`
+  after `off`; both in the suite.
+
+### Result
+
+2026-11-18. **Kept: both hold.** `tools/difftest.sh` has 151 lines, all ok.
+
+- `--scratch`: the image is mapped privately (`mmap`, `MAP_PRIVATE`), so a write changes a
+  page of this process and never the file. An image's checksum is the same after a session
+  that wrote 2 MB to it and was cut off.
+- `off` in the guest (`/bin/off`, put on both roots by the image scripts): `sync`, the root
+  remounted read-only, `poweroff -f`. The kernel says `reboot: Power off not available:
+  System halted instead` and halts with interrupts off, which the run loop has always
+  taken as the end: g86m exits by itself. `e2fsck -fn` on the host then passes the image,
+  and the next boot mounts it without the kernel's "unchecked fs" warning.
+- The owner's broken image was kept as `images/disk-x.broken.img` and a new one made.
+
+**What this was.** E075 called the disk done with "a clean shutdown from the guest" under
+"not done", and E078 handed the owner a writable ext2 root with Ctrl-] as the only way
+out. The first unclean stop that fell badly broke it. What "not done" lists is not always
+what can wait.

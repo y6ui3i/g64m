@@ -43,7 +43,8 @@ tree() {
     cp "$work/base/lib/ld-musl-i386.so.1" "$1/lib/"
     [ -f "$work/base/lib/libc.musl-x86.so.1" ] && cp -P "$work/base/lib/libc.musl-x86.so.1" "$1/lib/"
     cp tools/images/init "$1/init"
-    chmod 755 "$1/init" "$1/bin/busybox"
+    cp tools/images/off "$1/bin/off"
+    chmod 755 "$1/init" "$1/bin/busybox" "$1/bin/off"
 }
 
 tree "$work/ram"

@@ -205,6 +205,6 @@ started; this list is updated when one is done.
 | 12b | The rest: REP string instructions, CMPXCHG, SHRD and SHLD, PUSHF, group 83 with a prefix or longer than eight bytes, indirect CALL and JMP | Count again first: E067's list is from before E073 | |
 | 13 | INC and DEC in a block that inherited a record: the carry alone, by a second entry of the flags' code | 29 million whole records written for one bit (E071) | |
 | 14 | A shift or rotate whose flags may be seen, after a record the block made: only what it keeps (the auxiliary carry, the overflow) written | 19 million (E071) | |
-| 15 | With X running, the kernel finds the TSC 632 microseconds off the timer in half a second, with `--jit` only | E078: not RDTSC in blocks, not the far way, not linking, by `--jit-off`; 48 thousand instructions of time are reported or counted wrongly somewhere | |
+| 15 | With X running, the kernel finds the TSC 632 microseconds off the timer in half a second | E078 | not the JIT's, E080: it happens without `--jit` too. The kernel sets the timer anew for every event and then reads it as a clock; `tsc=reliable` is in the default command line |
 | 10 | Blocks are made at many overlapping starts (71 thousand in a boot, 35 MB of code): a block for an address inside an existing block could enter that block's code part way | Translation time and the one flush | |
 | 9 | Whether `--jit` becomes the default on arm64 | After 4, with the suite run both ways | |

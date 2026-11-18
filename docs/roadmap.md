@@ -8,8 +8,8 @@ desktop that can browse the web, still as an i686, and only then to x86_64.
 |---|---|---|
 | M6 | A clock and a disk (done) | `date` in the guest shows the host's date; a root file system on an IDE disk is mounted and written |
 | M7 | A network (done) | `wget https://...` from the serial console fetches a page through the host |
-| M8 | A screen | X (Xfbdev, twm, xterm) comes up in a window on the host, with keyboard and mouse |
-| M9 | A browser | NetSurf or Dillo shows a page fetched over HTTPS |
+| M8 | A screen (done by script; the window by hand) | X (Xfbdev, twm, xterm) comes up in a window on the host, with keyboard and mouse |
+| M9 | A browser (done) | NetSurf or Dillo shows a page fetched over HTTPS |
 | M10 | x86_64 | A 64-bit Linux kernel boots to a shell |
 
 ## Why 32-bit first
@@ -76,6 +76,8 @@ devices on a CPU that is still moving.
 
 - **NetSurf or Dillo.** Both run on i686 without SSE, on X or a frame buffer, and speak HTTPS.
   Sites that need much JavaScript are out of reach and not a goal.
+- Done (E079): Dillo from the X disk, on `https://example.com/`. It "runs without SSE" was
+  wrong for Alpine's build of everything around it; E077 had already brought SSE2.
 - **Firefox and Chromium are not a goal.** Chromium dropped 32-bit Linux long ago and Firefox has
   ended it too; both need SSE2, and both need more memory and speed than an emulator gives.
 

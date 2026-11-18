@@ -564,7 +564,7 @@ fn cmos_write(v: u8) {
 // The sectors are in a file on the host (disk.c), written in place. With no --disk there is
 // no channel: the ports answer as ports nothing is at.
 
-extern fn disk_open(path: const u8[:]) -> i64;
+extern fn disk_open(path: const u8[:], scratch: i32) -> i64;
 extern fn disk_read(lba: i64, buf: u8[:]) -> i32;
 extern fn disk_write(lba: i64, buf: const u8[:]) -> i32;
 

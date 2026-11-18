@@ -9,8 +9,9 @@ its per-instruction trace is compared with g86m's.
 
 ## Status
 
-M7 is done: with `--net` the guest has a network card and reaches the world through the host, and
-the i686 has MMX and SSE2. M6 before it: the guest has a clock and an IDE disk, and Linux takes an ext2 file system on that
+M9 is done: a browser (Dillo) in X on g86m shows a page fetched over HTTPS. M8 before it: X on a
+frame buffer, in a window on the host. M7: with `--net` the guest has a network card and reaches
+the world through the host, and the i686 has MMX and SSE2. M6 before it: the guest has a clock and an IDE disk, and Linux takes an ext2 file system on that
 disk as its root and writes it. M5 before it: g86m boots a 32-bit Linux kernel (6.18) to a busybox shell on its serial console. For
 that the machine is an i686 with an x87 FPU. The FPU adds, subtracts, multiplies, divides and
 compares on the 80-bit format, in integers; the square root and the functions are computed as
@@ -58,6 +59,7 @@ checked against rustx86:
 
 | M7 | A network | done (E076, E077): `wget https://...` in the guest fetches a page through the host. MMX and SSE2 came with it, which the guest's OpenSSL is compiled for |
 | M8 | A screen | done by script (E078): X comes up on a frame buffer, takes the keyboard and the mouse; the window on the host is to be tried by hand |
+| M9 | A browser | done (E079): Dillo, in X, shows a page fetched over HTTPS |
 
 What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M6 | A clock (CMOS/RTC) and an IDE disk | planned |
@@ -146,6 +148,10 @@ the boot log scrolls by, and after about 22 seconds there is a shell. **Ctrl-]**
 ./build/g86m --initrd images/initramfs-mini images/vmlinuz-lts
 ```
 
+The kernel's command line is `console=ttyS0 tsc=reliable` unless `--append` gives another:
+the TSC is the instruction count, and the machine has no other clock for the kernel to check it
+against but the timer, which the kernel itself keeps setting (E080).
+
 The 22 seconds are the guest's: guest time is counted in instructions, 76 million to the second
 for this machine, and the console paces it against real time. A faster host does not shorten
 them; a faster *guest* does. `--speed N` makes a second of guest time N times as many
@@ -182,8 +188,13 @@ written in place. `tools/images/make-disk.sh` makes an initramfs that has the dr
 ./build/g86m --jit --disk images/disk.img --initrd images/initramfs-disk images/vmlinuz-lts
 ```
 
-What is written there is in the image the next time. The guest cannot turn the machine off:
-`sync`, then Ctrl-].
+What is written there is in the image the next time. **Leave with `off`**, typed in the guest:
+it writes everything out, makes the root read-only and halts the machine, at which g86m stops.
+Ctrl-] stops g86m at once, and a file system that was being written may not survive it (ext2
+has no journal).
+
+With `--scratch` the guest's writes are kept in memory for the run and the image is never
+changed, so nothing can break it and nothing is kept: the way to try things out.
 
 `--net` gives the machine a network card (an NE2000 on PCI) and, behind it, the host as a
 gateway, a DHCP server and a name server (10.0.2.2 and 10.0.2.3, the guest at 10.0.2.15), by
@@ -206,14 +217,26 @@ back. With the X disk that `tools/images/make-x-disk.sh` makes, the serial conso
 terminal and X comes up in the window:
 
 ```bash
-./build/g86m --jit --fb 1024x768 --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
+./build/g86m --jit --fb 1024x768 --scratch --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
 ```
 
 ```
 ~ # startx
 ```
 
+(Ctrl-C at the serial console ends X; without `--scratch`, `off` there ends the session with the
+disk whole.)
+
 ![X on g86m: icewm and an xterm](docs/img/m8-x.png)
+
+With `--net` as well, the disk's init gets an address by DHCP and a browser has the world:
+
+```
+~ # startx &
+~ # DISPLAY=:0 dillo https://example.com/
+```
+
+![Dillo on g86m, showing a page fetched over HTTPS](docs/img/m9-dillo.png)
 
 `--shot FILE` saves the frame buffer as a PPM image when the run ends, with or without a window.
 
