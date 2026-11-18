@@ -1,0 +1,50 @@
+#!/bin/busybox sh
+# g86m: the init of the initramfs that looks for a disk, and of the root file system on that
+# disk (tools/images/make-disk.sh puts the same file in both). In the initramfs it loads the
+# IDE disk's driver and, if /dev/sda holds an ext2 file system with an /init, moves there.
+# Otherwise, and on the disk, it starts a shell on the serial console.
+bb=/bin/busybox
+$bb mount -t proc proc /proc
+$bb mount -t sysfs sys /sys
+$bb mount -t devtmpfs dev /dev 2>/dev/null
+$bb mkdir -p /dev/pts
+$bb mount -t devpts devpts /dev/pts 2>/dev/null
+$bb --install -s /bin 2>/dev/null
+export TERM=xterm
+$bb stty rows 24 cols 80 < /dev/ttyS0 2>/dev/null
+$bb ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
+
+where="the initramfs"
+if [ -e /.g86m-disk ]; then
+    where="/dev/sda"
+else
+    # In the order the modules depend on one another.
+    # (probe_mask=1: the primary channel only. Without PCI the driver would try five more
+    # places, and ask for interrupt lines that are someone else's.)
+    for m in scsi_common scsi_mod libata; do $bb insmod /lib/modules/$m.ko 2>/dev/null; done
+    $bb insmod /lib/modules/pata_legacy.ko probe_mask=1 2>/dev/null
+    for m in sd_mod mbcache ext2; do $bb insmod /lib/modules/$m.ko 2>/dev/null; done
+    # The disk is there a moment after its driver is.
+    n=0
+    while [ ! -b /dev/sda ] && [ $n -lt 5 ]; do $bb sleep 1; n=$((n + 1)); done
+    if [ -b /dev/sda ]; then
+        $bb mkdir -p /newroot
+        if $bb mount -t ext2 /dev/sda /newroot 2>/dev/null; then
+            if [ -x /newroot/init ]; then
+                $bb umount /dev/pts /proc /sys 2>/dev/null
+                $bb umount /dev 2>/dev/null
+                exec $bb switch_root /newroot /init
+            fi
+            $bb umount /newroot
+        fi
+    fi
+fi
+
+echo
+echo "  g86m - busybox shell, root on $where"
+echo
+# The shell is a child with the serial port as its controlling terminal, so that Ctrl-C and
+# Ctrl-Z reach what it runs; when it ends, another is started.
+while :; do
+    $bb setsid $bb sh -c "exec $bb sh </dev/ttyS0 >/dev/ttyS0 2>&1"
+done

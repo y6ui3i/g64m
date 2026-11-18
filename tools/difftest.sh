@@ -68,8 +68,12 @@ done
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
     case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    # s_cmos waits a second of the guest's time, which is 4.8 million instructions.
+    case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
     for exe in build/g86m-debug build/g86m; do
-        out=$("$exe" $cpu --max 2000000 "$bin" 2>/dev/null)
+        # s_ide is given a disk of 2,048 empty sectors.
+        case "$name" in s_ide) dd if=/dev/zero of=build/s_ide.img bs=512 count=2048 2>/dev/null; disk="--disk build/s_ide.img" ;; *) disk="" ;; esac
+        out=$("$exe" $cpu $disk --max $max "$bin" 2>/dev/null)
         if [ "$out" = "OK" ]; then
             echo "ok    $name ($(basename "$exe"))"
         else
@@ -115,7 +119,9 @@ count=0
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
     case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds) cpu="--cpu i686" ;; *) cpu="" ;; esac
-    out=$(build/g86m --jit $cpu --max 2000000 "$bin" 2>/dev/null)
+    case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
+    case "$name" in s_ide) dd if=/dev/zero of=build/s_ide.img bs=512 count=2048 2>/dev/null; disk="--disk build/s_ide.img" ;; *) disk="" ;; esac
+    out=$(build/g86m --jit $cpu $disk --max $max "$bin" 2>/dev/null)
     count=$((count + 1))
     if [ "$out" != "OK" ]; then
         bad=$((bad + 1))
@@ -269,12 +275,15 @@ if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-mini ]; then
         --type "printf '%g %e' 0.1 12345.678; echo\n" --wait "~ # " \
         --type "awk 'BEGIN{print sqrt(2), atan2(1,1)*4, int(-3.7)}'\n" --wait "~ # " \
         --type "a=\$(cut -d. -f1 /proc/uptime); sleep 3; b=\$(cut -d. -f1 /proc/uptime); echo slept-\$((b-a))\n" --wait "~ # " \
+        --type "date +%F\n" --wait "~ # " \
+        --type "date -s '2031-02-28 23:59:50' >/dev/null; hwclock -w; sleep 12; hwclock | cut -c1-10\n" --wait "~ # " \
         images/vmlinuz-lts 2>"build/linux.err" | tr -d '\r')
     status=$?
     if echo "$out" | grep -q "^i686$" && echo "$out" | grep -q "^3\.000000$" \
         && echo "$out" | grep -q "^0\.1 1\.234568e+04$" \
-        && echo "$out" | grep -q "^1\.41421 3\.14159 -3$" && echo "$out" | grep -Eq "^slept-[34]$"; then
-        echo "ok    linux shell (g86m): $(echo "$out" | grep -c '') lines; uname, printf %f %g %e, awk, sleep 3"
+        && echo "$out" | grep -q "^1\.41421 3\.14159 -3$" && echo "$out" | grep -Eq "^slept-[34]$" \
+        && echo "$out" | grep -q "^2026-01-01$" && echo "$out" | grep -q "^Sat Mar  1$"; then
+        echo "ok    linux shell (g86m): $(echo "$out" | grep -c '') lines; uname, printf %f %g %e, awk, sleep 3, the clock read and set"
     else
         fail=1
         echo "FAIL  linux shell (g86m): the session did not give the expected answers"
@@ -283,6 +292,35 @@ if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-mini ]; then
     fi
 else
     echo "skip  linux shell (images/vmlinuz-lts and images/initramfs-mini are not there)"
+fi
+
+# Linux on a disk (M6): the initramfs loads the IDE driver and moves to the ext2 file system
+# on /dev/sda. One run writes there, a second finds it, and the host finds it in the file.
+# The images are made by tools/images/make-disk.sh; the disk is a copy, so that the test
+# starts from the same one every time.
+if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-disk ] && [ -f images/disk.img ]; then
+    cp images/disk.img build/disk-test.img
+    one=$(build/g86m --jit --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
+        --wait "~ # " --type "mount | grep -c '^/dev/sda on / type ext2 (rw'\n" --wait "~ # " \
+        --type "echo written-by-the-guest > /hello; dd if=/dev/urandom of=/blob bs=1k count=2000 2>/dev/null; md5sum < /blob; sync\n" --wait "~ # " \
+        images/vmlinuz-lts 2>"build/disk.err" | tr -d '\r')
+    two=$(build/g86m --headless --max 8000000000 --disk build/disk-test.img --initrd images/initramfs-disk \
+        --wait "~ # " --type "cat /hello; md5sum < /blob\n" --wait "~ # " \
+        images/vmlinuz-lts 2>>"build/disk.err" | tr -d '\r')
+    sum=$(echo "$one" | grep -E '^[0-9a-f]{32} ' | head -1)
+    if [ -n "$sum" ] && echo "$one" | grep -q "^1$" && echo "$two" | grep -q "^written-by-the-guest$" \
+        && [ "$(echo "$two" | grep -E '^[0-9a-f]{32} ' | head -1)" = "$sum" ] \
+        && grep -a -q "written-by-the-guest" build/disk-test.img && ! grep -a -q "written-by-the-guest" images/disk.img; then
+        echo "ok    linux on a disk (g86m): root on /dev/sda, 2 MB written with the JIT, read back without it, and in the image"
+    else
+        fail=1
+        echo "FAIL  linux on a disk (g86m): what was written was not found again"
+        echo "$one" | tail -6 | sed 's/^/    |/'
+        echo "$two" | tail -6 | sed 's/^/    |/'
+        tail -2 "build/disk.err" | sed 's/^/  stderr:   /'
+    fi
+else
+    echo "skip  linux on a disk (images/initramfs-disk and images/disk.img are not there; tools/images/make-disk.sh makes them)"
 fi
 
 # The interactive console, driven through a pseudo-terminal. It takes the images that are there.

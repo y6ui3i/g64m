@@ -9,7 +9,8 @@ its per-instruction trace is compared with g86m's.
 
 ## Status
 
-M5 is done: g86m boots a 32-bit Linux kernel (6.18) to a busybox shell on its serial console. For
+M6 is done: the guest has a clock and an IDE disk, and Linux takes an ext2 file system on that
+disk as its root and writes it. M5 before it: g86m boots a 32-bit Linux kernel (6.18) to a busybox shell on its serial console. For
 that the machine is an i686 with an x87 FPU. The FPU adds, subtracts, multiplies, divides and
 compares on the 80-bit format, in integers; the square root and the functions are computed as
 64-bit floats (E013 and E014 in the ledger say why the first matters and the second has not yet).
@@ -48,6 +49,9 @@ about a fifth is the language) and gives the reasons behind the [roadmap](docs/r
 | M3 | FreeDOS to the `A:\>` prompt | done (the installer was declined, not run) |
 | M4 | 386 protected mode and paging; pass test386 | done (no task switching) |
 | M5 | 32-bit Linux and busybox | done (no disk, no network, no clock chip) |
+| M6 | A clock and a disk | done (E074, E075): the host's date, and a root file system on an IDE disk |
+
+What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M6 | A clock (CMOS/RTC) and an IDE disk | planned |
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
@@ -60,7 +64,9 @@ Why the stages are in this order, and how each is checked, is in [docs/roadmap.m
 
 Goose was the only new technology in the project until E059; there is now a second, behind an
 option: code generated at run time (below). The rest is a C compiler (clang) and, once a screen is
-needed, SDL2.
+needed, SDL2. Three small files of C do what Goose cannot: the terminal's raw mode
+(`console.c`), executable memory (`jit.c`), and reading and writing a disk image in place
+(`disk.c`).
 
 Choosing Goose decides three things:
 
@@ -148,6 +154,22 @@ clock falls behind (a faster guest also spins more instructions in its own delay
 boot is more work). `--speed` changes how many instructions run between two timer ticks, so a
 run's instruction count is its own for each speed; the tests use the default.
 
+The guest has a clock (CMOS, ports 70h and 71h), which runs on guest time. Started from a
+terminal it begins at the host's time, so `date` in the guest shows today's date in UTC; in a
+scripted or headless run it begins at 2026-01-01, so that such a run is the same every time.
+`--rtc host` and `--rtc SECONDS` (since 1970) say otherwise.
+
+`--disk FILE` attaches an image as an IDE disk (the primary channel's master, PIO), read and
+written in place. `tools/images/make-disk.sh` makes an initramfs that has the driver and a
+32 MB ext2 image to be the root:
+
+```bash
+./build/g86m --jit --disk images/disk.img --initrd images/initramfs-disk images/vmlinuz-lts
+```
+
+What is written there is in the image the next time. The guest cannot turn the machine off:
+`sync`, then Ctrl-].
+
 `--unpaced` is the other way to stop waiting: real time is then spent only on the guest time that
 passes while the machine is halted, so the boot takes 7.5 seconds with `--jit` at the default
 speed and `sleep 3` still takes three, but the guest's clock runs ahead of the wall while it
@@ -178,7 +200,7 @@ To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 | [src/exec.goose](src/exec.goose) | Instruction decode and execution; the cache of decoded instructions |
 | [src/fpu.goose](src/fpu.goose) | The x87 FPU of the i686 machine |
 | [src/bios.goose](src/bios.goose) | Power-on setup and the BIOS services the emulator performs: screen, disk, keyboard, time |
-| [src/dev.goose](src/dev.goose) | Interrupt controllers, timer, keyboard controller, I/O port dispatch |
+| [src/dev.goose](src/dev.goose), [src/disk.c](src/disk.c) | Interrupt controllers, timer, keyboard controller, CMOS clock, IDE disk, I/O port dispatch; the disk's image file in C |
 | [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs) |
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |

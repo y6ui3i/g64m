@@ -380,6 +380,368 @@ fn com_write(reg: u16, v: u8) {
     }
 }
 
+// ---- CMOS memory and the clock (MC146818, ports 70h and 71h) ----
+//
+// A register number is written to port 70h and the register read or written at 71h. The
+// clock's registers are not stored: they are made, when read, from the time the clock was
+// started at and the guest's own time since, which is the instruction count as for the
+// timer. So the clock is as repeatable as everything else; the time it starts at is an
+// input (a fixed one unless the command line or a terminal says otherwise; see main).
+// There is no alarm, no periodic interrupt, and the update-in-progress bit is never set.
+
+var cmos: u8[128] = [0; 128];
+var cmos_index: u8 = 0;
+var cmos_ready = false;
+var pad_cmos: u8[6] = [0; 6];
+var rtc_base: i64 = 1767225600;      // 2026-01-01 00:00:00 UTC, as rustx86 has it
+
+// Seconds since 1970 on the guest's clock.
+fn rtc_now() -> i64 { return rtc_base + vtime / (tick_insns * 1193182); }
+
+// The clock's fields for a count of seconds since 1970: second, minute, hour, day of the
+// week (1 is Sunday), day, month, year. (The days to a date by Howard Hinnant's
+// civil_from_days.)
+fn rtc_fields(s: i64) -> i64[7] {
+    let days = s / 86400;
+    let rem = s % 86400;
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (if m <= 2 { 1 } else { 0 });
+    return [rem % 60, rem % 3600 / 60, rem / 3600, (days + 4) % 7 + 1, d, m, y];
+}
+
+// And back: seconds since 1970 for a date and a time of day.
+fn rtc_seconds(f: i64[7]) -> i64 {
+    let m = f[5];
+    let y = if m <= 2 { f[6] - 1 } else { f[6] };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + f[4] - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (era * 146097 + doe - 719468) * 86400 + f[2] * 3600 + f[1] * 60 + f[0];
+}
+
+// Which field a register is: -1 for a register that is not the clock's, 7 for the century.
+fn rtc_which(i: u8) -> i64 {
+    match i {
+        0x00 => { return 0; },
+        0x02 => { return 1; },
+        0x04 => { return 2; },
+        0x06 => { return 3; },
+        0x07 => { return 4; },
+        0x08 => { return 5; },
+        0x09 => { return 6; },
+        0x32 => { return 7; },
+        _ => { return -1; },
+    }
+}
+
+fn cmos_setup() {
+    cmos_ready = true;
+    cmos[0x0A] = 0x26;               // status A: the divider; no update in progress
+    cmos[0x0B] = 0x02;               // status B: 24 hours, BCD
+    cmos[0x0D] = 0x80;               // status D: the battery is good
+    cmos[0x10] = 0x40;               // one 1.44 MB floppy drive
+    cmos[0x14] = 0x21;               // equipment
+    cmos[0x15] = 0x80;               // 640 KB of base memory
+    cmos[0x16] = 0x02;
+}
+
+// A clock register as the guest reads it: BCD unless status B says binary.
+fn rtc_read(k: i64, bcd: bool) -> u8 {
+    let f = rtc_fields(rtc_now());
+    var v = if k == 7 { f[6] / 100 } else if k == 6 { f[6] % 100 } else { f[k] };
+    if bcd { v = v / 10 * 16 + v % 10; }
+    return v as! u8;
+}
+
+fn cmos_read() -> u8 {
+    if !cmos_ready { cmos_setup(); }
+    let k = rtc_which(cmos_index);
+    if k >= 0 { return rtc_read(k, cmos[0x0B] & 4 == 0); }
+    return cmos[cmos_index];
+}
+
+// The guest sets its clock by writing the fields one after another: each write moves the
+// start time so that the field reads back as written and the others as they were.
+fn cmos_write(v: u8) {
+    if !cmos_ready { cmos_setup(); }
+    let k = rtc_which(cmos_index);
+    if k < 0 { cmos[cmos_index] = v; return; }
+    var x: i64 = v;
+    if cmos[0x0B] & 4 == 0 { x = x / 16 * 10 + x % 16; }
+    let now = rtc_now();
+    var f = rtc_fields(now);
+    if k == 7 { f[6] = x * 100 + f[6] % 100; }
+    else if k == 6 { f[6] = f[6] / 100 * 100 + x; }
+    else if k == 3 { return; }       // the day of the week follows from the date
+    else { f[k] = x; }
+    if f[5] < 1 || f[5] > 12 || f[4] < 1 || f[4] > 31 || f[6] < 1970 || f[6] > 2399 { return; }
+    rtc_base += rtc_seconds(f) - now;
+}
+
+// ---- IDE disk (ATA, the primary channel: ports 1F0h to 1F7h and 3F6h, IRQ 14) ----
+//
+// One disk, the master; the slave is absent and reads as zero. PIO only: the host reads and
+// writes the data port, a block of sectors at a time, and the disk raises its interrupt
+// when a block is ready to be read or has been taken. A command is carried out at once.
+// The sectors are in a file on the host (disk.c), written in place. With no --disk there is
+// no channel: the ports answer as ports nothing is at.
+
+extern fn disk_open(path: const u8[:]) -> i64;
+extern fn disk_read(lba: i64, buf: u8[:]) -> i32;
+extern fn disk_write(lba: i64, buf: const u8[:]) -> i32;
+
+let IDE_BUF = 8192;                  // sixteen sectors: the most a READ or WRITE MULTIPLE block is
+var ide_sectors: i64 = 0;            // how many the disk has; 0 for no disk
+var ide_buf: u8[IDE_BUF] = [0; IDE_BUF];
+var ide_pos: i64 = 0;                // where in the buffer the host is
+var ide_end: i64 = 0;                // and where the block ends
+var ide_next: i64 = 0;               // the sector the next block begins at
+var ide_left: i64 = 0;               // sectors still to come, the block in the buffer included for a write
+var ide_blk: i64 = 1;                // sectors to a block, for the command at hand
+var ide_mult: i64 = 1;               // and for the MULTIPLE commands, as SET MULTIPLE MODE left it
+var ide_reads: i64 = 0;              // sectors read and written, for the report
+var ide_writes: i64 = 0;
+// Sector count and the three LBA registers each hold two bytes: the one written last and
+// the one before, which the 48-bit commands take as the upper half.
+var ide_cnt: u8[2] = [1, 0];
+var ide_lba: u8[6] = [1, 0, 0, 0, 0, 0];
+var ide_err: u8 = 1;
+var ide_feat: u8 = 0;
+var ide_drive: u8 = 0;
+var ide_status: u8 = 0x50;           // ready, seek complete
+var ide_ctl: u8 = 0;                 // 2: no interrupts; 4: reset; 80h: read the bytes before
+var ide_mode: u8 = 0;                // 0 idle, 1 the host reads, 2 the host writes
+var pad_ide: u8[1] = [0; 1];
+
+// After a reset, and after EXECUTE DEVICE DIAGNOSTIC: the signature of an ATA device.
+fn ide_reset() {
+    ide_err = 1;
+    ide_cnt = [1, 0];
+    ide_lba = [1, 0, 0, 0, 0, 0];
+    ide_drive = 0;
+    ide_status = 0x50;
+    ide_mode = 0;
+    ide_mult = 1;
+}
+
+fn ide_irq() { if ide_ctl & 2 == 0 { raise_irq(14); } }
+
+// The command is done; with err, refused or failed.
+fn ide_done(err: u8) {
+    ide_mode = 0;
+    ide_err = err;
+    ide_status = if err != 0 { 0x51 } else { 0x50 };
+    ide_irq();
+}
+
+// The next block from the disk into the buffer, for the host to read.
+fn ide_load() {
+    let n = if ide_left < ide_blk { ide_left } else { ide_blk };
+    if disk_read(ide_next, ide_buf[..n * 512]) != 0 { ide_done(0x40); return; }     // an uncorrectable error
+    ide_reads += n;
+    ide_next += n;
+    ide_left -= n;
+    ide_pos = 0;
+    ide_end = n * 512;
+    ide_mode = 1;
+    ide_status = 0x58;               // data request
+    ide_irq();
+}
+
+// A read or a write of `count` sectors from `lba` on, `blk` to a block.
+fn ide_rw(write: bool, lba: i64, count: i64, blk: i64) {
+    if lba + count > ide_sectors { ide_done(0x14); return; }        // no such sector
+    ide_next = lba;
+    ide_left = count;
+    ide_blk = blk;
+    if !write { ide_load(); return; }
+    // The host writes the first block without being asked by an interrupt.
+    ide_pos = 0;
+    ide_end = (if count < blk { count } else { blk }) * 512;
+    ide_mode = 2;
+    ide_status = 0x58;
+}
+
+fn ide_word(i: i64, v: i64) {
+    ide_buf[i * 2] = v as! u8;
+    ide_buf[i * 2 + 1] = (v >> 8) as! u8;
+}
+
+// A string of the IDENTIFY data: two characters to a word, the first in the high byte.
+fn ide_text(i: i64, words: i64, t: const u8[:]) {
+    for k in words * 2 {
+        let c: u8 = if k < t.len { t[k] } else { 32 };
+        ide_buf[i * 2 + (k ^ 1)] = c;
+    }
+}
+
+// IDENTIFY DEVICE: what the disk is.
+fn ide_identify() {
+    for i in 512 { ide_buf[i] = 0; }
+    var cyl = ide_sectors / (16 * 63);
+    if cyl > 16383 { cyl = 16383; }
+    let chs = cyl * 16 * 63;
+    let lba28 = if ide_sectors > 0x0FFFFFFF { 0x0FFFFFFF } else { ide_sectors };
+    ide_word(0, 0x0040);             // a fixed disk
+    ide_word(1, cyl);
+    ide_word(3, 16);
+    ide_word(6, 63);
+    ide_text(10, 10, "G86M0001");
+    ide_text(23, 4, "1");
+    ide_text(27, 20, "g86m disk");
+    ide_word(47, 0x8010);            // READ and WRITE MULTIPLE: up to 16 sectors
+    ide_word(49, 0x0200);            // LBA; no DMA
+    ide_word(50, 0x4000);
+    ide_word(51, 0x0200);            // PIO mode 2
+    ide_word(53, 0x0003);            // words 54 to 58 and 64 to 70 are valid
+    ide_word(54, cyl);
+    ide_word(55, 16);
+    ide_word(56, 63);
+    ide_word(57, chs);
+    ide_word(58, chs >> 16);
+    ide_word(59, 0x0100 | ide_mult);
+    ide_word(60, lba28);
+    ide_word(61, lba28 >> 16);
+    ide_word(64, 0x0003);            // PIO modes 3 and 4
+    ide_word(80, 0x007E);            // ATA-1 to ATA-6
+    ide_word(82, 0x4000);            // NOP
+    ide_word(83, 0x7400);            // 48-bit addresses, FLUSH CACHE and FLUSH CACHE EXT
+    ide_word(84, 0x4000);
+    ide_word(85, 0x4000);
+    ide_word(86, 0x3400);
+    ide_word(87, 0x4000);
+    ide_word(100, ide_sectors);
+    ide_word(101, ide_sectors >> 16);
+    ide_word(102, ide_sectors >> 32);
+    ide_pos = 0;
+    ide_end = 512;
+    ide_left = 0;
+    ide_mode = 1;
+    ide_status = 0x58;
+    ide_irq();
+}
+
+fn ide_command(c: u8) {
+    let lo: i64 = ide_lba[0];
+    let mid: i64 = ide_lba[1];
+    let hi: i64 = ide_lba[2];
+    let head: i64 = ide_drive & 15;
+    // 28 bits: an LBA, or (bit 6 of the drive register clear) cylinder, head and sector.
+    var lba = head << 24 | hi << 16 | mid << 8 | lo;
+    if ide_drive & 0x40 == 0 { lba = ((hi << 8 | mid) * 16 + head) * 63 + lo - 1; }
+    let cnt: i64 = if ide_cnt[0] == 0 { 256 } else { ide_cnt[0] };
+    // 48 bits: the bytes written before are the upper halves.
+    let p0: i64 = ide_lba[3];
+    let p1: i64 = ide_lba[4];
+    let p2: i64 = ide_lba[5];
+    let lba48 = p2 << 40 | p1 << 32 | p0 << 24 | hi << 16 | mid << 8 | lo;
+    let c0: i64 = ide_cnt[0];
+    let c1: i64 = ide_cnt[1];
+    let cnt48 = if c0 == 0 && c1 == 0 { 65536 } else { c1 << 8 | c0 };
+    match c {
+        0xEC => { ide_identify(); },
+        0x20, 0x21 => { ide_rw(false, lba, cnt, 1); },
+        0xC4 => { ide_rw(false, lba, cnt, ide_mult); },
+        0x24 => { ide_rw(false, lba48, cnt48, 1); },
+        0x29 => { ide_rw(false, lba48, cnt48, ide_mult); },
+        0x30, 0x31 => { ide_rw(true, lba, cnt, 1); },
+        0xC5 => { ide_rw(true, lba, cnt, ide_mult); },
+        0x34 => { ide_rw(true, lba48, cnt48, 1); },
+        0x39 => { ide_rw(true, lba48, cnt48, ide_mult); },
+        0xC6 => {
+            // SET MULTIPLE MODE: a power of two up to sixteen.
+            let n = ide_cnt[0];
+            if n == 1 || n == 2 || n == 4 || n == 8 || n == 16 { ide_mult = n; ide_done(0); } else { ide_done(4); }
+        },
+        0xE5 => { ide_cnt[0] = 0xFF; ide_done(0); },                 // CHECK POWER MODE: active
+        0x90 => { ide_reset(); ide_irq(); },                        // EXECUTE DEVICE DIAGNOSTIC
+        // Nothing to do: verify, recalibrate, seek, set the geometry or a feature, the
+        // power commands, flush.
+        0x40, 0x41, 0x42, 0x10, 0x70, 0x91, 0xEF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE6, 0xE7, 0xEA => { ide_done(0); },
+        _ => { ide_done(4); },                                      // aborted
+    }
+}
+
+// A byte from the data port.
+fn ide_data_in() -> u8 {
+    if ide_mode != 1 { return 0; }
+    let b = ide_buf[ide_pos];
+    ide_pos += 1;
+    if ide_pos >= ide_end {
+        if ide_left > 0 { ide_load(); } else { ide_mode = 0; ide_status = 0x50; }
+    }
+    return b;
+}
+
+// A byte to the data port. When the block is whole it goes to the disk.
+fn ide_data_out(v: u8) {
+    if ide_mode != 2 { return; }
+    ide_buf[ide_pos] = v;
+    ide_pos += 1;
+    if ide_pos < ide_end { return; }
+    let n = ide_end / 512;
+    if disk_write(ide_next, ide_buf[..ide_end]) != 0 { ide_done(0x40); return; }
+    ide_writes += n;
+    ide_next += n;
+    ide_left -= n;
+    if ide_left <= 0 { ide_done(0); return; }
+    ide_pos = 0;
+    ide_end = (if ide_left < ide_blk { ide_left } else { ide_blk }) * 512;
+    ide_status = 0x58;
+    ide_irq();
+}
+
+// Registers 1 to 7 of the command block, and 8 for the control block's one.
+fn ide_read(r: u16) -> u8 {
+    if r == 0 { return ide_data_in(); }
+    if ide_drive & 0x10 != 0 { return 0; }           // the slave: nothing there
+    let before: i64 = if ide_ctl & 0x80 != 0 { 1 } else { 0 };
+    match r {
+        1 => { return ide_err; },
+        2 => { return ide_cnt[before]; },
+        3 => { return ide_lba[before * 3]; },
+        4 => { return ide_lba[before * 3 + 1]; },
+        5 => { return ide_lba[before * 3 + 2]; },
+        6 => { return ide_drive; },
+        7 => {
+            // Reading the status takes the interrupt back.
+            pic[1].irr &= ~0x40;
+            pic_update();
+            return ide_status;
+        },
+        _ => { return ide_status; },                 // the alternate status: the interrupt stays
+    }
+}
+
+fn ide_write(r: u16, v: u8) {
+    if r == 0 { ide_data_out(v); return; }
+    if r == 8 {
+        // The reset bit: busy while it is set, the signature when it falls.
+        let was = ide_ctl & 4 != 0;
+        ide_ctl = v;
+        if was && v & 4 == 0 { ide_reset(); } else if v & 4 != 0 { ide_status = 0x80; }
+        return;
+    }
+    ide_ctl &= 0x7F;
+    match r {
+        1 => { ide_feat = v; },
+        2 => { ide_cnt[1] = ide_cnt[0]; ide_cnt[0] = v; },
+        3 => { ide_lba[3] = ide_lba[0]; ide_lba[0] = v; },
+        4 => { ide_lba[4] = ide_lba[1]; ide_lba[1] = v; },
+        5 => { ide_lba[5] = ide_lba[2]; ide_lba[2] = v; },
+        6 => { ide_drive = v; },
+        _ => { if ide_drive & 0x10 == 0 { ide_command(v); } },
+    }
+}
+
 // ---- Port dispatch ----
 
 
@@ -402,6 +764,10 @@ fn port_in8(port: u16) -> u8 {
             return port_b & 0x0F | refresh | (if ch2_out() { 0x20 } else { 0 });
         },
         0x64 => { return if kbd_full { 0x1D } else { 0x1C }; },
+        0x70 => { return cmos_index; },
+        0x71 => { return cmos_read(); },
+        0x1F0..0x1F8 => { if ide_sectors > 0 { return ide_read(port - 0x1F0); } note_unknown(port); return 0xFF; },
+        0x3F6 => { if ide_sectors > 0 { return ide_read(8); } note_unknown(port); return 0xFF; },
         0x3D4 => { return crtc_index; },
         0x3D5 => { return crtc[crtc_index & 31]; },
         0x3DA => { retrace ^= 0x09; return retrace; },
@@ -421,6 +787,10 @@ fn port_out8(port: u16, v: u8) {
         0x60 => { kbd_write_data(v); },
         0x61 => { port_b = v; },
         0x64 => { kbd_write_command(v); },
+        0x70 => { cmos_index = v & 0x7F; },      // the top bit masks the NMI, which there is none of
+        0x71 => { cmos_write(v); },
+        0x1F0..0x1F8 => { if ide_sectors > 0 { ide_write(port - 0x1F0, v); } else { note_unknown(port); } },
+        0x3F6 => { if ide_sectors > 0 { ide_write(8, v); } else { note_unknown(port); } },
         0x3D4 => { crtc_index = v; },
         0x3D5 => { crtc[crtc_index & 31] = v; },
         0x190 => { post_trail.push(v); },
@@ -431,11 +801,12 @@ fn port_out8(port: u16, v: u8) {
 
 fn port_in(port: u16) -> u16 {
     let lo: u16 = port_in8(port);
-    let hi: u16 = port_in8(port + 1);
+    // The disk's data port is one port at every width.
+    let hi: u16 = port_in8(if port == 0x1F0 { port } else { port + 1 });
     return lo | hi << 8;
 }
 
 fn port_out(port: u16, v: u16) {
     port_out8(port, v as! u8);
-    port_out8(port + 1, (v >> 8) as! u8);
+    port_out8(if port == 0x1F0 { port } else { port + 1 }, (v >> 8) as! u8);
 }
