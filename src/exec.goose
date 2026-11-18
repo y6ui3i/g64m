@@ -523,14 +523,14 @@ fn port_read(port: u16, w: u8) -> u32 {
     if w == 8 { return port_in8(port); }
     if w == 16 { return port_in(port); }
     let lo: u32 = port_in(port);
-    let hi: u32 = port_in(port + 2);
+    let hi: u32 = port_in(if port == 0x1F0 { port } else { port + 2 });      // the disk's data port
     return lo | hi << 16;
 }
 
 fn port_write(port: u16, w: u8, v: u32) {
     if w == 8 { port_out8(port, v as! u8); }
     else if w == 16 { port_out(port, v as! u16); }
-    else { port_out(port, v as! u16); port_out(port + 2, (v >> 16) as! u16); }
+    else { port_out(port, v as! u16); port_out(if port == 0x1F0 { port } else { port + 2 }, (v >> 16) as! u16); }
 }
 
 // ---- Multiply and divide ----

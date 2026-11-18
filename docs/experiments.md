@@ -5454,3 +5454,81 @@ host's time where a terminal is attached and 2026-01-01 elsewhere.
 just before a leap day ends and read back, and the roll into March after a second of the
 guest's time. The Linux session in `tools/difftest.sh` reads the date and sets the clock.
 No wrong builds were made for this one.
+
+## E075: A disk (M6, second half) (2026-11-18)
+
+- **Hypothesis**: An ATA disk on the primary IDE channel (ports 1F0h to 1F7h and 3F6h, IRQ
+  14), PIO only, backed by an image file that is read and written in place, is enough for
+  Linux's `pata_legacy` to find a disk and for a file system on it to be mounted and
+  written: **`mount /dev/sda /mnt`, a file written, the guest shut down, and the file is
+  there in the next run and in the image as the host sees it.**
+- **What changed since last time**: The roadmap named rustx86's `ide.rs` as the oracle. It
+  is an ATAPI CD-ROM on the secondary channel, not a disk (rustx86's Linux disk is
+  virtio-blk on PCI, which g86m has not). What carries over is the register conventions
+  (the signature after a reset, an absent slave reading as zero, the interrupt lowered by
+  reading the status). The disk's commands are from the ATA standard, and the test is
+  Linux's own driver. The kernel has the driver only as modules (`libata`, `pata_legacy`,
+  `scsi_mod`, `sd_mod`, a file system), which go into the initramfs from the same Alpine
+  module image rustx86 takes its from, so that they match the kernel.
+- **Next move for each result**:
+  - Mounted, written, persistent → keep; M6 is done
+  - `pata_legacy` does not probe the ports without PCI → its parameters (`probe_all`,
+    `all`), read from its source, before any other driver
+  - The driver finds the disk and a command is refused → the command and what the standard
+    says it returns, one at a time, from the kernel's log
+- **Cut-off**: A self-check on the bare ports (IDENTIFY, a sector written and read back);
+  a scripted Linux session that mounts, writes, powers off, and a second that reads; the
+  image checked from the host.
+
+### Result
+
+2026-11-18. **Kept: Linux finds the disk, takes the ext2 file system on it as its root,
+writes it, and what it wrote is there in the next run and in the image file. M6 is done.**
+`tools/difftest.sh` has 130 lines, all ok.
+
+```
+ata1: PATA max PIO4 cmd 0x1f0 ctl 0x3f6 irq 14 lpm-pol 0
+ata1.00: ATA-6: g86m disk, 1, max PIO4
+ata1.00: 65536 sectors, multi 1: LBA48
+sd 0:0:0:0: [sda] 65536 512-byte logical blocks: (33.6 MB/32.0 MiB)
+/dev/sda on / type ext2 (rw,relatime,errors=continue,user_xattr,acl)
+```
+
+- A first run writes a line of text and 3 MB from `/dev/urandom` and prints the MD5; a
+  second run prints the same MD5 and the text; `grep` on the host finds the text in the
+  image; `e2fsck -fn` on the host passes the file system (334 files, 7,611 blocks) though
+  the guest was stopped without unmounting, after a `sync`.
+- The interpreter and the JIT take the same 1,329,170,865 instructions through one such
+  session, with 3,114 sectors read and 1,400 written.
+- The driver worked the first time it was loaded. By the card's second branch all the
+  same: without PCI `pata_legacy` goes on to try five more places and asks for interrupt
+  lines that are the clock's and the mouse's, which the kernel reports with a stack trace.
+  `probe_mask=1` keeps it to the primary channel.
+
+**What was built.** The disk is in `dev.goose`: the task file with two bytes to each of
+the count and address registers (the 48-bit commands' upper halves), a buffer of sixteen
+sectors, and READ, WRITE, their MULTIPLE and EXT forms, IDENTIFY, SET MULTIPLE MODE, and
+the commands that have nothing to do here answered as done; anything else is aborted. A
+command is carried out when it is written; the interrupt is raised for each block the host
+is to read and after each it has written, and taken back when the status is read. The data
+port is one port at every width, which `port_in` and `port_out` (two 8-bit ports to a
+word) had to be told. The sectors are in a file that `src/disk.c` reads and writes in
+place with `pread` and `pwrite`: thirty lines, the project's third piece of C. `--disk
+FILE` attaches it; without it the ports answer as before.
+
+`tools/images/make-disk.sh` makes the two images in a Linux container: an initramfs with
+busybox, seven modules from Alpine's modloop of the kernel's own version (`scsi_common`,
+`scsi_mod`, `libata`, `pata_legacy`, `sd_mod`, `mbcache`, `ext2`) and an init that loads
+them and moves to `/dev/sda` if it holds a root; and a 32 MB ext2 image with the same
+busybox and the same init. Neither image is in the repository.
+
+**Tests.** `s_ide` on the bare ports: the signature, the absent slave, IDENTIFY, two
+sectors written in one command and the second read back, the registers' earlier bytes, a
+sector beyond the end. Eight wrong builds, each caught; one passed at first (a bound one
+sector too generous: the file behind the disk refused the read instead, with another
+error code, which the test now looks at). The Linux session in `tools/difftest.sh` writes
+with the JIT and reads back without it.
+
+**Not done.** DMA; the slave; an ATAPI CD-ROM (which is what rustx86's `ide.rs` is); a
+clean shutdown from the guest (`poweroff` has nothing to turn off); the BIOS's INT 13h on
+this disk, so DOS does not see it.

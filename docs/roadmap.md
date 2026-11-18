@@ -6,7 +6,7 @@ desktop that can browse the web, still as an i686, and only then to x86_64.
 
 | Stage | Goal | Done when |
 |---|---|---|
-| M6 | A clock and a disk | `date` in the guest shows the host's date; a root file system on an IDE disk is mounted and written |
+| M6 | A clock and a disk (done) | `date` in the guest shows the host's date; a root file system on an IDE disk is mounted and written |
 | M7 | A network | `wget https://...` from the serial console fetches a page through the host |
 | M8 | A screen | X (Xfbdev, twm, xterm) comes up in a window on the host, with keyboard and mouse |
 | M9 | A browser | NetSurf or Dillo shows a page fetched over HTTPS |
@@ -37,6 +37,9 @@ devices on a CPU that is still moving.
 - **IDE** (PIO first), backed by an image file. X and a browser do not fit well in an
   initramfs, and a disk that is written lets the guest keep what it was given.
 - Oracle: rustx86's `cmos.rs` and `ide.rs`; Linux's own probing of both.
+  Done (E075): an ATA disk on the primary channel, which Linux's `pata_legacy` drives; the
+  root file system is ext2 on it. rustx86's `ide.rs` turned out to be an ATAPI CD-ROM, so
+  the disk's commands are from the standard and the test is the kernel's driver.
 
 ### M7: a network
 
