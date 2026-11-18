@@ -1102,6 +1102,23 @@ let K_SUB_RM_I_J = 93;   // SUB r/m, imm and Jcc
 let K_ALU8_A_I_J = 94;   // 8-bit arithmetic on AL and Jcc
 let K_TEST_I_J = 95;     // TEST r/m, imm32 and Jcc
 let K_LAST = 95;         // the largest kind with an executor
+// Kinds with no executor, which only the JIT's translator knows (E073): classify gives them
+// when the JIT is on, and a run leaves them to the general path as it does K_NONE.
+let K_J_MOV_A_M = 96;    // A1: MOV EAX, [address]
+let K_J_MOV_M_A = 97;    // A3: MOV [address], EAX
+let K_J_LEAVE = 98;      // C9
+let K_J_PUSH_I = 99;     // 68 and 6A
+let K_J_PUSH_RM = 100;   // FF /6
+let K_J_XCHG_A = 101;    // 91 to 97
+let K_J_XCHG = 102;      // 87, between registers
+let K_J_BSWAP = 103;     // 0F C8 to 0F CF
+let K_J_CDQ = 104;       // 99
+let K_J_DF = 105;        // FC and FD
+let K_J_ROT1 = 106;      // D1 /0 and /1, of a register
+let K_J_MOVSX8 = 107;    // 0F BE
+let K_J_MOVSX16 = 108;   // 0F BF
+let K_J_MULDIV = 109;    // F7 /4 to /7
+let K_JLAST = 109;       // the largest kind the translator knows
 // The first instruction of a block the JIT has translated (jit.goose). It is above K_LAST on
 // purpose: the run finds it where it finds a kind with no executor, off the path every other
 // instruction takes, and no executor has to know about blocks.
@@ -1216,7 +1233,8 @@ fn classify(slot: i64, raw: u64) {
                 imm = imm & 0x1F;
                 kind = if which == 5 { K_SHR_I } else if which == 7 { K_SAR_I } else { K_SHL_I };
             } else if op == 0xD1 {
-                kind = K_NONE;                   // a rotate by one: the general path
+                // A rotate by one: the general path, or the JIT's own kind.
+                kind = if jit_on && which < 2 && mm & 0x0C == 0x0C { K_J_ROT1 } else { K_NONE };
             }
         }
         else if op == 0xD3 { kind = K_SHIFT_CL; }
@@ -1230,6 +1248,9 @@ fn classify(slot: i64, raw: u64) {
         else if op == 0xF7 && mm >> 4 & 7 < 2 && after_m <= 4 { kind = K_TEST_I; imm = raw32(raw, after_m); len = after_m + 4; }
         else if op == 0xF7 && mm >> 4 & 7 == 2 { kind = K_NOT; }
         else if op == 0xF7 && mm >> 4 & 7 == 3 { kind = K_NEG; }
+        else if op == 0xF7 && mm >> 4 & 7 >= 4 && jit_on { kind = K_J_MULDIV; }
+        else if op == 0xFF && mm >> 4 & 7 == 6 && jit_on { kind = K_J_PUSH_RM; }
+        else if op == 0x87 && mm & 0x0C == 0x0C && jit_on { kind = K_J_XCHG; }
         else if op == 0xFF && mm >> 4 & 7 == 0 { kind = K_INC_RM; }
         else if op == 0xFF && mm >> 4 & 7 == 1 { kind = K_DEC_RM; }
         else if op == 0xC7 && mm >> 4 & 7 == 0 && after_m <= 4 { kind = K_MOV_RM_I; imm = raw32(raw, after_m); len = after_m + 4; }
@@ -1242,6 +1263,8 @@ fn classify(slot: i64, raw: u64) {
             if op2 == 0xB6 { kind = K_MOVZX8; } else if op2 == 0xB7 { kind = K_MOVZX16; }
             else if op2 == 0xAF { kind = K_IMUL; }
             else if op2 >= 0x90 && op2 <= 0x9F { kind = K_SETCC; imm = op2 & 15; }
+            else if op2 == 0xBE && jit_on { kind = K_J_MOVSX8; }
+            else if op2 == 0xBF && jit_on { kind = K_J_MOVSX16; }
         }
     } else if p16 && has_m {
         len = after_m;
@@ -1275,6 +1298,17 @@ fn classify(slot: i64, raw: u64) {
             let op2 = raw8(raw, pl);
             if op2 >= 0x80 && op2 <= 0x8F { kind = jcc_kind((op2 & 15) as! u8); cc = jcc_data((op2 & 15) as! u8); imm = raw32(raw, pl + 1); len = pl + 5; }
             else if op2 == 0x31 && i686 { kind = K_RDTSC; len = pl + 1; }
+            else if op2 >= 0xC8 && op2 <= 0xCF && i686 && jit_on { kind = K_J_BSWAP; imm = op2 & 7; len = pl + 1; }
+        }
+        else if jit_on {
+            if op == 0xA1 { kind = K_J_MOV_A_M; imm = raw32(raw, pl); len = pl + 4; }
+            else if op == 0xA3 { kind = K_J_MOV_M_A; imm = raw32(raw, pl); len = pl + 4; }
+            else if op == 0xC9 { kind = K_J_LEAVE; len = pl; }
+            else if op == 0x68 { kind = K_J_PUSH_I; imm = raw32(raw, pl); len = pl + 4; }
+            else if op == 0x6A { kind = K_J_PUSH_I; imm = sext8(raw8(raw, pl)); len = pl + 1; }
+            else if op >= 0x91 && op <= 0x97 { kind = K_J_XCHG_A; len = pl; }
+            else if op == 0x99 { kind = K_J_CDQ; len = pl; }
+            else if op == 0xFC || op == 0xFD { kind = K_J_DF; imm = op & 1; len = pl; }
         }
     } else if p16 && mm == 0 {
         if op == 0xA5 { kind = K_MOVSW; len = pl; }
@@ -1880,9 +1914,10 @@ fn exec_short() {
                 ins = dc[slot].pre;
                 classify(slot, code64(p));
                 kind = dc[slot].pre.kind;
-                // No executor, or (the JIT took the entry back for a block it had,
-                // jit_reclaim) a block: either way the general path runs this one.
-                if kind >= K_BLOCK { break; }
+                // No executor (K_NONE, or a kind only the JIT knows), or (the JIT took the
+                // entry back for a block it had, jit_reclaim) a block: either way the general
+                // path runs this one.
+                if kind - 1 >= K_LAST { break; }
             }
             pr = run_short(kind, slot, pbase, left);
             p = pr as! u32;
@@ -1982,15 +2017,17 @@ fn exec_general() -> bool {
             if kind < K_NONE {
                 // The executor reckons in physical addresses: the base it is given is the
                 // code segment's, less what a linear address is above the physical one.
-                if kind != 0 {
+                // One instruction is wanted here: of a pair, the first.
+                // Of a block, its first instruction by its own kind.
+                let k1 = if kind == K_BLOCK { jit_kind[slot - DC_HALF] } else { kind };
+                if k1 - 1 < K_LAST {
                     let pb = cpu.base[CS] - (a - key);
-                    // One instruction is wanted here: of a pair, the first.
-                    // Of a block, its first instruction by its own kind.
-                    let k1 = if kind == K_BLOCK { jit_kind[slot - DC_HALF] } else { kind };
                     cpu.ip = (run_short(k1, slot, pb, 0) as! u32) - pb;
                     return true;
                 }
-                classify(slot, raw);
+                // Not classified yet; or a kind only the JIT knows, which is decoded below
+                // like any other.
+                if k1 == 0 { classify(slot, raw); }
             }
             cpu.ip += ins.plen;
         }

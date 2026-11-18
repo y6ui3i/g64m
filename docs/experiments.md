@@ -5335,3 +5335,67 @@ of the first byte), caught by `s_jitmem`. `tools/difftest.sh` has 123 lines, all
 
 With `--jit` the boot now takes 66% fewer cycles than the interpreter, and 27% fewer than
 this morning.
+
+## E073: Kinds that only the translator knows (2026-11-18)
+
+Task 12 of `docs/jit.md`, the first part.
+
+- **Hypothesis**: E069's count: 6.95 of the 16.5 million trips back to Goose are at an
+  instruction with no executor. The translator reads what `classify` left in an entry, so
+  such an instruction needs a kind; a kind above `K_LAST` that `exec_short` leaves to the
+  general path as it does `K_NONE` costs the interpreter nothing. Given kinds, and
+  translated: `mov eax, moffs` and back, LEAVE, `push imm`, `push r/m`, XCHG between
+  registers, BSWAP, CDQ, CLD and STD, a rotate by one, MOVSX, and group F7's MUL, IMUL, DIV
+  and IDIV (a division that would fault takes a way out). **Generated code entered under
+  13.5 million times, and the boot's host instructions 3% or more under E072's.**
+- **What changed since last time**: E066 translated kinds that had executors. These have
+  none; `classify` gives them kinds only when the JIT is on.
+- **Next move for each result**:
+  - Both as said → keep; count again for what is left (REP strings, CMPXCHG, SHRD, PUSHF,
+    group 83 with a prefix)
+  - Entries fall and instructions do not → keep; the trips for these were cheap ones
+  - Without `--jit` slower by 1% or more (the one comparison changed in `exec_short`) →
+    pad the layout as E060 did, before anything else
+- **Cut-off**: The suite with `--jit`, a self-check with every new kind summed against a
+  trace run, wrong builds, the boot's count and time with and without `--jit`.
+
+### Result
+
+2026-11-18. **Kept: generated code is entered 11.3 million times in a boot (16.5), and the
+boot takes 35.9 billion host instructions (41.1, 13% fewer) and 8.40 billion cycles (9.32,
+10% fewer).** By the card: the first branch. `tools/difftest.sh` has 125 lines, all ok.
+
+| Linux boot to the shell prompt, medians of five, one hour | Host instructions | Cycles |
+|---|---:|---:|
+| Interpreter (main before the JIT) | 145.6 billion | 27.59 billion |
+| This source without `--jit` | 147.2 billion | 27.75 billion |
+| `--jit`, E072 | 41.1 billion | 9.32 billion |
+| `--jit`, with the new kinds | 35.9 billion | 8.40 billion |
+
+With `--jit` the boot takes 70% fewer cycles than the interpreter. 98.2% of the guest's
+instructions run in blocks (1,621 of 1,651 million); the far way finds a block 25.7 million
+times. Without `--jit` the source is where it was (0.6% in the cycles, inside what the
+rounds differ by; the 1.1% in instructions is the JIT's hooks, there since E062).
+
+**What was built.** Fourteen kinds from 96 to 109 (`K_J_...`, `K_JLAST`), which `classify`
+gives only when the JIT is on. Three places had to know that a kind may now be neither an
+executor's nor `K_NONE` nor a block: `exec_short` after it classifies (one comparison,
+against `K_LAST` where it was against `K_BLOCK`), `exec_general` where it runs a cached
+instruction by its executor (now only if it has one; otherwise it decodes it like any
+other, with the operand from the cache), and the translator's own tests (`K_JLAST`).
+DIV and IDIV work out the quotient in 64 bits and take the way out, before anything is
+changed, on a divisor of zero or a quotient that does not fit; MUL and IMUL make their two
+flags only where something may see them (`j_dead`). `--jit-off 131072` turns the new kinds
+off.
+
+**Tests.** `s_jitkinds`: every new kind, with EAX, EBX, EDX and EFLAGS after each summed
+against a trace run; a division by zero and two whose quotients do not fit, whose handler
+sums the registers it finds. Twenty-four wrong builds, each caught; nine passed at first.
+The pushes were followed by `add esp, 8`, so nothing read what they pushed; `movsx ebx, al`
+is the same whichever way AL is fetched (AH is not); the divisions meant to overflow came
+after the one by zero and so divided by zero as well; `push ebx` the long way pushed a
+register that held the same value as the one the wrong build pushed; and two wrong builds
+were wrong themselves (register 31 is the stack pointer in a comparison with a constant).
+Since CLD is now translated, the earlier self-checks' blocks no longer begin after it: the
+wrong builds of E069 to E072 were run again, and one case of `s_jitdead` (flags seen after
+an instruction with no executor) needed another such instruction, XCHG having got a kind.
