@@ -5876,3 +5876,44 @@ that the numbers in it would have explained sooner: the TSC's interval in the wa
 504.000 ms, a whole number of ticks to within thirty instructions, and the PIT's is 504.67.
 The clock that was off was the one being trusted. Task 15 of `docs/jit.md` is closed as
 not the JIT's.
+
+## E081: A disk that an unclean stop cannot break (2026-11-18)
+
+- **What happened**: The owner ran X from `images/disk-x.img`, left with Ctrl-], and the
+  next boot could not use the disk: `EXT2-fs (sda): error: ext2_lookup: deleted inode
+  referenced: 40961`, no `/dev`, `sh: can't open /dev/ttyS0` for ever. `e2fsck -fn` on the
+  host: "Filesystem still has errors". The guest writes the image in place (E075), ext2
+  has no journal, the init writes on every boot (busybox's links), and there is no way to
+  stop the machine from inside (E075's "not done"). So every way out was an unclean one.
+- **Hypothesis**: Two things, either of which would have prevented it. `--scratch`: the
+  disk's writes are kept in memory and the image is never changed, which is what trying X
+  wants. And a clean way out for when the writes are wanted: a command in the guest that
+  syncs, makes the root read-only and powers off, at which the emulator stops. **With
+  `--scratch`, an image is byte for byte the same after a session that wrote to it and was
+  cut off; with `off` in the guest, g86m exits by itself and `e2fsck` passes the image.**
+- **What changed since last time**: E075 tested persistence with `sync` and a kill, and
+  `e2fsck` passed by luck of where the kill fell.
+- **Next move for each result**:
+  - Both hold → keep; the README says which to use when
+  - The kernel does not halt on `poweroff -f` → what it does instead, from the serial log
+- **Cut-off**: A checksum of the image before and after a scratch session; `e2fsck -fn`
+  after `off`; both in the suite.
+
+### Result
+
+2026-11-18. **Kept: both hold.** `tools/difftest.sh` has 151 lines, all ok.
+
+- `--scratch`: the image is mapped privately (`mmap`, `MAP_PRIVATE`), so a write changes a
+  page of this process and never the file. An image's checksum is the same after a session
+  that wrote 2 MB to it and was cut off.
+- `off` in the guest (`/bin/off`, put on both roots by the image scripts): `sync`, the root
+  remounted read-only, `poweroff -f`. The kernel says `reboot: Power off not available:
+  System halted instead` and halts with interrupts off, which the run loop has always
+  taken as the end: g86m exits by itself. `e2fsck -fn` on the host then passes the image,
+  and the next boot mounts it without the kernel's "unchecked fs" warning.
+- The owner's broken image was kept as `images/disk-x.broken.img` and a new one made.
+
+**What this was.** E075 called the disk done with "a clean shutdown from the guest" under
+"not done", and E078 handed the owner a writable ext2 root with Ctrl-] as the only way
+out. The first unclean stop that fell badly broke it. What "not done" lists is not always
+what can wait.

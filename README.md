@@ -188,8 +188,13 @@ written in place. `tools/images/make-disk.sh` makes an initramfs that has the dr
 ./build/g86m --jit --disk images/disk.img --initrd images/initramfs-disk images/vmlinuz-lts
 ```
 
-What is written there is in the image the next time. The guest cannot turn the machine off:
-`sync`, then Ctrl-].
+What is written there is in the image the next time. **Leave with `off`**, typed in the guest:
+it writes everything out, makes the root read-only and halts the machine, at which g86m stops.
+Ctrl-] stops g86m at once, and a file system that was being written may not survive it (ext2
+has no journal).
+
+With `--scratch` the guest's writes are kept in memory for the run and the image is never
+changed, so nothing can break it and nothing is kept: the way to try things out.
 
 `--net` gives the machine a network card (an NE2000 on PCI) and, behind it, the host as a
 gateway, a DHCP server and a name server (10.0.2.2 and 10.0.2.3, the guest at 10.0.2.15), by
@@ -212,12 +217,15 @@ back. With the X disk that `tools/images/make-x-disk.sh` makes, the serial conso
 terminal and X comes up in the window:
 
 ```bash
-./build/g86m --jit --fb 1024x768 --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
+./build/g86m --jit --fb 1024x768 --scratch --disk images/disk-x.img --initrd images/initramfs-disk images/vmlinuz-lts
 ```
 
 ```
 ~ # startx
 ```
+
+(Ctrl-C at the serial console ends X; without `--scratch`, `off` there ends the session with the
+disk whole.)
 
 ![X on g86m: icewm and an xterm](docs/img/m8-x.png)
 

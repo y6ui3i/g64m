@@ -57,7 +57,7 @@ if [ -e /sys/class/net/eth0 ] && [ -x /usr/share/udhcpc/default.script ]; then
 fi
 
 echo
-echo "  g86m - busybox shell, root on $where"
+echo "  g86m - busybox shell, root on $where (off: stop the machine with the disk whole)"
 echo
 # The shell is a child with the serial port as its controlling terminal, so that Ctrl-C and
 # Ctrl-Z reach what it runs; when it ends, another is started.
