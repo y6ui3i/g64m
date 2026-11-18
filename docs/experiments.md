@@ -5947,3 +5947,33 @@ the case for keeping the image unchanged unless asked: a question put to the own
 
 That makes three things a first real session found that the scripted ones could not: the
 disk broken by an unclean stop (E081), this, and whatever typing in the window turns up.
+
+## E083: A closed connection must not end the machine (2026-11-18)
+
+- **What happened**: The owner opened a page with many images in Dillo (`--net`, in the
+  window) and g86m was gone: no message, no line of statistics. Dillo's log just before:
+  `IO_write, closing with pending data not sent: "GET /wp-content/uploads/...`.
+- **Hypothesis**: Not a fault of g86m's own, which the system would have recorded (there is
+  no crash report), and not one of its ways of stopping, which all print the line of
+  statistics. A process that ends with neither was ended by a signal it did not handle.
+  libslirp writes to the host's sockets on the guest's behalf; a write to a connection the
+  other end has closed raises SIGPIPE, whose default is to end the process silently; and
+  the browser's log shows connections being closed with requests still unsent. **With
+  SIGPIPE ignored, such a write fails with an error, which libslirp handles, and the
+  machine goes on.**
+- **What changed since last time**: E076 and E079 fetched one page over one connection. A
+  page with thirty images is the first use that closes connections while others are busy.
+- **Next move for each result**:
+  - The owner's session survives the same page → keep
+  - It ends again → the shell's `$?` after it (141 is SIGPIPE; anything else names another
+    signal), since the cause was inferred and not seen
+- **Cut-off**: The fix is one line and is right whatever else is wrong. The same page
+  fetched in a scripted run, which had not failed before either: that run cannot confirm
+  the cause, only that nothing broke.
+
+### Result
+
+2026-11-18. **Applied; the cause is inferred, not shown.** `signal(SIGPIPE, SIG_IGN)` where
+libslirp is opened. A scripted run of X and Dillo on the same site, without a window, had
+ended normally before the change too (19.9 billion instructions, 253 frames out and 269
+in), so it shows nothing about the cause. What would show it is the owner's session.

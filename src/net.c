@@ -13,6 +13,7 @@
 #include <dlfcn.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -136,6 +137,10 @@ int32_t net_open(void) {
     void *lib = 0;
     for (int i = 0; names[i] && !lib; i++) lib = dlopen(names[i], RTLD_NOW);
     if (!lib) return -1;
+    // libslirp writes to the host's sockets for the guest. When the other end has closed one,
+    // such a write raises SIGPIPE, which ends a process that has not said otherwise, without
+    // a word. The write's error is all that is wanted (E083).
+    signal(SIGPIPE, SIG_IGN);
     Slirp *(*slirp_new)(const SlirpConfig *, const SlirpCb *, void *) = dlsym(lib, "slirp_new");
     slirp_input = dlsym(lib, "slirp_input");
     slirp_pollfds_fill = dlsym(lib, "slirp_pollfds_fill");
