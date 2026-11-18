@@ -5980,5 +5980,5 @@ in), so it shows nothing about the cause. What would show it is the owner's sess
 
 **Shown, afterwards.** The owner's shell, asked after the session that had ended: `echo $?`
 gave 141, which is 128 plus 13, SIGPIPE. The card's second branch named that number as
-what would tell; it came from the run before the fix, and confirms the cause. Whether the
-same page now loads to its end in the window is still the owner's to see.
+what would tell; it came from the run before the fix, and confirms the cause. With the fix,
+the owner opened the same page again and the machine stayed up.
