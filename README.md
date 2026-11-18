@@ -9,8 +9,9 @@ its per-instruction trace is compared with g86m's.
 
 ## Status
 
-M7 is done: with `--net` the guest has a network card and reaches the world through the host, and
-the i686 has MMX and SSE2. M6 before it: the guest has a clock and an IDE disk, and Linux takes an ext2 file system on that
+M9 is done: a browser (Dillo) in X on g86m shows a page fetched over HTTPS. M8 before it: X on a
+frame buffer, in a window on the host. M7: with `--net` the guest has a network card and reaches
+the world through the host, and the i686 has MMX and SSE2. M6 before it: the guest has a clock and an IDE disk, and Linux takes an ext2 file system on that
 disk as its root and writes it. M5 before it: g86m boots a 32-bit Linux kernel (6.18) to a busybox shell on its serial console. For
 that the machine is an i686 with an x87 FPU. The FPU adds, subtracts, multiplies, divides and
 compares on the 80-bit format, in integers; the square root and the functions are computed as
@@ -58,6 +59,7 @@ checked against rustx86:
 
 | M7 | A network | done (E076, E077): `wget https://...` in the guest fetches a page through the host. MMX and SSE2 came with it, which the guest's OpenSSL is compiled for |
 | M8 | A screen | done by script (E078): X comes up on a frame buffer, takes the keyboard and the mouse; the window on the host is to be tried by hand |
+| M9 | A browser | done (E079): Dillo, in X, shows a page fetched over HTTPS |
 
 What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M6 | A clock (CMOS/RTC) and an IDE disk | planned |
@@ -214,6 +216,15 @@ terminal and X comes up in the window:
 ```
 
 ![X on g86m: icewm and an xterm](docs/img/m8-x.png)
+
+With `--net` as well, the disk's init gets an address by DHCP and a browser has the world:
+
+```
+~ # startx &
+~ # DISPLAY=:0 dillo https://example.com/
+```
+
+![Dillo on g86m, showing a page fetched over HTTPS](docs/img/m9-dillo.png)
 
 `--shot FILE` saves the frame buffer as a PPM image when the run ends, with or without a window.
 

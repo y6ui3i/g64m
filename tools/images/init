@@ -3,6 +3,7 @@
 # disk (tools/images/make-disk.sh puts the same file in both). In the initramfs it loads the
 # IDE disk's driver and, if /dev/sda holds an ext2 file system with an /init, moves there.
 # Otherwise, and on the disk, it starts a shell on the serial console.
+# On the way it loads what the root has modules for: the mouse, the network card.
 bb=/bin/busybox
 $bb mount -t proc proc /proc
 $bb mount -t sysfs sys /sys
@@ -45,6 +46,14 @@ else
             $bb umount /newroot
         fi
     fi
+fi
+
+# The network, if the machine has the card (--net): its driver, where this root has the
+# modules, and an address by DHCP, asked for in the background.
+for m in af_packet 8390 ne2k-pci; do $bb insmod /lib/modules/$m.ko 2>/dev/null; done
+if [ -e /sys/class/net/eth0 ] && [ -x /usr/share/udhcpc/default.script ]; then
+    $bb ifconfig eth0 up
+    $bb udhcpc -i eth0 -b -q -s /usr/share/udhcpc/default.script >/dev/null 2>&1
 fi
 
 echo

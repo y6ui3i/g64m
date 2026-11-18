@@ -5773,3 +5773,43 @@ the JIT, runs ninety seconds of guest time without it; none of five `--jit-off` 
 632 microseconds are 48 thousand instructions. So the time that generated code reports,
 or the time the timer sees, is off by that much somewhere under a load the boot does not
 have. Nothing has gone wrong because of it that was seen. It is task 15 of `docs/jit.md`.
+
+## E079: A browser (M9) (2026-11-18)
+
+- **Hypothesis**: Everything M9 needs is there since E078: the X disk has Dillo, the
+  network of E076 carries HTTPS, and the CPU has what Alpine's binaries are compiled for.
+  What is missing is small: the disk's init does not bring the network up. With the card's
+  driver loaded and `udhcpc` run there, **`dillo https://example.com/` in X shows the
+  page: its heading is on the saved frame.**
+- **What changed since last time**: Nothing in the machine. The init of
+  `tools/images/init` learns the network, for both roots.
+- **Next move for each result**:
+  - The page on the frame → keep; M9 is done
+  - Dillo stops at an instruction → it is added, with a case in the trace tests (E077's
+    fourth branch)
+  - Dillo runs and shows an error page → its message: name resolution, the certificate
+    (the guest's date is 2026-01-01 in a scripted run: `--rtc host`), or its HTTPS helper
+  - Dillo does not fit in 128 MB with X → what `free` says, before more memory is given
+- **Cut-off**: One scripted run with `--net --rtc host --fb`, the frame saved. It needs the
+  world, so it is not in the suite.
+
+### Result
+
+2026-11-18. **Kept: Dillo, in X, shows `https://example.com/`
+([docs/img/m9-dillo.png](img/m9-dillo.png)). M9 is done.** By the card: its first branch.
+
+- The window's title is "Dillo: Example Domain" and the page's paragraph is on the frame.
+  The page's heading is not: the title bar has its text, the page area does not show it
+  (the card said the heading would be on the frame; what is there is the title and the
+  body). Whether Dillo leaves it out of this page on real hardware too was not looked at.
+- Dillo's log names the certificate chain it checked (Cloudflare's issuing CA up to
+  Comodo's root), with the guest's clock at the host's time (`--rtc host`).
+- No instruction was missing. With X, icewm, an xterm and Dillo, 31 of 103 MB are used.
+- The run: 13.0 billion guest instructions, 130 seconds on the host (the network's idle
+  time is slept), 145,570 sectors read from the disk.
+
+**What was built.** Fourteen lines in `tools/images/init`: on either root, the network
+card's driver is loaded if the root has the modules, and `udhcpc` is run in the background
+if the card is there. Nothing in the machine changed.
+
+**Not in the suite**: the run needs the world. The suite's X session (E078) is as it was.
