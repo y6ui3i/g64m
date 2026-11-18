@@ -6071,3 +6071,52 @@ the boot before E067: half the time is trips between generated code and Goose.**
 
 By the card: the second and third branches together. The plan that follows from it is
 [docs/perf.md](perf.md).
+
+## E086: Why instructions with executors reach the general path (2026-11-19)
+
+P2 of `docs/perf.md`, its first half: a count.
+
+- **Hypothesis**: 23 million executions of `cmp`, `mov` and the immediate groups are on
+  the general path while X starts, though `classify` knows those opcodes. Each has a reason
+  that can be read where the general path decodes it: no entry could be made (the page's
+  last bytes, a limit), the entry is new (first and second execution), or `classify`
+  refused it (a 16-bit operand, LOCK, REP, more than eight bytes, a form it leaves out).
+  **One or two reasons are most of the 23 million, and they are refusals, not new
+  entries.**
+- **What changed since last time**: E085 counted by opcode; this by reason.
+- **Next move for each result**:
+  - More than eight bytes is the largest → `classify` reads the immediate from memory
+    beyond the eighth byte
+  - A 16-bit operand is the largest → 16-bit forms of the commonest kinds, in the
+    translator only
+  - New entries are most → the decode cache is being emptied: by what (stores into pages
+    of code, slots fought over), counted next
+- **Cut-off**: One counting build, one run from the prompt to the desktop.
+
+### Result
+
+2026-11-19. **Half right: one reason is large, and so are two that are not refusals.** Of
+the general path's 118.7 million instructions from `startx` to the desktop, in millions:
+
+| Why | All | `cmp`, `mov`, `add`, `test`, the immediate groups |
+|---|---:|---:|
+| Refused by `classify` for its form (no kind for the opcode) | 50.4 | 2.3 |
+| No entry possible: the instruction is in the page's last fifteen bytes | 17.6 | 8.4 |
+| A 16-bit operand (prefix 66) | 16.2 | 12.2 |
+| No entry yet (a first execution) | 6.8 | 2.9 |
+| REP | 4.9 | |
+| LOCK | 0.4 | |
+
+(The 22.4 million executions of an executor's instruction by the general path are not in
+these: they are counted before this point.)
+
+- **The page's last fifteen bytes.** An instruction that begins there gets no entry, ever,
+  because a cached instruction's bytes are read sixteen at a time from one page. One
+  instruction in 270 begins there; a loop that has one pays a trip every time round.
+- **16-bit operands.** `cmp`, `test`, `add` and the immediate groups with prefix 66: only
+  MOV has 16-bit kinds.
+- **First executions**: 6.8 million in ninety seconds is the decode cache losing entries
+  to other addresses (131,072 slots, one address each) faster than the boot ever did.
+- More than eight bytes is not it: 0.06 million.
+
+`docs/perf.md` has these as P2a, P2b and P2c.

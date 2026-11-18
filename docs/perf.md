@@ -35,7 +35,10 @@ Counts are of the stretch from `startx` to the desktop, in millions of trips.
 | # | Item | Trips now | Kept for x86_64 | State |
 |---|---|---:|---|---|
 | P1 | Indirect CALL and JMP (FF /2, /4) end their block at the far way, as RET does | 12.5, and what follows each | the design | |
-| P2 | Why instructions that have executors are on the general path: `cmp`, `mov`, groups 83, 81, C7. Count the reasons (a prefix, more than eight bytes, the page's last bytes), then remove the largest | 23.0 | whole (the decode cache) | |
+| P2 | Why instructions that have executors are on the general path | | | counted, E086 |
+| P2a | An instruction that begins in a page's last fifteen bytes gets no entry in the decode cache, ever | 17.6 | whole (the decode cache) | |
+| P2b | 16-bit operands (prefix 66) of `cmp`, `test`, `add` and the immediate groups: only MOV has 16-bit kinds | 16.2 | the design | |
+| P2c | First executions: the decode cache (131,072 slots) loses entries under X's amount of code | 6.8 | whole | |
 | P3 | CMOVcc | 6.4 | the design | |
 | P4 | IMUL by a constant, BT and its group, XCHG of a byte with memory, SHLD and SHRD, CMPXCHG, INC and DEC of a byte | 16.5 | the design | |
 | P5 | PUSHF and CLI in blocks (the kernel's "save the interrupt flag and turn it off") | 3.0 | the design | |
