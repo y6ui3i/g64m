@@ -5973,7 +5973,12 @@ disk broken by an unclean stop (E081), this, and whatever typing in the window t
 
 ### Result
 
-2026-11-18. **Applied; the cause is inferred, not shown.** `signal(SIGPIPE, SIG_IGN)` where
+2026-11-18. **Applied; the cause was inferred first and shown after (below).** `signal(SIGPIPE, SIG_IGN)` where
 libslirp is opened. A scripted run of X and Dillo on the same site, without a window, had
 ended normally before the change too (19.9 billion instructions, 253 frames out and 269
 in), so it shows nothing about the cause. What would show it is the owner's session.
+
+**Shown, afterwards.** The owner's shell, asked after the session that had ended: `echo $?`
+gave 141, which is 128 plus 13, SIGPIPE. The card's second branch named that number as
+what would tell; it came from the run before the fix, and confirms the cause. Whether the
+same page now loads to its end in the window is still the owner's to see.
