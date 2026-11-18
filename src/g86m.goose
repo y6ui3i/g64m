@@ -12,7 +12,8 @@
 // console: the guest's text screen is drawn in the terminal and the keyboard goes to the guest.
 // Ctrl-] or F12 leaves it.
 //
-//   --max N        stop after N instructions of virtual time
+//   --max N        stop after N instructions of virtual time (20 billion unless given; no limit
+//                  in a console someone is at)
 //   --trace        print the state at every instruction boundary, one line each, in the same
 //                  format as rustx86's trace32 so the two can be diffed
 //   --trace-after N  like --trace, but starting once N instructions have run
@@ -459,6 +460,7 @@ fn main() {
     var initrd_arg = 0;
     var append_arg = 0;
     var max = 20000000000;
+    var max_given = false;
     var path: const u8[:] = "";
     var i = 1;
     while i < a.len {
@@ -534,6 +536,7 @@ fn main() {
             let n, ok = parse_int(a[i]);
             guard ok else { write_stderr("g86m: --max needs a number\n"); exit(2); }
             max = n;
+            max_given = true;
         }
         else if (a[i] == "--wait" || a[i] == "--type" || a[i] == "--keys" || a[i] == "--mouse") && i + 1 < a.len {
             step_kind.push(if a[i] == "--wait" { STEP_WAIT } else if a[i] == "--type" { STEP_TYPE } else if a[i] == "--keys" { STEP_KEYS } else { STEP_MOUSE });
@@ -636,10 +639,17 @@ fn main() {
     // --speed N: a second of guest time is N times as many instructions, which is a CPU N
     // times as fast under the same clock.
     tick_insns = tick_insns * speed;
+    // A run nobody watches stops after so many instructions, so that a guest that hangs does
+    // not run for ever. A console is watched: it runs until it is left. (At --speed 4 the
+    // limit was a minute of the guest's time, and X with a browser in it ended there: E082.)
+    if !max_given && (interactive || serial_console) { max = 4000000000000000000; }
     let result = if interactive { run_console(max) } else if serial_console { run_serial(max) } else { run_until(max) };
     com_flush();
     let ms = (clock_ns() - t0) / 1000000;
     if serial_console { con_close(); write_stdout("\n"); }
+    // Left because the limit was reached, not because someone left: said, so that it does not
+    // look like a crash.
+    if (serial_console || interactive) && result == RUN_BUDGET && vtime >= max { write_stderr("g86m: stopped at the limit of --max instructions\n"); }
     if interactive {
         con_close();
         // The reason was written while the console's screen was up, where it cannot be seen.

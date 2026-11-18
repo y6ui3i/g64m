@@ -5917,3 +5917,33 @@ not the JIT's.
 "not done", and E078 handed the owner a writable ext2 root with Ctrl-] as the only way
 out. The first unclean stop that fell badly broke it. What "not done" lists is not always
 what can wait.
+
+## E082: A console is not cut off at twenty billion instructions (2026-11-18)
+
+- **What happened**: The owner started X at `--speed 4`, started Dillo, and g86m ended with
+  `steps 20001160660 halted true`: taken for a crash. It is the default `--max`. Twenty
+  billion instructions are four minutes of guest time at the default speed and one at
+  `--speed 4`; a session with X in it is longer than that.
+- **Hypothesis**: The limit is there so that a run nobody watches does not go on for ever.
+  A console is watched. **Without `--max`, a console runs until it is left; with it, it
+  stops there and says so.**
+- **What changed since last time**: Sessions were short until X.
+- **Next move for each result**: holds → keep. A console that still ends by itself → what
+  the last line says, since the limit now names itself.
+- **Cut-off**: Two runs in a pseudo-terminal: one past twenty billion, one with `--max`.
+
+### Result
+
+2026-11-18. **Kept.** A console at `--speed 8 --unpaced` was at 39.8 billion instructions
+when it was left with Ctrl-], and said nothing of a limit; with `--max 3000000000` it
+stopped at three billion and wrote `g86m: stopped at the limit of --max instructions`.
+Scripted and headless runs keep the default.
+
+`tools/difftest.sh`: 151 lines, all ok, on its second run. The first had 150 and one
+failure, X, and not because of this change: the owner's session that met the limit had been
+run without `--scratch`, the limit is as unclean a stop as Ctrl-], and `images/disk-x.img`,
+which the suite copies, was broken a second time. It was made again. Twice in an hour is
+the case for keeping the image unchanged unless asked: a question put to the owner.
+
+That makes three things a first real session found that the scripted ones could not: the
+disk broken by an unclean stop (E081), this, and whatever typing in the window turns up.
