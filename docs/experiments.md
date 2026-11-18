@@ -5917,3 +5917,68 @@ not the JIT's.
 "not done", and E078 handed the owner a writable ext2 root with Ctrl-] as the only way
 out. The first unclean stop that fell badly broke it. What "not done" lists is not always
 what can wait.
+
+## E082: A console is not cut off at twenty billion instructions (2026-11-18)
+
+- **What happened**: The owner started X at `--speed 4`, started Dillo, and g86m ended with
+  `steps 20001160660 halted true`: taken for a crash. It is the default `--max`. Twenty
+  billion instructions are four minutes of guest time at the default speed and one at
+  `--speed 4`; a session with X in it is longer than that.
+- **Hypothesis**: The limit is there so that a run nobody watches does not go on for ever.
+  A console is watched. **Without `--max`, a console runs until it is left; with it, it
+  stops there and says so.**
+- **What changed since last time**: Sessions were short until X.
+- **Next move for each result**: holds → keep. A console that still ends by itself → what
+  the last line says, since the limit now names itself.
+- **Cut-off**: Two runs in a pseudo-terminal: one past twenty billion, one with `--max`.
+
+### Result
+
+2026-11-18. **Kept.** A console at `--speed 8 --unpaced` was at 39.8 billion instructions
+when it was left with Ctrl-], and said nothing of a limit; with `--max 3000000000` it
+stopped at three billion and wrote `g86m: stopped at the limit of --max instructions`.
+Scripted and headless runs keep the default.
+
+`tools/difftest.sh`: 151 lines, all ok, on its second run. The first had 150 and one
+failure, X, and not because of this change: the owner's session that met the limit had been
+run without `--scratch`, the limit is as unclean a stop as Ctrl-], and `images/disk-x.img`,
+which the suite copies, was broken a second time. It was made again. Twice in an hour is
+the case for keeping the image unchanged unless asked: a question put to the owner.
+
+That makes three things a first real session found that the scripted ones could not: the
+disk broken by an unclean stop (E081), this, and whatever typing in the window turns up.
+
+## E083: A closed connection must not end the machine (2026-11-18)
+
+- **What happened**: The owner opened a page with many images in Dillo (`--net`, in the
+  window) and g86m was gone: no message, no line of statistics. Dillo's log just before:
+  `IO_write, closing with pending data not sent: "GET /wp-content/uploads/...`.
+- **Hypothesis**: Not a fault of g86m's own, which the system would have recorded (there is
+  no crash report), and not one of its ways of stopping, which all print the line of
+  statistics. A process that ends with neither was ended by a signal it did not handle.
+  libslirp writes to the host's sockets on the guest's behalf; a write to a connection the
+  other end has closed raises SIGPIPE, whose default is to end the process silently; and
+  the browser's log shows connections being closed with requests still unsent. **With
+  SIGPIPE ignored, such a write fails with an error, which libslirp handles, and the
+  machine goes on.**
+- **What changed since last time**: E076 and E079 fetched one page over one connection. A
+  page with thirty images is the first use that closes connections while others are busy.
+- **Next move for each result**:
+  - The owner's session survives the same page → keep
+  - It ends again → the shell's `$?` after it (141 is SIGPIPE; anything else names another
+    signal), since the cause was inferred and not seen
+- **Cut-off**: The fix is one line and is right whatever else is wrong. The same page
+  fetched in a scripted run, which had not failed before either: that run cannot confirm
+  the cause, only that nothing broke.
+
+### Result
+
+2026-11-18. **Applied; the cause was inferred first and shown after (below).** `signal(SIGPIPE, SIG_IGN)` where
+libslirp is opened. A scripted run of X and Dillo on the same site, without a window, had
+ended normally before the change too (19.9 billion instructions, 253 frames out and 269
+in), so it shows nothing about the cause. What would show it is the owner's session.
+
+**Shown, afterwards.** The owner's shell, asked after the session that had ended: `echo $?`
+gave 141, which is 128 plus 13, SIGPIPE. The card's second branch named that number as
+what would tell; it came from the run before the fix, and confirms the cause. With the fix,
+the owner opened the same page again and the machine stayed up.
