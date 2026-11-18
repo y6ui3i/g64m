@@ -9,7 +9,8 @@ its per-instruction trace is compared with g86m's.
 
 ## Status
 
-M6 is done: the guest has a clock and an IDE disk, and Linux takes an ext2 file system on that
+M7 is done: with `--net` the guest has a network card and reaches the world through the host, and
+the i686 has MMX and SSE2. M6 before it: the guest has a clock and an IDE disk, and Linux takes an ext2 file system on that
 disk as its root and writes it. M5 before it: g86m boots a 32-bit Linux kernel (6.18) to a busybox shell on its serial console. For
 that the machine is an i686 with an x87 FPU. The FPU adds, subtracts, multiplies, divides and
 compares on the 80-bit format, in integers; the square root and the functions are computed as
@@ -51,7 +52,7 @@ about a fifth is the language) and gives the reasons behind the [roadmap](docs/r
 | M5 | 32-bit Linux and busybox | done (no disk, no network, no clock chip) |
 | M6 | A clock and a disk | done (E074, E075): the host's date, and a root file system on an IDE disk |
 
-| M7 | A network | the network is there (E076): DHCP, DNS, a page over HTTP. HTTPS waits for SSE2, which the guest's OpenSSL is compiled for |
+| M7 | A network | done (E076, E077): `wget https://...` in the guest fetches a page through the host. MMX and SSE2 came with it, which the guest's OpenSSL is compiled for |
 
 What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M6 | A clock (CMOS/RTC) and an IDE disk | planned |
@@ -189,7 +190,7 @@ out through the host's own sockets:
 ```
 
 ```
-~ # wget -q -O - http://example.com/ | grep title
+~ # wget -q -O - https://example.com/ | grep title
 ```
 
 `--unpaced` is the other way to stop waiting: real time is then spent only on the guest time that
@@ -221,6 +222,7 @@ To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 | [src/prot.goose](src/prot.goose) | Descriptors, segment loading, far transfers, interrupt and fault delivery, virtual-8086 mode |
 | [src/exec.goose](src/exec.goose) | Instruction decode and execution; the cache of decoded instructions |
 | [src/fpu.goose](src/fpu.goose) | The x87 FPU of the i686 machine |
+| [src/sse.goose](src/sse.goose) | MMX and SSE2 of the i686 machine |
 | [src/bios.goose](src/bios.goose) | Power-on setup and the BIOS services the emulator performs: screen, disk, keyboard, time |
 | [src/dev.goose](src/dev.goose), [src/disk.c](src/disk.c), [src/net.c](src/net.c) | Interrupt controllers, timer, keyboard controller, CMOS clock, IDE disk, PCI and the network card, I/O port dispatch; the disk's image file and the host side of the network in C |
 | [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs) |

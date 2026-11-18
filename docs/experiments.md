@@ -5612,3 +5612,81 @@ the card's ports, the ports off and on, the address PROM, a byte in the chip's m
 The suite's Linux session gets an address by DHCP and pings the gateway, all inside the
 machine; nothing from outside is fetched there. HTTP and DNS were run by hand, against
 example.com. No wrong builds were made for this one yet.
+
+## E077: MMX and SSE2, for the guest's TLS (2026-11-18)
+
+E076 left M7 one step short: HTTPS stops at an SSE2 instruction the C compiler put into the
+guest's OpenSSL. The owner chose to bring MMX and SSE2 forward from M10.
+
+- **Hypothesis**: The instructions that the guest's `libcrypto`, `libssl`, `ssl_client`,
+  musl and busybox contain and that a CPU without SSSE3, AES or AVX is ever sent to (a
+  count over their disassembly: moves, the packed integer arithmetic, logic, shifts,
+  shuffles and unpacks, a few conversions and scalar doubles), with FXSAVE and FXRSTOR,
+  LDMXCSR and STMXCSR, and CPUID saying MMX, FXSR, SSE and SSE2, are enough: **the kernel
+  turns the registers on, and `wget https://example.com/` prints the page's title.**
+- **What changed since last time**: A new part of the CPU, on the general path only: the
+  short executors and the JIT do not know these instructions and need not. The XMM
+  registers are two 64-bit words each; the MMX registers are the FPU registers' mantissas,
+  as on the chip, which `fp_mant` already holds. Floats are the host's, as rustx86's are:
+  no exception is raised and MXCSR's rounding mode is not obeyed.
+- **Next move for each result**:
+  - The title printed → keep; M7 is done
+  - The kernel does not boot once CPUID says FXSR → FXSAVE's and FXRSTOR's layout against
+    the manual and against rustx86, before any other instruction
+  - TLS fails with a bad record or a bad signature → an integer instruction is wrong: the
+    test of each against rustx86's trace, in the order of the count
+  - An opcode is still missing → it is added; the count was of what is there, not of what
+    runs
+- **Cut-off**: A trace test of the instructions against rustx86 (`v_sse`), the suite, the
+  boot's count with the new CPUID, `wget` over HTTPS by hand.
+
+### Result
+
+2026-11-18. **Kept: `wget https://example.com/` prints `<title>Example Domain</title>`, and
+`https://www.kernel.org/` comes whole (20,436 bytes). M7 is done.** `tools/difftest.sh` has
+146 lines, all ok.
+
+- The kernel says `x86/fpu: x87 FPU will use FXSAVE`, and `/proc/cpuinfo` has `fxsr mmx
+  sse sse2`. The page came the first time the new instructions were run; nothing in the
+  card's second, third or fourth branch happened.
+- The plain Linux boot's count is 1,492,980,001 (1,492,760,001 before CPUID said more), the
+  same with `--jit` and without.
+
+**What was built.** `src/sse.goose`, 798 lines, called from `two_byte` for a third of the
+two-byte opcodes on the i686 and for nothing else: the XMM registers as two words each, the
+MMX registers as the FPU registers' mantissas, the packed integer instructions once for
+both (a word at a time), the moves, shuffles and unpacks, conversions, single and double
+arithmetic and comparison, FXSAVE and FXRSTOR, LDMXCSR and STMXCSR. CPUID's leaf 1 says
+MMX, FXSR, SSE and SSE2. Not built: SSE3 and later (CPUID does not say them), MASKMOVQ,
+exceptions and MXCSR's rounding mode.
+
+**Against rustx86: 306 cases in eleven trace tests (`v_sse01` to `v_sse11`), written by
+`tools/gen_sse_tests.py`; all the same, line for line.** Each case leaves its result in
+XMM0 or MM0 and loads it into four registers, which the trace shows. On the first run 299
+of 312 cases agreed. Of the rest, one was g86m's:
+
+- **Floats that are not numbers.** The smaller of a number and a NaN came out as the number
+  in three lanes of four, where the chip gives the second operand. The comparison was
+  written as `if a < b { a } else { b }`, which is the chip's rule only if a comparison
+  with a NaN is false, and the compiled code did not keep to that. Arithmetic on singles
+  and doubles now looks at the bits first (`far32`, `far64`): the chip's rules for which
+  operand comes out, and the "real indefinite" with its sign set for a result that is no
+  number, which on this host has its sign clear.
+
+**And five were rustx86's**, where g86m does what Intel's manual says. They are in the
+self-check `s_sse`, against the manual's values, and out of the trace tests:
+
+| Instruction | The manual, and g86m | rustx86 |
+|---|---|---|
+| CVTSS2SI, CVTSD2SI, CVTPS2DQ, CVTPD2DQ, CVTPS2PI, CVTPD2PI | round to nearest, a half to the even number: -3.75 gives -4 | cut off: -3 |
+| MOVHLPS | the source's high half | its low half |
+| FNSTENV in 16-bit code | fourteen bytes, the tags at byte 4 | twenty-eight, the tags at byte 8 |
+| The square root of a negative number, 0 / 0 | FFC00000h, the sign set | 7FC00000h, the host's |
+| MINPS and MAXPS with a NaN | the second operand | the number |
+
+**Twenty-one wrong builds, each caught**; four passed at first (the smaller and the larger
+with the operands' order turned, the abridged tags of FXSAVE inverted, an MMX register's
+exponent, the stack's top after an MMX instruction), and got a case each.
+
+**Besides.** `tools/oracle/trace32.rs` was copied into the rustx86 checkout and built
+there, as `tools/difftest.sh` says to; the copy is an untracked file in that repository.
