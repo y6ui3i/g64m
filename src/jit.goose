@@ -1580,7 +1580,7 @@ fn jit_blocks() -> bool {
     let pbase: i64 = cpu.base[CS] - (code_page << 12) + code_phys;
     // Where the code segment's limit cuts into this page, a chain could run past what the
     // run may execute: there, one block at a time, each checked here.
-    let whole = run_pmax == code_phys + 0xFF0;
+    let whole = run_pmax == code_phys + 0xFFF;
     // The far way goes to a page that is whole inside the code segment's limit, as a run does
     // (exec_short): the instruction pointer the page begins at is at most the limit less FFFh.
     let lim = cpu.limit[CS];

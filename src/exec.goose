@@ -39,9 +39,10 @@ var m_rm: u8 = 0;
 // The code segment decides the default operand and address size, and the width of EIP.
 inline fn code32() -> bool { return cpu.attr[CS] & A_BIG != 0; }
 
-// An instruction that has an entry in the decode cache (dc_cur, further down) has had its next
-// 16 bytes checked: they are in the translated page, inside the segment and in RAM. Its fetches
-// are plain loads.
+// An instruction that has an entry in the decode cache (dc_cur, further down) has had its
+// bytes checked: they are in the translated page (its next 16, or in the page's last fifteen
+// bytes the instruction's own, E088), inside the segment and in RAM. Its fetches are plain
+// loads.
 inline fn fetch8() -> u8 {
     if dc_cur >= 0 {
         let q: i64 = code_phys | (cpu.base[CS] + cpu.ip) & 0xFFF;
@@ -1136,6 +1137,114 @@ inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32
 inline fn raw32(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFFFFFFFF) as! u32; }
 inline fn sext8(v: u32) -> u32 { return ((v as! u8) as! i8) as! u32; }
 
+// How many bytes the operand that begins with the ModRM byte at raw's byte i takes, with
+// 32-bit addressing: that byte, a SIB byte, a displacement.
+fn modrm_len(raw: u64, i: u32) -> u32 {
+    let m = raw8(raw, i);
+    let md = m >> 6;
+    if md == 3 { return 1; }
+    var n: u32 = 1;
+    if m & 7 == 4 {
+        n = 2;
+        if md == 0 && raw8(raw, i + 1) & 7 == 5 { n = 6; }
+    } else if m & 7 == 5 && md == 0 { n = 5; }
+    if md == 1 { n += 1; } else if md == 2 { n += 4; }
+    return n;
+}
+
+// The length of an instruction from its first eight bytes, or 0 for "not known": pl is the
+// length of its prefixes and opcode byte, op that byte, osz the operand size. For 32-bit
+// addressing only. An instruction that begins in a page's last fifteen bytes gets an entry
+// in the decode cache when this says it ends in the page (E088), and so what is said here
+// must never be less than what the general path fetches; 0 costs only the entry. Every byte
+// looked at lies inside the length that comes back.
+fn ins_len(op: u8, raw: u64, pl: u32, osz: u8) -> u32 {
+    let iz: u32 = if osz == 16 { 2 } else { 4 };
+    if op == 0x0F {
+        let op2 = raw8(raw, pl);
+        let l = pl + 1;
+        if op2 >= 0x80 && op2 <= 0x8F { return l + iz; }
+        if (op2 >= 0x40 && op2 <= 0x4F) || (op2 >= 0x90 && op2 <= 0x9F) { return l + modrm_len(raw, l); }
+        match op2 {
+            0xA3, 0xAB, 0xB3, 0xBB, 0xA5, 0xAD, 0xAF, 0xB0, 0xB1, 0xB6, 0xB7, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1 => { return l + modrm_len(raw, l); },
+            0xA4, 0xAC, 0xBA => { return l + modrm_len(raw, l) + 1; },
+            0x00, 0x01, 0x02, 0x03, 0x1F, 0x20, 0x21, 0x22, 0x23, 0xC7 => { return l + modrm_len(raw, l); },
+            0x06, 0x08, 0x09, 0x0B, 0x30, 0x31, 0x32, 0x34, 0x35, 0xA0, 0xA1, 0xA2, 0xA8, 0xA9,
+            0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF => { return l; },
+            _ => { return 0; },
+        }
+    }
+    if op < 0x40 {
+        if op & 7 < 4 { return pl + modrm_len(raw, pl); }
+        if op & 7 == 4 { return pl + 1; }
+        if op & 7 == 5 { return pl + iz; }
+        return pl;
+    }
+    if op < 0x60 { return pl; }
+    match op >> 4 {
+        0x6 => {
+            match op {
+                0x68 => { return pl + iz; },
+                0x69 => { return pl + modrm_len(raw, pl) + iz; },
+                0x6A => { return pl + 1; },
+                0x6B => { return pl + modrm_len(raw, pl) + 1; },
+                _ => { return 0; },
+            }
+        },
+        0x7 => { return pl + 1; },
+        0x8 => {
+            if op == 0x81 { return pl + modrm_len(raw, pl) + iz; }
+            if op < 0x84 { return pl + modrm_len(raw, pl) + 1; }
+            return pl + modrm_len(raw, pl);
+        },
+        0x9 => {
+            if op == 0x9A { return 0; }
+            return pl;
+        },
+        0xA => {
+            if op < 0xA4 { return pl + 4; }
+            if op == 0xA8 { return pl + 1; }
+            if op == 0xA9 { return pl + iz; }
+            return pl;
+        },
+        0xB => {
+            if op < 0xB8 { return pl + 1; }
+            return pl + iz;
+        },
+        0xC => {
+            match op {
+                0xC0, 0xC1, 0xC6 => { return pl + modrm_len(raw, pl) + 1; },
+                0xC7 => { return pl + modrm_len(raw, pl) + iz; },
+                0xC2 => { return pl + 2; },
+                0xC4, 0xC5 => { return pl + modrm_len(raw, pl); },
+                0xCA => { return pl + 2; },
+                0xCD => { return pl + 1; },
+                0xC3, 0xC9, 0xCB, 0xCC, 0xCF => { return pl; },
+                _ => { return 0; },
+            }
+        },
+        0xD => {
+            if op < 0xD4 || op >= 0xD8 { return pl + modrm_len(raw, pl); }
+            return 0;
+        },
+        0xE => {
+            if op == 0xE8 || op == 0xE9 { return pl + iz; }
+            if op == 0xEB || op < 0xE8 { return pl + 1; }
+            if op >= 0xEC { return pl; }
+            return 0;
+        },
+        _ => {
+            match op {
+                0xF6 => { return pl + modrm_len(raw, pl) + (if raw8(raw, pl) >> 3 & 7 < 2 { 1 } else { 0 }); },
+                0xF7 => { return pl + modrm_len(raw, pl) + (if raw8(raw, pl) >> 3 & 7 < 2 { iz } else { 0 }); },
+                0xF4, 0xF5, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD => { return pl; },
+                0xFE, 0xFF => { return pl + modrm_len(raw, pl); },
+                _ => { return 0; },
+            }
+        },
+    }
+}
+
 // ADC and SBB read the carry: they keep the general arithmetic executor.
 inline fn carries(aop: u8) -> bool { return aop == 2 || aop == 3; }
 
@@ -1330,16 +1439,18 @@ fn classify(slot: i64, raw: u64) {
     var fd: u64 = 0;                         // its condition, and its offset in the upper half
     if fuse_kind(kind) != K_NONE && len <= 8 {
         // Is the next instruction a conditional jump with no prefix? Its bytes are in this
-        // page: an entry begins at least sixteen bytes before the page's end.
+        // page when the entry begins at least sixteen bytes before the page's end; nearer
+        // the end than that, the pair is made only if the jump ends in the page too.
         let r2 = code64(dc[slot].tag + len);
         let b0 = raw8(r2, 0);
         let b1 = raw8(r2, 1);
         var jo: u64 = 0;
         if b0 >= 0x70 && b0 <= 0x7F { jl = 2; fd = fuse_data((b0 & 15) as! u8); jo = sext8(b1); }
         else if b0 == 0x0F && b1 >= 0x80 && b1 <= 0x8F { jl = 6; fd = fuse_data((b1 & 15) as! u8); jo = raw32(r2, 2); }
+        if (dc[slot].tag & 0xFFF) + len + jl > 0x1000 { jl = 0; }
         if jl != 0 { kind = fuse_kind(kind); fd |= jo << 32; }
     }
-    if kind != K_NONE && len >= 1 && len <= 8 {
+    if kind != K_NONE && len >= 1 && len <= 8 && (dc[slot].tag & 0xFFF) + len <= 0x1000 {
         // The segment of the memory operand, resolved now: an override if there is one, else
         // SS for an address based on ESP or EBP, else DS.
         var sg: u32 = DS;
@@ -1850,14 +1961,15 @@ fn exec_short() {
         // code_ok says the whole page is in RAM; said again here as a test of the address
         // itself.
         if code_phys >= RAM_SIZE - 4096 { break; }
-        // A run stays on that page, off its last 15 bytes, and within the code segment's
-        // limit less 15. All three are one bound on the offset from the start of the page
+        // A run stays on that page (what has an entry in its last 15 bytes ends in the page,
+        // E088) and within the code segment's limit less 15. Both are one bound on the offset
+        // from the start of the page
         // (E030): the instruction pointer at the start of the page is ip_lo, and it rises
         // with the offset. A page on which it wraps, or that begins beyond the limit, is left
         // to the general path.
         let ip_lo = page_at - base;
         if ip_lo > ip_max || ip_lo > 0xFFFFF000 { break; }
-        var off_max: u32 = 0xFF0;
+        var off_max: u32 = 0xFFF;
         if ip_max - ip_lo < off_max { off_max = ip_max - ip_lo; }
         var moved = false;
         // Inside the page the run reckons in physical addresses, which is what an entry is
@@ -1889,7 +2001,7 @@ fn exec_short() {
                     if left <= 0 { break; }
                     continue;
                 }
-                // Off this page, or too near its end. If it is another page and the TLB has
+                // Off this page, or too near the segment's limit. If it is another page and the TLB has
                 // it, that is the page of code from here on, as the general path would make
                 // it, and the run starts over there. A TLB entry says the page is in RAM.
                 // Without one the general path translates it, and raises the page fault if
@@ -2003,7 +2115,10 @@ fn exec_general() -> bool {
         code_page = a >> 12;
         code_ok = code_phys < RAM_SIZE - 4096 && code_phys + 0xFFF <= phys_mask;
     }
-    let usable = dc_on && a >> 12 == code_page && code_ok && a & 0xFFF <= 0xFF0 && lim >= 15 && cpu.ip <= lim - 15
+    // In the page's last fifteen bytes an entry is there only for 32-bit code, and only for an
+    // instruction that ends in the page: the test is made when the entry is, below (E088).
+    let poff = a & 0xFFF;
+    let usable = dc_on && a >> 12 == code_page && code_ok && (poff <= 0xFF0 || c32) && lim >= 15 && cpu.ip <= lim - 15
         && (c32 || cpu.ip <= 0xFFF0);
     // An entry is found by the instruction's physical address. For 32-bit code the entry is
     // then good as it stands, because a store into its bytes would have emptied it (E044);
@@ -2074,7 +2189,14 @@ fn exec_general() -> bool {
         let plen = cpu.ip - dc_ip0;
         // No more than three prefixes: then the longest instruction that can follow still ends
         // within the 16 bytes that were checked, which the fetches of a cached instruction rely on.
-        if usable && plen <= 4 {
+        // And in the page's last fifteen bytes, only an instruction known to end in the page:
+        // its prefixes and opcode were fetched the long way just now, the rest will not be.
+        var fits = true;
+        if poff > 0xFF0 {
+            let il = if ins.asz32 && plen <= 4 { ins_len(op, raw, plen, ins.osz) } else { 0 };
+            fits = il != 0 && poff + il <= 0x1000;
+        }
+        if usable && plen <= 4 && fits {
             ins.op = op;
             ins.plen = plen as! u8;
             dc[slot].bytes = raw;

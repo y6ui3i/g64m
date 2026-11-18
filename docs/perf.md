@@ -30,13 +30,16 @@ of it is kept.
 
 ## The list
 
-Counts are of the stretch from `startx` to the desktop, in millions of trips.
+Counts are of the stretch from `startx` to the desktop, in millions of instructions that
+reach the general path. (Until E088 this column said "trips". It never was: several such
+instructions in a row share one trip. P2a took 14 million instructions off the general path
+and 1 million entries.)
 
-| # | Item | Trips now | Kept for x86_64 | State |
+| # | Item | On the general path | Kept for x86_64 | State |
 |---|---|---:|---|---|
 | P1 | Indirect CALL and JMP (FF /2, /4) end their block at the far way, as RET does | 12.5, and what follows each | the design | done, E087 |
 | P2 | Why instructions that have executors are on the general path | | | counted, E086 |
-| P2a | An instruction that begins in a page's last fifteen bytes gets no entry in the decode cache, ever | 17.6 | whole (the decode cache) | |
+| P2a | An instruction that begins in a page's last fifteen bytes gets an entry in the decode cache when it ends in the page | 17.6 | whole (the decode cache, and a function that tells an instruction's length) | done, E088 |
 | P2b | 16-bit operands (prefix 66) of `cmp`, `test`, `add` and the immediate groups: only MOV has 16-bit kinds | 16.2 | the design | |
 | P2c | First executions: the decode cache (131,072 slots) loses entries under X's amount of code | 6.8 | whole | |
 | P3 | CMOVcc | 6.4 | the design | done, E087 |
@@ -44,7 +47,7 @@ Counts are of the stretch from `startx` to the desktop, in millions of trips.
 | P5 | PUSHF and CLI in blocks (the kernel's "save the interrupt flag and turn it off") | 3.0 | the design | |
 | P6 | The strings with REP inside generated code | 4.9 | the design | |
 | P7 | The far way predicts: a RET goes back where its CALL was, which the block that called can leave word of | 119 arrivals, 30 host instructions each | the design and the stub | |
-| P8 | Count again. What an entry costs once the trips are fewer; whether MMX and SSE moves want a translation | | | |
+| P8 | Count again, and count trips this time: what ended each block that was left. What an entry costs once the trips are fewer; whether MMX and SSE moves want a translation | | | |
 
 ## How far
 
@@ -52,6 +55,7 @@ Counts are of the stretch from `startx` to the desktop, in millions of trips.
 |---|---:|---:|---:|
 | E085 (the count) | 90.0 million | 12.26 s | 250 million |
 | E087 (P1, P3) | 73.1 million | 11.20 s | 280 million |
+| E088 (P2a) | 72.1 million | 6.5% less than E087 in one sitting (10.96 s against 11.72) | 299 million, on E087's 280 |
 
 `--speed 4` wants 305 million.
 

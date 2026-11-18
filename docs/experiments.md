@@ -6173,3 +6173,97 @@ whose base is 1000h; CMOV on sixteen conditions from a register and from memory.
 first. A target loaded as sixteen bits is the same below 64 KB; and a target taken as an
 address where it is an instruction pointer is the same where the code segment's base is
 0, which it was in every self-check of the JIT's but `s_csbase`.
+
+## E088: Instructions in a page's last fifteen bytes get an entry (2026-11-19)
+
+P2a of `docs/perf.md`.
+
+- **Hypothesis**: An instruction that begins in a page's last fifteen bytes has no entry in
+  the decode cache because an entry's fetches are plain loads from the page, and nobody
+  knows before decoding whether the instruction ends in it. Most do end in it. With a
+  function that tells an instruction's length from its first bytes, such an instruction
+  gets an entry when it ends in the page, runs and blocks reach the page's last byte, and
+  the 17.6 million trips E086 counted for these go. **Generated code is entered 58
+  million times from `startx` to the desktop (73.1 now), the host takes less time for it,
+  and the interpreter without `--jit` is no slower.**
+- **What changed since last time**: E087 gave kinds to instructions that had none. This
+  gives entries to instructions that have kinds already; it changes the decode cache,
+  which the interpreter shares.
+- **Next move for each result**:
+  - Entries and time both fall, the interpreter the same → keep; P2b next (16-bit operands)
+  - Entries fall and the time does not → what an entry costs is the matter: P8's count
+    moves up before P2b
+  - Entries do not fall → E086's count named the wrong cause, or the length function says
+    "not known" for what is there: count the instructions that still begin in the tail by
+    opcode, and by whether they end in the page
+  - The interpreter is more than 1% slower on the Linux boot → not kept in this form; the
+    test goes where only a miss pays for it
+- **Cut-off**: The length function checked against what the general path fetches, on every
+  instruction of a Linux boot and of X's start (a counting copy); a self-check with
+  instructions that end at a page's last byte and that cross it; wrong builds; the suite;
+  the stretch timed three times each way.
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch for the time and its third for the entries:
+from `startx` to the desktop the host takes 10.96 seconds (11.72 before, in the same
+sitting; 6.5% less), and generated code is entered 72.1 million times (73.1), not the 58
+million the card said.** The interpreter without `--jit` is the same: 26.2 billion host
+cycles for the Linux boot before and after (three runs each), and 0.4% fewer host
+instructions.
+
+| Medians of three, one sitting | Entries | Instructions in blocks | The far way finds a block | Host |
+|---|---:|---:|---:|---:|
+| Boot to the prompt, before | 13.98 million | 1,453 million | | 2.92 s |
+| Boot to the prompt, after | 13.79 million | 1,455 million | | 2.88 s |
+| To the desktop, before | 87.11 million | 4,565 million | 156.8 million | 14.64 s |
+| To the desktop, after | 85.91 million | 4,582 million | 161.4 million | 13.84 s |
+
+The stretch from `startx` to the desktop is the difference of the two stages. (E087's
+table said 11.20 seconds for the same build that is 11.72 here: another sitting. Only
+numbers of one sitting are compared.)
+
+**The card's number was wrong, and so was the column it came from.** E086 counted
+*instructions* that reach the general path, by reason, and `docs/perf.md` wrote them down
+as *trips*. The 17.6 million were instructions; several in a row share one trip, since a
+block that stops before the page's end is left once and the general path then runs what is
+left of the page. What the change did is what the count says: about 14 million instructions
+left the general path (the tail's share of it is 3.2 million now, for the whole run, boot
+included), 16 million more are executed in blocks, the far way is arrived at 4.6 million
+times more (a block now runs to the page's end and goes on from there), and 1.2 million
+entries went. The time fell more than the entries because an instruction on the general
+path is dear whether or not a trip comes with it. The column in `docs/perf.md` is renamed,
+and P8's count is to be of trips by what ended the block, not of instructions.
+
+**What is left in the tail** (the whole run to the desktop): 1.9 million executions of
+instructions that cross into the next page, of which 1.08 million are a CALL (E8), and 1.3
+million of instructions with an entry and no kind, of which 1.26 million are IMUL by a
+constant (6B; P4).
+
+**What was built.** `ins_len` (`src/exec.goose`): the length of an instruction from its
+first eight bytes, for 32-bit addressing, or 0 for "not known" (MMX and SSE, far calls and
+jumps, ENTER, and what the count below did not meet). In a page's last fifteen bytes the
+general path makes an entry only for an instruction that `ins_len` says ends in the page;
+a run's bound in the page is its last byte (FFFh, was FF0h); `classify` makes no pair
+whose jump does not end in the page. 16-bit code is as before. The JIT needed nothing:
+a block that ends at the page's end leaves by the far way already (`jit_leave`).
+
+**The length function checked.** A counting copy compared what `ins_len` said with how far
+the general path fetched, for every instruction met a first time in a run to the desktop:
+57,318,755 the same, 54 where less was fetched (an instruction that faulted before its
+immediate), none where more was fetched, 47,801 not known (all MMX and SSE but `ins` with
+104). With `--jit`: 9,283,152, 41, none, 16,936.
+
+**Tests.** `s_pagetail`: a function of two dozen instructions copied so that it ends from 1
+byte to its own length past the end of a page, called twelve times at each place, with
+paging on and the next page elsewhere in RAM. The first version had no paging and seven of
+fourteen wrong builds passed it: without paging the page after in RAM is the page after,
+and a fetch of four bytes across the end reads the right bytes. Fourteen wrong builds now
+(a length short by an immediate, by a displacement, by a SIB byte; an entry for whatever is
+in the tail; the pair made regardless): thirteen caught, with `--jit` and without. The
+fourteenth takes out `classify`'s own test that the instruction ends in the page, which
+nothing can reach while the test at the entry's making stands; it is left in as the second
+line.
+
+`tools/difftest.sh` has 155 lines, all ok (`s_pagetail` is two of them, with the debug
+build and without; it is also among the self-checks run with `--jit`).
