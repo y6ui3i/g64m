@@ -1,1 +1,1 @@
-c_sources = ["console.c", "jit.c", "disk.c"];
+c_sources = ["console.c", "jit.c", "disk.c", "net.c"];

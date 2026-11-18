@@ -67,12 +67,17 @@ done
 # Self-checking tests, for what the oracle cannot judge. A test passes when the console says OK and nothing else.
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds|s_sse) cpu="--cpu i686" ;; *) cpu="" ;; esac
     # s_cmos waits a second of the guest's time, which is 4.8 million instructions.
     case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
     for exe in build/g86m-debug build/g86m; do
         # s_ide is given a disk of 2,048 empty sectors.
         case "$name" in s_ide) dd if=/dev/zero of=build/s_ide.img bs=512 count=2048 2>/dev/null; disk="--disk build/s_ide.img" ;; *) disk="" ;; esac
+        # s_net is given the network card, which needs libslirp on the host.
+        if [ "$name" = s_net ]; then
+            if ! "$exe" --net --max 1 "$bin" >/dev/null 2>&1; then echo "skip  $name ($(basename "$exe")): libslirp is not there"; continue; fi
+            disk="--net"
+        fi
         out=$("$exe" $cpu $disk --max $max "$bin" 2>/dev/null)
         if [ "$out" = "OK" ]; then
             echo "ok    $name ($(basename "$exe"))"
@@ -118,9 +123,13 @@ bad=0
 count=0
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds|s_sse) cpu="--cpu i686" ;; *) cpu="" ;; esac
     case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
     case "$name" in s_ide) dd if=/dev/zero of=build/s_ide.img bs=512 count=2048 2>/dev/null; disk="--disk build/s_ide.img" ;; *) disk="" ;; esac
+    if [ "$name" = s_net ]; then
+        if ! build/g86m --net --max 1 "$bin" >/dev/null 2>&1; then continue; fi
+        disk="--net"
+    fi
     out=$(build/g86m --jit $cpu $disk --max $max "$bin" 2>/dev/null)
     count=$((count + 1))
     if [ "$out" != "OK" ]; then
@@ -321,6 +330,26 @@ if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-disk ] && [ -f images/disk
     fi
 else
     echo "skip  linux on a disk (images/initramfs-disk and images/disk.img are not there; tools/images/make-disk.sh makes them)"
+fi
+
+# Linux on a network (M7): the kernel finds the card on PCI, busybox gets an address by DHCP
+# from libslirp, and the gateway answers a ping. All of that is inside this machine; a page
+# from outside is not asked for here, so that the suite does not depend on the world.
+if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-mini ] && build/g86m --net --max 1 build/s_net.bin >/dev/null 2>&1; then
+    out=$(build/g86m --jit --net --headless --max 20000000000 --initrd images/initramfs-mini \
+        --wait "~ # " --type "ifconfig eth0 | grep -c 'inet addr:10.0.2.15'\n" --wait "~ # " \
+        --type "ping -c 3 10.0.2.2 | grep -c '3 packets received'\n" --wait "~ # " \
+        images/vmlinuz-lts 2>"build/net.err" | tr -d '\r')
+    if [ "$(echo "$out" | grep -c '^1$')" = 2 ]; then
+        echo "ok    linux on a network (g86m): the card on PCI, an address by DHCP, the gateway pinged"
+    else
+        fail=1
+        echo "FAIL  linux on a network (g86m): no address, or no answer from the gateway"
+        echo "$out" | tail -8 | sed 's/^/    |/'
+        tail -1 "build/net.err" | sed 's/^/  stderr:   /'
+    fi
+else
+    echo "skip  linux on a network (libslirp or the images are not there)"
 fi
 
 # The interactive console, driven through a pseudo-terminal. It takes the images that are there.

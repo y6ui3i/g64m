@@ -15,6 +15,7 @@ import prot;
 import bios;
 import dev;
 import fpu;
+import sse;
 
 // ---- Decode state that lives for one instruction ----
 
@@ -704,6 +705,8 @@ fn bit_op(action: u8, bit: u32, from_register: bool) {
 
 fn two_byte() {
     let op = fetch8();
+    // MMX and SSE2 (sse.goose): a third of the two-byte opcodes, on the i686 only.
+    if i686 && sse_is(op) { sse_op(op); return; }
     match op >> 4 {
         0x0 => {
             match op {
@@ -919,9 +922,10 @@ fn two_byte() {
                         set_r32(CX, 0x6C65746E);
                     } else if leaf == 1 {
                         // Family 6, the P6. Only what is implemented is claimed: the FPU, the
-                        // timestamp counter, CMPXCHG8B and CMOV.
+                        // timestamp counter, CMPXCHG8B, CMOV, and (E077) MMX, FXSAVE and
+                        // FXRSTOR, SSE and SSE2.
                         set_r32(AX, 0x0633);
-                        set_r32(DX, 1 | 1 << 4 | 1 << 8 | 1 << 15);
+                        set_r32(DX, 1 | 1 << 4 | 1 << 8 | 1 << 15 | 1 << 23 | 1 << 24 | 1 << 25 | 1 << 26);
                     }
                 },
                 _ => { cpu.ip = saved.ip; stop("unimplemented opcode 0F", op); },

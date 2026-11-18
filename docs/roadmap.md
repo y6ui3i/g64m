@@ -7,7 +7,7 @@ desktop that can browse the web, still as an i686, and only then to x86_64.
 | Stage | Goal | Done when |
 |---|---|---|
 | M6 | A clock and a disk (done) | `date` in the guest shows the host's date; a root file system on an IDE disk is mounted and written |
-| M7 | A network | `wget https://...` from the serial console fetches a page through the host |
+| M7 | A network (done) | `wget https://...` from the serial console fetches a page through the host |
 | M8 | A screen | X (Xfbdev, twm, xterm) comes up in a window on the host, with keyboard and mouse |
 | M9 | A browser | NetSurf or Dillo shows a page fetched over HTTPS |
 | M10 | x86_64 | A 64-bit Linux kernel boots to a shell |
@@ -52,6 +52,10 @@ devices on a CPU that is still moving.
   taken. macOS's vmnet was not chosen: it needs root or an entitlement.
 - Before the screen because it can be checked from the serial console, with a script, and
   needs no window.
+- Done (E076, E077). Two things were not as written above. The kernel has no ISA NE2000
+  driver, only `ne2k-pci`, so `--net` brings a PCI bus with it. And HTTPS stopped at SSE2,
+  which the guest's OpenSSL is compiled for: MMX and SSE2 were brought forward from M10,
+  and checked against rustx86 (306 cases).
 
 ### M8: a screen
 
@@ -73,7 +77,8 @@ devices on a CPU that is still moving.
 ### M10: x86_64
 
 - **SSE2** is required: the x86_64 ABI passes floats in XMM registers, so no 64-bit user space
-  runs without it. This is likely the largest part.
+  runs without it. This is likely the largest part. (Done for the i686 in E077, for M7; the
+  64-bit forms and XMM8 to XMM15 are what is left of it here.)
 - **Long mode**: REX prefixes and a 64-bit operand size through the ALU, RIP-relative
   addressing, four-level paging, EFER, STAR/LSTAR, FS/GS base and SWAPGS, SYSCALL/SYSRET, the
   64-bit IDT and TSS.

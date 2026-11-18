@@ -5532,3 +5532,161 @@ with the JIT and reads back without it.
 **Not done.** DMA; the slave; an ATAPI CD-ROM (which is what rustx86's `ide.rs` is); a
 clean shutdown from the guest (`poweroff` has nothing to turn off); the BIOS's INT 13h on
 this disk, so DOS does not see it.
+
+## E076: A network (M7) (2026-11-18)
+
+- **Hypothesis**: With a network card Linux drives and a user-mode network stack on the
+  host behind it, **`wget https://...` typed at the serial console fetches a page through
+  the host**, without root. The parts: the card (a DP8390, as rustx86's `dp8390.rs`), the
+  host side (libslirp, the library QEMU uses, as `docs/roadmap.md` chose), and DHCP and
+  TLS in the guest (busybox's `udhcpc` and `ssl_client`, which `images/initramfs-mini`
+  has).
+- **What changed since last time**: Two things are not as the roadmap had them.
+  1. The roadmap chose an NE2000 on the ISA bus and put PCI off "until there is a reason".
+     The kernel (Alpine's) has no ISA NE2000 driver at all, built in or as a module; it
+     has `ne2k-pci`, the same chip on PCI, which is what rustx86 gives it. So there is a
+     reason: configuration mechanism 1 (ports CF8h and CFCh), a host bridge and one card,
+     as rustx86's `bus/pci`. Only with `--net`: a machine without it has no PCI, and boots
+     as it did.
+  2. libslirp is reached with `dlopen` when `--net` is given, not linked: Goose's build
+     file has no key for a library's directory, and this way a build needs nothing new and
+     only `--net` needs the library. The C (`src/net.c`) declares the two structures of
+     libslirp's interface it fills in.
+  libslirp is the project's third new technology, after Goose and the JIT.
+- **Next move for each result**:
+  - A page fetched over HTTPS → keep; M7 is done
+  - The card is found and DHCP gets no answer → frames counted each way at the card and at
+    libslirp, to see which side loses them
+  - The driver does not find the card → what the kernel says of PCI, and rustx86's values
+    for the same registers
+  - Names resolve and TLS fails → the guest's date (E074) and the certificates in the
+    initramfs, before the network
+- **Cut-off**: A scripted session: DHCP, `ping` of the gateway, `wget` of a page over HTTP
+  and over HTTPS, with the page's text checked. It needs the network, so the suite skips
+  it when the host has none or libslirp is not there.
+
+### Result
+
+2026-11-18. **Half kept: the network is there and a page comes over HTTP; over HTTPS it
+does not, for a reason that is not the network's. M7 is not done.** `tools/difftest.sh` has
+133 lines, all ok.
+
+```
+pci 0000:00:03.0: [10ec:8029] type 00 class 0x020000 conventional PCI endpoint
+ne2k-pci 0000:00:03.0 eth0: RealTek RTL-8029(AS) found at 0xc000, IRQ 3, 52:54:00:12:34:56.
+inet addr:10.0.2.15  Bcast:10.0.2.255  Mask:255.255.255.0
+2 packets transmitted, 2 packets received, 0% packet loss       (ping 10.0.2.2)
+Name: example.com  Address: 104.20.23.154                        (nslookup, by 10.0.2.3)
+<title>Example Domain</title>                                    (wget http://example.com/)
+g86m: unimplemented opcode 0F 7e at 0073:b7be1505               (wget https://example.com/)
+```
+
+- The card, PCI, DHCP, ARP, ICMP, DNS and TCP all worked the first time they were run,
+  with `images/initramfs-mini` as it is (it has `8390`, `ne2k-pci` and `af_packet`).
+- **HTTPS stops at an SSE2 instruction.** The opcode is `F3 0F 7E`, `movq (%eax), %xmm0`,
+  in `CRYPTO_atomic_load` of the guest's `libcrypto.so.3`: not hand-written code behind a
+  test of CPUID (g86m claims neither MMX nor SSE2), but what the C compiler made of a
+  64-bit load. Alpine's 32-bit OpenSSL is compiled for a CPU with SSE2: 265 of its
+  functions use XMM registers (10,780 instructions), and it has 2,948 MMX instructions
+  besides. rustx86 met the same wall and has both (`sse.rs`, 1,163 lines; `mmx.rs`, 478).
+  So the card's fourth branch is not what happened: the date and the certificates were
+  never reached.
+- By the roadmap SSE2 is M10's ("likely the largest part"), and M9's browser, taken from
+  the same distribution, will want it as well. The two ways on: MMX and SSE2 in the
+  interpreter now (with FXSAVE and FXRSTOR, CR4's OSFXSR, and CPUID saying so, for the
+  kernel to let user code use them), or a TLS client for the guest built without SSE2.
+  That is a choice about the roadmap, and it is the owner's.
+
+**What was built.** `src/net.c` (190 lines): libslirp opened with `dlopen`, its
+configuration and callbacks, a queue of frames for the guest, its timers, and one
+`poll()` without waiting each time the run loop asks. In `dev.goose`: configuration
+mechanism 1 with a host bridge and the card, whose first base address can be sized and
+moved; and the DP8390, after rustx86's. The run loop looks at the network every 40,000
+instructions (half a millisecond of guest time) and when the guest is halted; in a run
+that nothing else paces (scripted, headless), the time the guest spent halted is slept,
+because the other end of the network runs on the host's time. With no `--net` there is no
+PCI and no card: the plain boot's count is as E074 left it.
+
+**Tests.** `s_net` on the bare ports: the two PCI devices and an empty one, the size of
+the card's ports, the ports off and on, the address PROM, a byte in the chip's memory.
+The suite's Linux session gets an address by DHCP and pings the gateway, all inside the
+machine; nothing from outside is fetched there. HTTP and DNS were run by hand, against
+example.com. No wrong builds were made for this one yet.
+
+## E077: MMX and SSE2, for the guest's TLS (2026-11-18)
+
+E076 left M7 one step short: HTTPS stops at an SSE2 instruction the C compiler put into the
+guest's OpenSSL. The owner chose to bring MMX and SSE2 forward from M10.
+
+- **Hypothesis**: The instructions that the guest's `libcrypto`, `libssl`, `ssl_client`,
+  musl and busybox contain and that a CPU without SSSE3, AES or AVX is ever sent to (a
+  count over their disassembly: moves, the packed integer arithmetic, logic, shifts,
+  shuffles and unpacks, a few conversions and scalar doubles), with FXSAVE and FXRSTOR,
+  LDMXCSR and STMXCSR, and CPUID saying MMX, FXSR, SSE and SSE2, are enough: **the kernel
+  turns the registers on, and `wget https://example.com/` prints the page's title.**
+- **What changed since last time**: A new part of the CPU, on the general path only: the
+  short executors and the JIT do not know these instructions and need not. The XMM
+  registers are two 64-bit words each; the MMX registers are the FPU registers' mantissas,
+  as on the chip, which `fp_mant` already holds. Floats are the host's, as rustx86's are:
+  no exception is raised and MXCSR's rounding mode is not obeyed.
+- **Next move for each result**:
+  - The title printed → keep; M7 is done
+  - The kernel does not boot once CPUID says FXSR → FXSAVE's and FXRSTOR's layout against
+    the manual and against rustx86, before any other instruction
+  - TLS fails with a bad record or a bad signature → an integer instruction is wrong: the
+    test of each against rustx86's trace, in the order of the count
+  - An opcode is still missing → it is added; the count was of what is there, not of what
+    runs
+- **Cut-off**: A trace test of the instructions against rustx86 (`v_sse`), the suite, the
+  boot's count with the new CPUID, `wget` over HTTPS by hand.
+
+### Result
+
+2026-11-18. **Kept: `wget https://example.com/` prints `<title>Example Domain</title>`, and
+`https://www.kernel.org/` comes whole (20,436 bytes). M7 is done.** `tools/difftest.sh` has
+146 lines, all ok.
+
+- The kernel says `x86/fpu: x87 FPU will use FXSAVE`, and `/proc/cpuinfo` has `fxsr mmx
+  sse sse2`. The page came the first time the new instructions were run; nothing in the
+  card's second, third or fourth branch happened.
+- The plain Linux boot's count is 1,492,980,001 (1,492,760,001 before CPUID said more), the
+  same with `--jit` and without.
+
+**What was built.** `src/sse.goose`, 798 lines, called from `two_byte` for a third of the
+two-byte opcodes on the i686 and for nothing else: the XMM registers as two words each, the
+MMX registers as the FPU registers' mantissas, the packed integer instructions once for
+both (a word at a time), the moves, shuffles and unpacks, conversions, single and double
+arithmetic and comparison, FXSAVE and FXRSTOR, LDMXCSR and STMXCSR. CPUID's leaf 1 says
+MMX, FXSR, SSE and SSE2. Not built: SSE3 and later (CPUID does not say them), MASKMOVQ,
+exceptions and MXCSR's rounding mode.
+
+**Against rustx86: 306 cases in eleven trace tests (`v_sse01` to `v_sse11`), written by
+`tools/gen_sse_tests.py`; all the same, line for line.** Each case leaves its result in
+XMM0 or MM0 and loads it into four registers, which the trace shows. On the first run 299
+of 312 cases agreed. Of the rest, one was g86m's:
+
+- **Floats that are not numbers.** The smaller of a number and a NaN came out as the number
+  in three lanes of four, where the chip gives the second operand. The comparison was
+  written as `if a < b { a } else { b }`, which is the chip's rule only if a comparison
+  with a NaN is false, and the compiled code did not keep to that. Arithmetic on singles
+  and doubles now looks at the bits first (`far32`, `far64`): the chip's rules for which
+  operand comes out, and the "real indefinite" with its sign set for a result that is no
+  number, which on this host has its sign clear.
+
+**And five were rustx86's**, where g86m does what Intel's manual says. They are in the
+self-check `s_sse`, against the manual's values, and out of the trace tests:
+
+| Instruction | The manual, and g86m | rustx86 |
+|---|---|---|
+| CVTSS2SI, CVTSD2SI, CVTPS2DQ, CVTPD2DQ, CVTPS2PI, CVTPD2PI | round to nearest, a half to the even number: -3.75 gives -4 | cut off: -3 |
+| MOVHLPS | the source's high half | its low half |
+| FNSTENV in 16-bit code | fourteen bytes, the tags at byte 4 | twenty-eight, the tags at byte 8 |
+| The square root of a negative number, 0 / 0 | FFC00000h, the sign set | 7FC00000h, the host's |
+| MINPS and MAXPS with a NaN | the second operand | the number |
+
+**Twenty-one wrong builds, each caught**; four passed at first (the smaller and the larger
+with the operands' order turned, the abridged tags of FXSAVE inverted, an MMX register's
+exponent, the stack's top after an MMX instruction), and got a case each.
+
+**Besides.** `tools/oracle/trace32.rs` was copied into the rustx86 checkout and built
+there, as `tools/difftest.sh` says to; the copy is an untracked file in that repository.

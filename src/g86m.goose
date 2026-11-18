@@ -31,6 +31,8 @@
 //   --initrd FILE  the initramfs for a Linux kernel
 //   --append TEXT  the Linux kernel command line (default: console=ttyS0)
 //   --disk FILE    the image of an IDE disk, which the guest reads and writes in place
+//   --net          a network card (an NE2000 on PCI) behind which the host answers as a gateway,
+//                  a DHCP server and a name server, and connects for the guest (libslirp)
 //   --rtc WHEN     what the guest's clock starts at: host, or seconds since 1970. Without it,
 //                  the host's time in a terminal and 2026-01-01 in a scripted or headless run
 //
@@ -197,10 +199,20 @@ var trace = false;
 var trace_after = -1;     // start tracing at this virtual time; -1 for never
 var scripted = false;
 var next_poll = 0;
+let NET_EVERY = 40000;       // instructions between looks at the network: half a millisecond of guest time
+var net_next = 0;
+var net_pace = false;        // nothing else paces this run: the network's looks sleep off the idle time
 
 // Runs the machine until virtual time reaches limit, or it stops, or the script finishes.
 fn run_until(limit: i64) -> i64 {
     while vtime < limit {
+        if net_on && vtime >= net_next {
+            // The network is the host's, and runs on the host's time: where nothing else
+            // keeps the guest to it (net_pace), the time the guest spent halted is slept.
+            net_tick();
+            if net_pace { pace_idle(); }
+            net_next = vtime + NET_EVERY;
+        }
         if cpu.halted {
             if cpu.fault || !flag(IF) { return RUN_STOPPED; }
             if !irq_line {
@@ -219,6 +231,7 @@ fn run_until(limit: i64) -> i64 {
         var stop_at = limit;
         if timer_on && timer_at < stop_at { stop_at = timer_at; }
         if scripted && next_poll < stop_at { stop_at = next_poll; }
+        if net_on && net_next < stop_at { stop_at = net_next; }
         if trace || trace_after >= 0 { stop_at = vtime + 1; }
         replan = false;
         chain_until = stop_at;
@@ -364,6 +377,12 @@ fn main() {
             ide_sectors = disk_open(a[i]);
             if ide_sectors < 1 { write_stderr("g86m: cannot open the disk image, or it has no sector\n"); exit(2); }
         }
+        else if a[i] == "--net" {
+            if net_open() != 0 { write_stderr("g86m: --net needs libslirp, which was not found (brew install libslirp)\n"); exit(2); }
+            net_on = true;
+            pci_setup();
+            ne_setup();
+        }
         else if a[i] == "--rtc" && i + 1 < a.len {
             i++;
             if a[i] == "host" { rtc_arg = 1; }
@@ -475,6 +494,7 @@ fn main() {
     // The clock starts at the host's time where someone is watching; elsewhere at a fixed
     // one, so that a run is the same run every time.
     if rtc_arg == 1 || (rtc_arg == 0 && (interactive || serial_console)) { rtc_base = con_time(); }
+    net_pace = net_on && !interactive && !serial_console;
     if serial_console {
         write_stdout("g86m: Ctrl-] to quit\r\n");
         flush_stdout();
@@ -517,6 +537,7 @@ fn main() {
         for code in post_trail { format(stats, " "); format_int(stats, code, 16, 2, '0'); }
         format(stats, " com ", com_out.len, " bytes");
     }
+    if net_on { format(stats, " net ", ne_sent, " sent, ", ne_got, " received"); }
     if ide_sectors > 0 { format(stats, " disk ", ide_reads, " read, ", ide_writes, " written"); }
     if jit_on { format(stats, " jit ", jit_blocks_made, " blocks, ", jit_ran, " instructions, ", jit_calls, " entries, ", jit_links, " links, ", jit_ctx[1], " far, ", jit_used, " bytes, ", jit_flushes, " flushes"); }
     format(stats, "\n");
