@@ -30,6 +30,8 @@
 //   --com FILE     write what the guest sent to COM1 to FILE when the run ends
 //   --initrd FILE  the initramfs for a Linux kernel
 //   --append TEXT  the Linux kernel command line (default: console=ttyS0)
+//   --rtc WHEN     what the guest's clock starts at: host, or seconds since 1970. Without it,
+//                  the host's time in a terminal and 2026-01-01 in a scripted or headless run
 //
 // Script steps run in the order given, and the run ends when the last one is done.
 
@@ -331,6 +333,7 @@ fn main() {
     var dump_arg = 0;
     var com_arg = 0;
     var cpu_arg = 0;
+    var rtc_arg = 0;             // 1 --rtc host, 2 --rtc with a number
     var initrd_arg = 0;
     var append_arg = 0;
     var max = 20000000000;
@@ -355,6 +358,14 @@ fn main() {
         }
         else if a[i] == "--unpaced" { paced_arg = 2; }
         else if a[i] == "--cpu" && i + 1 < a.len { i++; cpu_arg = i; }
+        else if a[i] == "--rtc" && i + 1 < a.len {
+            i++;
+            if a[i] == "host" { rtc_arg = 1; }
+            else {
+                let n, ok = parse_int(a[i]);
+                if ok && n >= 0 { rtc_base = n; rtc_arg = 2; }
+            }
+        }
         else if a[i] == "--faults" { log_faults = true; }
         else if a[i] == "--no-decode-cache" { dc_on = false; }
         else if a[i] == "--jit" {
@@ -455,6 +466,9 @@ fn main() {
     }
     // A kernel started from a terminal gets that terminal as its serial console.
     var serial_console = kernel && !trace && !scripted && !headless && con_is_tty() != 0;
+    // The clock starts at the host's time where someone is watching; elsewhere at a fixed
+    // one, so that a run is the same run every time.
+    if rtc_arg == 1 || (rtc_arg == 0 && (interactive || serial_console)) { rtc_base = con_time(); }
     if serial_console {
         write_stdout("g86m: Ctrl-] to quit\r\n");
         flush_stdout();

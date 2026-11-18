@@ -48,6 +48,9 @@ about a fifth is the language) and gives the reasons behind the [roadmap](docs/r
 | M3 | FreeDOS to the `A:\>` prompt | done (the installer was declined, not run) |
 | M4 | 386 protected mode and paging; pass test386 | done (no task switching) |
 | M5 | 32-bit Linux and busybox | done (no disk, no network, no clock chip) |
+| M6 | A clock and a disk | the clock is done (E074); the disk is next |
+
+What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M6 | A clock (CMOS/RTC) and an IDE disk | planned |
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
@@ -148,6 +151,11 @@ clock falls behind (a faster guest also spins more instructions in its own delay
 boot is more work). `--speed` changes how many instructions run between two timer ticks, so a
 run's instruction count is its own for each speed; the tests use the default.
 
+The guest has a clock (CMOS, ports 70h and 71h), which runs on guest time. Started from a
+terminal it begins at the host's time, so `date` in the guest shows today's date in UTC; in a
+scripted or headless run it begins at 2026-01-01, so that such a run is the same every time.
+`--rtc host` and `--rtc SECONDS` (since 1970) say otherwise.
+
 `--unpaced` is the other way to stop waiting: real time is then spent only on the guest time that
 passes while the machine is halted, so the boot takes 7.5 seconds with `--jit` at the default
 speed and `sleep 3` still takes three, but the guest's clock runs ahead of the wall while it
@@ -178,7 +186,7 @@ To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 | [src/exec.goose](src/exec.goose) | Instruction decode and execution; the cache of decoded instructions |
 | [src/fpu.goose](src/fpu.goose) | The x87 FPU of the i686 machine |
 | [src/bios.goose](src/bios.goose) | Power-on setup and the BIOS services the emulator performs: screen, disk, keyboard, time |
-| [src/dev.goose](src/dev.goose) | Interrupt controllers, timer, keyboard controller, I/O port dispatch |
+| [src/dev.goose](src/dev.goose) | Interrupt controllers, timer, keyboard controller, CMOS clock, I/O port dispatch |
 | [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs) |
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |

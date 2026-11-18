@@ -68,8 +68,10 @@ done
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
     case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    # s_cmos waits a second of the guest's time, which is 4.8 million instructions.
+    case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
     for exe in build/g86m-debug build/g86m; do
-        out=$("$exe" $cpu --max 2000000 "$bin" 2>/dev/null)
+        out=$("$exe" $cpu --max $max "$bin" 2>/dev/null)
         if [ "$out" = "OK" ]; then
             echo "ok    $name ($(basename "$exe"))"
         else
@@ -115,7 +117,8 @@ count=0
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
     case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds) cpu="--cpu i686" ;; *) cpu="" ;; esac
-    out=$(build/g86m --jit $cpu --max 2000000 "$bin" 2>/dev/null)
+    case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
+    out=$(build/g86m --jit $cpu --max $max "$bin" 2>/dev/null)
     count=$((count + 1))
     if [ "$out" != "OK" ]; then
         bad=$((bad + 1))
@@ -269,12 +272,15 @@ if [ -f images/vmlinuz-lts ] && [ -f images/initramfs-mini ]; then
         --type "printf '%g %e' 0.1 12345.678; echo\n" --wait "~ # " \
         --type "awk 'BEGIN{print sqrt(2), atan2(1,1)*4, int(-3.7)}'\n" --wait "~ # " \
         --type "a=\$(cut -d. -f1 /proc/uptime); sleep 3; b=\$(cut -d. -f1 /proc/uptime); echo slept-\$((b-a))\n" --wait "~ # " \
+        --type "date +%F\n" --wait "~ # " \
+        --type "date -s '2031-02-28 23:59:50' >/dev/null; hwclock -w; sleep 12; hwclock | cut -c1-10\n" --wait "~ # " \
         images/vmlinuz-lts 2>"build/linux.err" | tr -d '\r')
     status=$?
     if echo "$out" | grep -q "^i686$" && echo "$out" | grep -q "^3\.000000$" \
         && echo "$out" | grep -q "^0\.1 1\.234568e+04$" \
-        && echo "$out" | grep -q "^1\.41421 3\.14159 -3$" && echo "$out" | grep -Eq "^slept-[34]$"; then
-        echo "ok    linux shell (g86m): $(echo "$out" | grep -c '') lines; uname, printf %f %g %e, awk, sleep 3"
+        && echo "$out" | grep -q "^1\.41421 3\.14159 -3$" && echo "$out" | grep -Eq "^slept-[34]$" \
+        && echo "$out" | grep -q "^2026-01-01$" && echo "$out" | grep -q "^Sat Mar  1$"; then
+        echo "ok    linux shell (g86m): $(echo "$out" | grep -c '') lines; uname, printf %f %g %e, awk, sleep 3, the clock read and set"
     else
         fail=1
         echo "FAIL  linux shell (g86m): the session did not give the expected answers"

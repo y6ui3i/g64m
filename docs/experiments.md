@@ -5399,3 +5399,58 @@ were wrong themselves (register 31 is the stack pointer in a comparison with a c
 Since CLD is now translated, the earlier self-checks' blocks no longer begin after it: the
 wrong builds of E069 to E072 were run again, and one case of `s_jitdead` (flags seen after
 an instruction with no executor) needed another such instruction, XCHG having got a kind.
+
+## E074: A clock (M6, first half) (2026-11-18)
+
+The first stage of `docs/roadmap.md` after M5.
+
+- **Hypothesis**: Linux reads the time of day once, from the CMOS clock at ports 70h and
+  71h, where g86m answers FFh. With an MC146818 as rustx86 has it (`cmos.rs`: the status
+  registers, the time made from a start time and the guest's own time, in BCD), **`date` in
+  the guest shows the start time plus what the guest has run: the host's date in the
+  console, and a fixed one (2026-01-01, rustx86's) in a scripted or headless run, which
+  the tests compare and which has to be the same every time.**
+- **What changed since last time**: Nothing was there. The clock runs on guest time
+  (instructions, as the timer does), not on the host's: a second of it is a second of the
+  PIT's.
+- **Next move for each result**:
+  - `date` right both ways, the suite passes → keep; the boot's instruction count is a new
+    one (the kernel now finds a clock), recorded here; then the disk
+  - The kernel waits on the clock (the update-in-progress bit, an interrupt it wants) →
+    read what it does in `drivers/rtc/rtc-mc146818-lib.c` and give it that, no more
+  - ELKS or FreeDOS sessions change → compare with rustx86, which has the same chip there
+- **Cut-off**: `date` in a scripted run against the fixed start; one run in a terminal by
+  hand for the host's; the suite.
+
+### Result
+
+2026-11-18. **Kept: `date` in the guest shows the clock's start plus the guest's own
+time.** `tools/difftest.sh` has 127 lines, all ok.
+
+- A scripted boot: `Thu Jan  1 00:00:19 UTC 2026` at the first prompt (the boot is 19
+  seconds of guest time), and the kernel says `rtc_cmos rtc_cmos: registered as rtc0` and
+  `setting system clock to 2026-01-01T00:00:11 UTC`.
+- `--rtc host` in a scripted boot, and no option in a pseudo-terminal: the host's date.
+  Under `--unpaced` the guest was 17 seconds ahead of the host at the prompt, which is
+  what `--unpaced` is: the guest's time runs ahead of the wall while it computes.
+- Set from the guest: `date -s '2031-02-28 23:59:50'; hwclock -w; sleep 15; hwclock` gives
+  `Sat Mar  1 00:00:05 2031`. `--rtc 951868790` (ten seconds before the end of a leap day
+  in 2000) reads `Wed Mar  1` after the boot.
+- **The Linux boot's count is a new one: 1,492,760,001 instructions to the first prompt**
+  (1,651,240,001 without a clock), the same with `--jit` and without. Timings from before
+  this card are not to be compared with timings after it.
+- ELKS and FreeDOS sessions pass as they were. The BIOS's time and date services (INT 1Ah,
+  AH 02h and 04h), which answered a constant, read the same clock.
+
+**What was built.** In `dev.goose`: 128 bytes of CMOS memory, an index, and the start
+time; the clock's registers are made when read, from the start time plus the instruction
+count over what a second of the timer is, by the days-to-date arithmetic rustx86 uses.
+A write to a clock register moves the start time so that the field reads back as written.
+No alarm, no interrupt, no update-in-progress bit; Linux 6.18 asks for none of them to
+boot and to run `hwclock`. `--rtc host` or `--rtc SECONDS` sets the start; without it, the
+host's time where a terminal is attached and 2026-01-01 elsewhere.
+
+**Tests.** `s_cmos`: the status registers, the start date in BCD and in binary, a date set
+just before a leap day ends and read back, and the roll into March after a second of the
+guest's time. The Linux session in `tools/difftest.sh` reads the date and sets the clock.
+No wrong builds were made for this one.

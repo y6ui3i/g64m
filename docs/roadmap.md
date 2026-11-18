@@ -32,6 +32,8 @@ devices on a CPU that is still moving.
 
 - **CMOS/RTC** (ports 70h and 71h), reading the host's time. HTTPS checks a certificate's dates,
   so M7 fails without it.
+  Done (E074): the clock starts at the host's time in a terminal and at a fixed date in a
+  scripted run, and runs on guest time.
 - **IDE** (PIO first), backed by an image file. X and a browser do not fit well in an
   initramfs, and a disk that is written lets the guest keep what it was given.
 - Oracle: rustx86's `cmos.rs` and `ide.rs`; Linux's own probing of both.

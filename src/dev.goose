@@ -380,6 +380,112 @@ fn com_write(reg: u16, v: u8) {
     }
 }
 
+// ---- CMOS memory and the clock (MC146818, ports 70h and 71h) ----
+//
+// A register number is written to port 70h and the register read or written at 71h. The
+// clock's registers are not stored: they are made, when read, from the time the clock was
+// started at and the guest's own time since, which is the instruction count as for the
+// timer. So the clock is as repeatable as everything else; the time it starts at is an
+// input (a fixed one unless the command line or a terminal says otherwise; see main).
+// There is no alarm, no periodic interrupt, and the update-in-progress bit is never set.
+
+var cmos: u8[128] = [0; 128];
+var cmos_index: u8 = 0;
+var cmos_ready = false;
+var pad_cmos: u8[6] = [0; 6];
+var rtc_base: i64 = 1767225600;      // 2026-01-01 00:00:00 UTC, as rustx86 has it
+
+// Seconds since 1970 on the guest's clock.
+fn rtc_now() -> i64 { return rtc_base + vtime / (tick_insns * 1193182); }
+
+// The clock's fields for a count of seconds since 1970: second, minute, hour, day of the
+// week (1 is Sunday), day, month, year. (The days to a date by Howard Hinnant's
+// civil_from_days.)
+fn rtc_fields(s: i64) -> i64[7] {
+    let days = s / 86400;
+    let rem = s % 86400;
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (if m <= 2 { 1 } else { 0 });
+    return [rem % 60, rem % 3600 / 60, rem / 3600, (days + 4) % 7 + 1, d, m, y];
+}
+
+// And back: seconds since 1970 for a date and a time of day.
+fn rtc_seconds(f: i64[7]) -> i64 {
+    let m = f[5];
+    let y = if m <= 2 { f[6] - 1 } else { f[6] };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + f[4] - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (era * 146097 + doe - 719468) * 86400 + f[2] * 3600 + f[1] * 60 + f[0];
+}
+
+// Which field a register is: -1 for a register that is not the clock's, 7 for the century.
+fn rtc_which(i: u8) -> i64 {
+    match i {
+        0x00 => { return 0; },
+        0x02 => { return 1; },
+        0x04 => { return 2; },
+        0x06 => { return 3; },
+        0x07 => { return 4; },
+        0x08 => { return 5; },
+        0x09 => { return 6; },
+        0x32 => { return 7; },
+        _ => { return -1; },
+    }
+}
+
+fn cmos_setup() {
+    cmos_ready = true;
+    cmos[0x0A] = 0x26;               // status A: the divider; no update in progress
+    cmos[0x0B] = 0x02;               // status B: 24 hours, BCD
+    cmos[0x0D] = 0x80;               // status D: the battery is good
+    cmos[0x10] = 0x40;               // one 1.44 MB floppy drive
+    cmos[0x14] = 0x21;               // equipment
+    cmos[0x15] = 0x80;               // 640 KB of base memory
+    cmos[0x16] = 0x02;
+}
+
+// A clock register as the guest reads it: BCD unless status B says binary.
+fn rtc_read(k: i64, bcd: bool) -> u8 {
+    let f = rtc_fields(rtc_now());
+    var v = if k == 7 { f[6] / 100 } else if k == 6 { f[6] % 100 } else { f[k] };
+    if bcd { v = v / 10 * 16 + v % 10; }
+    return v as! u8;
+}
+
+fn cmos_read() -> u8 {
+    if !cmos_ready { cmos_setup(); }
+    let k = rtc_which(cmos_index);
+    if k >= 0 { return rtc_read(k, cmos[0x0B] & 4 == 0); }
+    return cmos[cmos_index];
+}
+
+// The guest sets its clock by writing the fields one after another: each write moves the
+// start time so that the field reads back as written and the others as they were.
+fn cmos_write(v: u8) {
+    if !cmos_ready { cmos_setup(); }
+    let k = rtc_which(cmos_index);
+    if k < 0 { cmos[cmos_index] = v; return; }
+    var x: i64 = v;
+    if cmos[0x0B] & 4 == 0 { x = x / 16 * 10 + x % 16; }
+    let now = rtc_now();
+    var f = rtc_fields(now);
+    if k == 7 { f[6] = x * 100 + f[6] % 100; }
+    else if k == 6 { f[6] = f[6] / 100 * 100 + x; }
+    else if k == 3 { return; }       // the day of the week follows from the date
+    else { f[k] = x; }
+    if f[5] < 1 || f[5] > 12 || f[4] < 1 || f[4] > 31 || f[6] < 1970 || f[6] > 2399 { return; }
+    rtc_base += rtc_seconds(f) - now;
+}
+
 // ---- Port dispatch ----
 
 
@@ -402,6 +508,8 @@ fn port_in8(port: u16) -> u8 {
             return port_b & 0x0F | refresh | (if ch2_out() { 0x20 } else { 0 });
         },
         0x64 => { return if kbd_full { 0x1D } else { 0x1C }; },
+        0x70 => { return cmos_index; },
+        0x71 => { return cmos_read(); },
         0x3D4 => { return crtc_index; },
         0x3D5 => { return crtc[crtc_index & 31]; },
         0x3DA => { retrace ^= 0x09; return retrace; },
@@ -421,6 +529,8 @@ fn port_out8(port: u16, v: u8) {
         0x60 => { kbd_write_data(v); },
         0x61 => { port_b = v; },
         0x64 => { kbd_write_command(v); },
+        0x70 => { cmos_index = v & 0x7F; },      // the top bit masks the NMI, which there is none of
+        0x71 => { cmos_write(v); },
         0x3D4 => { crtc_index = v; },
         0x3D5 => { crtc[crtc_index & 31] = v; },
         0x190 => { post_trail.push(v); },

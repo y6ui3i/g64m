@@ -83,6 +83,9 @@ int32_t con_read(void) {
     return read(STDIN_FILENO, &c, 1) == 1 ? c : -1;
 }
 
+// The host's time of day, in seconds since 1970 (UTC): what the guest's clock starts at.
+int64_t con_time(void) { return (int64_t)time(0); }
+
 void con_sleep_us(int32_t us) {
     if (us <= 0) return;
     struct timespec ts = { us / 1000000, (long)(us % 1000000) * 1000 };

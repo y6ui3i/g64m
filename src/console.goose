@@ -13,6 +13,7 @@ extern fn con_raw() -> i32;
 extern fn con_close();
 extern fn con_read() -> i32;
 extern fn con_sleep_us(us: i32);
+extern fn con_time() -> i64;
 extern fn con_rows() -> i32;
 extern fn con_cols() -> i32;
 

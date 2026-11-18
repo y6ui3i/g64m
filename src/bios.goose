@@ -340,8 +340,16 @@ fn bios_call(n: u8) {
         0x1A => {
             let ah = r8(4);
             if ah == 0x00 { set_r16(DX, rd16(0, 0x46C)); set_r16(CX, rd16(0, 0x46E)); set_r8(0, 0); }
-            else if ah == 0x02 { set_r16(CX, 0x1200); set_r16(DX, 0x0000); ret_carry(false); }     // 12:00:00
-            else if ah == 0x04 { set_r16(CX, 0x2026); set_r16(DX, 0x1112); ret_carry(false); }     // 2026-11-12
+            else if ah == 0x02 {
+                // The time of day from the clock, in BCD: CH hours, CL minutes, DH seconds.
+                set_r8(5, rtc_read(2, true)); set_r8(1, rtc_read(1, true)); set_r8(6, rtc_read(0, true)); set_r8(2, 0);
+                ret_carry(false);
+            }
+            else if ah == 0x04 {
+                // The date: CH century, CL year, DH month, DL day.
+                set_r8(5, rtc_read(7, true)); set_r8(1, rtc_read(6, true)); set_r8(6, rtc_read(5, true)); set_r8(2, rtc_read(4, true));
+                ret_carry(false);
+            }
             else { ret_carry(true); }
         },
         0x1C => {},                                // timer tick hook
