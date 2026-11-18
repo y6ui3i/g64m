@@ -51,6 +51,8 @@ about a fifth is the language) and gives the reasons behind the [roadmap](docs/r
 | M5 | 32-bit Linux and busybox | done (no disk, no network, no clock chip) |
 | M6 | A clock and a disk | done (E074, E075): the host's date, and a root file system on an IDE disk |
 
+| M7 | A network | the network is there (E076): DHCP, DNS, a page over HTTP. HTTPS waits for SSE2, which the guest's OpenSSL is compiled for |
+
 What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M6 | A clock (CMOS/RTC) and an IDE disk | planned |
 | M7 | A network: NE2000, and libslirp on the host | planned |
@@ -64,9 +66,15 @@ Why the stages are in this order, and how each is checked, is in [docs/roadmap.m
 
 Goose was the only new technology in the project until E059; there is now a second, behind an
 option: code generated at run time (below). The rest is a C compiler (clang) and, once a screen is
-needed, SDL2. Three small files of C do what Goose cannot: the terminal's raw mode
-(`console.c`), executable memory (`jit.c`), and reading and writing a disk image in place
-(`disk.c`).
+needed, SDL2. Four small files of C do what Goose cannot: the terminal's raw mode
+(`console.c`), executable memory (`jit.c`), reading and writing a disk image in place
+(`disk.c`), and the host side of the network (`net.c`).
+
+A third new technology came with M7: **libslirp**, the user-mode TCP/IP stack QEMU uses, for the
+host side of `--net`. The dull alternatives were a tap device or macOS's vmnet, which need root
+or an entitlement, and writing ARP, DHCP, DNS forwarding and TCP in Goose. It is not linked:
+`net.c` opens it with `dlopen` when `--net` is given, so a build needs nothing of it (and
+Goose's build file has no key for a library's directory).
 
 Choosing Goose decides three things:
 
@@ -170,6 +178,20 @@ written in place. `tools/images/make-disk.sh` makes an initramfs that has the dr
 What is written there is in the image the next time. The guest cannot turn the machine off:
 `sync`, then Ctrl-].
 
+`--net` gives the machine a network card (an NE2000 on PCI) and, behind it, the host as a
+gateway, a DHCP server and a name server (10.0.2.2 and 10.0.2.3, the guest at 10.0.2.15), by
+[libslirp](https://gitlab.freedesktop.org/slirp/libslirp), which is opened when the option is
+given and has to be installed (`brew install libslirp`); no root is needed. The guest reaches
+out through the host's own sockets:
+
+```bash
+./build/g86m --jit --net --initrd images/initramfs-mini images/vmlinuz-lts
+```
+
+```
+~ # wget -q -O - http://example.com/ | grep title
+```
+
 `--unpaced` is the other way to stop waiting: real time is then spent only on the guest time that
 passes while the machine is halted, so the boot takes 7.5 seconds with `--jit` at the default
 speed and `sleep 3` still takes three, but the guest's clock runs ahead of the wall while it
@@ -200,7 +222,7 @@ To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 | [src/exec.goose](src/exec.goose) | Instruction decode and execution; the cache of decoded instructions |
 | [src/fpu.goose](src/fpu.goose) | The x87 FPU of the i686 machine |
 | [src/bios.goose](src/bios.goose) | Power-on setup and the BIOS services the emulator performs: screen, disk, keyboard, time |
-| [src/dev.goose](src/dev.goose), [src/disk.c](src/disk.c) | Interrupt controllers, timer, keyboard controller, CMOS clock, IDE disk, I/O port dispatch; the disk's image file in C |
+| [src/dev.goose](src/dev.goose), [src/disk.c](src/disk.c), [src/net.c](src/net.c) | Interrupt controllers, timer, keyboard controller, CMOS clock, IDE disk, PCI and the network card, I/O port dispatch; the disk's image file and the host side of the network in C |
 | [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs) |
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |

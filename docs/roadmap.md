@@ -52,6 +52,10 @@ devices on a CPU that is still moving.
   taken. macOS's vmnet was not chosen: it needs root or an entitlement.
 - Before the screen because it can be checked from the serial console, with a script, and
   needs no window.
+- Where it stands (E076): the network works to a page over HTTP. Two things were not as
+  written above. The kernel has no ISA NE2000 driver, only `ne2k-pci`, so `--net` brings a
+  PCI bus with it. And HTTPS stops at SSE2: the guest's OpenSSL is compiled for it. Either
+  MMX and SSE2 come forward from M10, or the guest gets a TLS client built without them.
 
 ### M8: a screen
 

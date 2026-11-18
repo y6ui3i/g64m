@@ -5532,3 +5532,83 @@ with the JIT and reads back without it.
 **Not done.** DMA; the slave; an ATAPI CD-ROM (which is what rustx86's `ide.rs` is); a
 clean shutdown from the guest (`poweroff` has nothing to turn off); the BIOS's INT 13h on
 this disk, so DOS does not see it.
+
+## E076: A network (M7) (2026-11-18)
+
+- **Hypothesis**: With a network card Linux drives and a user-mode network stack on the
+  host behind it, **`wget https://...` typed at the serial console fetches a page through
+  the host**, without root. The parts: the card (a DP8390, as rustx86's `dp8390.rs`), the
+  host side (libslirp, the library QEMU uses, as `docs/roadmap.md` chose), and DHCP and
+  TLS in the guest (busybox's `udhcpc` and `ssl_client`, which `images/initramfs-mini`
+  has).
+- **What changed since last time**: Two things are not as the roadmap had them.
+  1. The roadmap chose an NE2000 on the ISA bus and put PCI off "until there is a reason".
+     The kernel (Alpine's) has no ISA NE2000 driver at all, built in or as a module; it
+     has `ne2k-pci`, the same chip on PCI, which is what rustx86 gives it. So there is a
+     reason: configuration mechanism 1 (ports CF8h and CFCh), a host bridge and one card,
+     as rustx86's `bus/pci`. Only with `--net`: a machine without it has no PCI, and boots
+     as it did.
+  2. libslirp is reached with `dlopen` when `--net` is given, not linked: Goose's build
+     file has no key for a library's directory, and this way a build needs nothing new and
+     only `--net` needs the library. The C (`src/net.c`) declares the two structures of
+     libslirp's interface it fills in.
+  libslirp is the project's third new technology, after Goose and the JIT.
+- **Next move for each result**:
+  - A page fetched over HTTPS → keep; M7 is done
+  - The card is found and DHCP gets no answer → frames counted each way at the card and at
+    libslirp, to see which side loses them
+  - The driver does not find the card → what the kernel says of PCI, and rustx86's values
+    for the same registers
+  - Names resolve and TLS fails → the guest's date (E074) and the certificates in the
+    initramfs, before the network
+- **Cut-off**: A scripted session: DHCP, `ping` of the gateway, `wget` of a page over HTTP
+  and over HTTPS, with the page's text checked. It needs the network, so the suite skips
+  it when the host has none or libslirp is not there.
+
+### Result
+
+2026-11-18. **Half kept: the network is there and a page comes over HTTP; over HTTPS it
+does not, for a reason that is not the network's. M7 is not done.** `tools/difftest.sh` has
+133 lines, all ok.
+
+```
+pci 0000:00:03.0: [10ec:8029] type 00 class 0x020000 conventional PCI endpoint
+ne2k-pci 0000:00:03.0 eth0: RealTek RTL-8029(AS) found at 0xc000, IRQ 3, 52:54:00:12:34:56.
+inet addr:10.0.2.15  Bcast:10.0.2.255  Mask:255.255.255.0
+2 packets transmitted, 2 packets received, 0% packet loss       (ping 10.0.2.2)
+Name: example.com  Address: 104.20.23.154                        (nslookup, by 10.0.2.3)
+<title>Example Domain</title>                                    (wget http://example.com/)
+g86m: unimplemented opcode 0F 7e at 0073:b7be1505               (wget https://example.com/)
+```
+
+- The card, PCI, DHCP, ARP, ICMP, DNS and TCP all worked the first time they were run,
+  with `images/initramfs-mini` as it is (it has `8390`, `ne2k-pci` and `af_packet`).
+- **HTTPS stops at an SSE2 instruction.** The opcode is `F3 0F 7E`, `movq (%eax), %xmm0`,
+  in `CRYPTO_atomic_load` of the guest's `libcrypto.so.3`: not hand-written code behind a
+  test of CPUID (g86m claims neither MMX nor SSE2), but what the C compiler made of a
+  64-bit load. Alpine's 32-bit OpenSSL is compiled for a CPU with SSE2: 265 of its
+  functions use XMM registers (10,780 instructions), and it has 2,948 MMX instructions
+  besides. rustx86 met the same wall and has both (`sse.rs`, 1,163 lines; `mmx.rs`, 478).
+  So the card's fourth branch is not what happened: the date and the certificates were
+  never reached.
+- By the roadmap SSE2 is M10's ("likely the largest part"), and M9's browser, taken from
+  the same distribution, will want it as well. The two ways on: MMX and SSE2 in the
+  interpreter now (with FXSAVE and FXRSTOR, CR4's OSFXSR, and CPUID saying so, for the
+  kernel to let user code use them), or a TLS client for the guest built without SSE2.
+  That is a choice about the roadmap, and it is the owner's.
+
+**What was built.** `src/net.c` (190 lines): libslirp opened with `dlopen`, its
+configuration and callbacks, a queue of frames for the guest, its timers, and one
+`poll()` without waiting each time the run loop asks. In `dev.goose`: configuration
+mechanism 1 with a host bridge and the card, whose first base address can be sized and
+moved; and the DP8390, after rustx86's. The run loop looks at the network every 40,000
+instructions (half a millisecond of guest time) and when the guest is halted; in a run
+that nothing else paces (scripted, headless), the time the guest spent halted is slept,
+because the other end of the network runs on the host's time. With no `--net` there is no
+PCI and no card: the plain boot's count is as E074 left it.
+
+**Tests.** `s_net` on the bare ports: the two PCI devices and an empty one, the size of
+the card's ports, the ports off and on, the address PROM, a byte in the chip's memory.
+The suite's Linux session gets an address by DHCP and pings the gateway, all inside the
+machine; nothing from outside is fetched there. HTTP and DNS were run by hand, against
+example.com. No wrong builds were made for this one yet.

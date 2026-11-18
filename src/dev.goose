@@ -742,6 +742,272 @@ fn ide_write(r: u16, v: u8) {
     }
 }
 
+// ---- PCI and the network card (only with --net) ----
+//
+// The kernel g86m boots drives an NE2000 only on PCI (ne2k-pci), so with --net the machine
+// has a PCI bus: configuration mechanism 1 (an address written to port CF8h, the register
+// read and written at CFCh), a host bridge at device 0 so that the bus is believed, and
+// the card, a Realtek RTL8029, at device 3. Its thirty-two ports and its interrupt line
+// are in its configuration, as firmware would have left them, and the guest may move the
+// ports. Without --net none of this is there. As rustx86's bus/pci and card/rtl8029.
+
+extern fn net_open() -> i32;
+extern fn net_send(frame: const u8[:]);
+extern fn net_poll();
+extern fn net_recv(buf: u8[:]) -> i32;
+
+let NET_IRQ = 3;
+var net_on = false;
+var pci_addr: u32 = 0;
+var pci_cfg: u8[512] = [0; 512];     // the bridge's 256 bytes, then the card's
+
+fn pci_setup() {
+    // The bridge: Intel 440FX, class 06 00.
+    pci_cfg[0] = 0x86; pci_cfg[1] = 0x80; pci_cfg[2] = 0x37; pci_cfg[3] = 0x12;
+    pci_cfg[0x0B] = 0x06;
+    // The card: Realtek 8029, class 02 00, ports at C000h, interrupt line 3 on pin A.
+    let c = 256;
+    pci_cfg[c] = 0xEC; pci_cfg[c + 1] = 0x10; pci_cfg[c + 2] = 0x29; pci_cfg[c + 3] = 0x80;
+    pci_cfg[c + 0x0B] = 0x02;
+    pci_cfg[c + 0x10] = 0x01; pci_cfg[c + 0x11] = 0xC0;
+    pci_cfg[c + 0x2C] = 0xEC; pci_cfg[c + 0x2D] = 0x10; pci_cfg[c + 0x2E] = 0x29; pci_cfg[c + 0x2F] = 0x80;
+    pci_cfg[c + 0x3C] = NET_IRQ; pci_cfg[c + 0x3D] = 1;
+}
+
+// Where in pci_cfg the function the address names is, or -1: bus 0, device 0 or 3, function 0.
+fn pci_slot() -> i64 {
+    if pci_addr & 0x80000000 == 0 || pci_addr >> 16 & 0xFF != 0 || pci_addr >> 8 & 7 != 0 { return -1; }
+    let dev = pci_addr >> 11 & 31;
+    if dev == 0 { return 0; }
+    if dev == 3 { return 256; }
+    return -1;
+}
+
+fn pci_read(port: u16) -> u8 {
+    if port < 0xCFC { return (pci_addr >> ((port - 0xCF8) * 8)) as! u8; }
+    let s = pci_slot();
+    if s < 0 { return 0xFF; }
+    return pci_cfg[s + (pci_addr & 0xFC) + (port & 3)];
+}
+
+fn pci_write(port: u16, v: u8) {
+    if port < 0xCFC {
+        let sh: u32 = (port - 0xCF8) * 8;
+        let b: u32 = v;
+        pci_addr = pci_addr & ~(0xFF << sh) | b << sh;
+        return;
+    }
+    let s = pci_slot();
+    if s < 0 { return; }
+    let r: i64 = (pci_addr & 0xFC) + (port & 3);
+    // What can be written: the command register's low byte, the interrupt line, and of the
+    // card its first base address, which stays a block of 32 ports whatever is written
+    // (all ones written and read back is how its size is asked).
+    if r == 0x04 || r == 0x3C { pci_cfg[s + r] = v; }
+    else if s == 256 && r >= 0x10 && r < 0x14 {
+        pci_cfg[s + r] = v;
+        pci_cfg[s + 0x10] = pci_cfg[s + 0x10] & 0xE0 | 1;
+    }
+}
+
+// The card's first port, or 0 while the command register keeps its ports off.
+fn ne_base() -> u16 {
+    if pci_cfg[256 + 4] & 1 == 0 { return 0; }
+    let lo: u16 = pci_cfg[256 + 0x10] & 0xE0;
+    let hi: u16 = pci_cfg[256 + 0x11];
+    return hi << 8 | lo;
+}
+
+// The card's chip, a DP8390: sixteen registers in pages chosen by the command register's
+// top bits, a data port through which the host reaches the chip's memory (the address PROM
+// at 0, the buffers from 4000h to 8000h), and a reset port. A frame to send is handed to
+// net_send at once. Frames for the guest are put in the receive ring, 256 bytes to a page,
+// behind a header of four bytes each, for as long as the ring has room.
+let NE_RAM = 0x4000;
+let NE_END = 0x8000;
+var ne_mem: u8[NE_END] = [0; NE_END];
+var ne_pend: u8[1600] = [0; 1600];   // a frame taken from the host that the ring had no room for
+var ne_pend_len: i64 = 0;
+var ne_par: u8[6] = [0; 6];
+var ne_mar: u8[8] = [0; 8];
+var ne_rsar: u16 = 0;
+var ne_rbcr: u16 = 0;
+var ne_tbcr: u16 = 0;
+var ne_cr: u8 = 1;                   // stopped
+var ne_isr: u8 = 0x80;               // reset
+var ne_imr: u8 = 0;
+var ne_dcr: u8 = 0;
+var ne_tcr: u8 = 0;
+var ne_rcr: u8 = 0;
+var ne_tpsr: u8 = 0;
+var ne_pstart: u8 = 0;
+var ne_pstop: u8 = 0;
+var ne_bnry: u8 = 0;
+var ne_curr: u8 = 0;
+var ne_running = false;
+var ne_sent: i64 = 0;                // frames each way, for the report
+var ne_got: i64 = 0;
+
+fn ne_setup() {
+    // The address PROM: the station address, and two 57h that say an NE2000.
+    let mac: u8[6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    for i in 6 { ne_mem[i] = mac[i]; }
+    ne_mem[14] = 0x57;
+    ne_mem[15] = 0x57;
+}
+
+// The interrupt line follows the status bits the mask lets through.
+fn ne_irq() {
+    if ne_isr & ne_imr & 0x7F != 0 { raise_irq(NET_IRQ); }
+    else { pic[0].irr &= ~(1 << NET_IRQ); pic_update(); }
+}
+
+// One frame into the receive ring, if it has the pages.
+fn ne_ring_put(len0: i64) -> bool {
+    if !ne_running || ne_pstart >= ne_pstop { return false; }
+    let len = if len0 < 60 { 60 } else { len0 };
+    let total = 4 + len;
+    let pages: i64 = (total + 255) / 256;
+    let ring: i64 = ne_pstop - ne_pstart;
+    let curr: i64 = ne_curr;
+    let bnry: i64 = ne_bnry;
+    let used = (curr + ring - bnry) % ring;
+    if pages + 1 > ring - used { return false; }
+    var next = curr + pages;
+    if next >= ne_pstop { next = ne_pstart + (next - ne_pstop); }
+    let stop: i64 = ne_pstop;
+    let start: i64 = ne_pstart;
+    var at = curr * 256;
+    for i in total {
+        var b: u8 = 0;
+        if i == 0 { b = 1; }                                 // received whole
+        else if i == 1 { b = next as! u8; }
+        else if i == 2 { b = total as! u8; }
+        else if i == 3 { b = (total >> 8) as! u8; }
+        else if i - 4 < len0 { b = ne_pend[i - 4]; }
+        if at < NE_END { ne_mem[at] = b; }
+        at += 1;
+        if at >= stop * 256 { at = start * 256; }
+    }
+    ne_curr = next as! u8;
+    ne_isr |= 1;
+    return true;
+}
+
+// Frames from the host into the ring, while there are any and there is room.
+fn ne_drain() {
+    loop {
+        if ne_pend_len == 0 {
+            ne_pend_len = net_recv(ne_pend[..]);
+            if ne_pend_len == 0 { break; }
+            // Not for this station, and the card is not listening to everything: dropped.
+            var mine = ne_rcr & 0x10 != 0;
+            if !mine {
+                var own = true;
+                var all = true;
+                for i in 6 {
+                    if ne_pend[i] != ne_par[i] { own = false; }
+                    if ne_pend[i] != 0xFF { all = false; }
+                }
+                mine = own || all;
+            }
+            if !mine || !ne_running { ne_pend_len = 0; continue; }
+        }
+        if !ne_ring_put(ne_pend_len) { break; }
+        ne_pend_len = 0;
+        ne_got += 1;
+    }
+    ne_irq();
+}
+
+// What the run loop does for the network every so often.
+fn net_tick() {
+    net_poll();
+    ne_drain();
+}
+
+fn ne_read(off: u16) -> u8 {
+    if off == 0 { return ne_cr; }
+    if off >= 0x18 {
+        // The reset port.
+        ne_isr |= 0x80;
+        ne_cr = ne_cr & ~2 | 1;
+        ne_running = false;
+        return 0;
+    }
+    if off >= 0x10 {
+        let v: u8 = if ne_rsar < NE_END { ne_mem[ne_rsar] } else { 0xFF };
+        ne_rsar += 1;
+        if ne_rbcr > 0 { ne_rbcr -= 1; }
+        if ne_rbcr == 0 { ne_isr |= 0x40; ne_irq(); }
+        return v;
+    }
+    if ne_cr >> 6 == 0 {
+        if off == 3 { return ne_bnry; }
+        if off == 4 { return 1; }                            // every frame is sent
+        if off == 7 { return ne_isr; }
+        return 0;
+    }
+    if ne_cr >> 6 == 1 {
+        if off >= 1 && off <= 6 { return ne_par[off - 1]; }
+        if off == 7 { return ne_curr; }
+        if off >= 8 { return ne_mar[off - 8]; }
+    }
+    return 0;
+}
+
+fn ne_write(off: u16, v: u8) {
+    if off == 0 {
+        ne_cr = v & ~4;
+        if v & 2 != 0 { ne_isr &= 0x7F; ne_running = true; }
+        else if v & 1 != 0 { ne_isr |= 0x80; ne_running = false; }
+        if v & 4 != 0 {
+            // Transmit: the frame is in the chip's memory at page TPSR.
+            let start: i64 = ne_tpsr;
+            let from = start * 256;
+            let len: i64 = ne_tbcr;
+            if from >= NE_RAM && from + len <= NE_END && len > 0 { net_send(ne_mem[from..from + len]); ne_sent += 1; }
+            ne_isr |= 2;
+        }
+        ne_irq();
+        return;
+    }
+    if off >= 0x18 { ne_isr |= 0x80; ne_running = false; return; }
+    if off >= 0x10 {
+        if ne_rsar >= NE_RAM && ne_rsar < NE_END { ne_mem[ne_rsar] = v; }
+        ne_rsar += 1;
+        if ne_rbcr > 0 { ne_rbcr -= 1; }
+        if ne_rbcr == 0 { ne_isr |= 0x40; ne_irq(); }
+        return;
+    }
+    let w: u16 = v;
+    if ne_cr >> 6 == 0 {
+        match off {
+            1 => { ne_pstart = v; },
+            2 => { ne_pstop = v; },
+            3 => { ne_bnry = v; ne_drain(); },
+            4 => { ne_tpsr = v; },
+            5 => { ne_tbcr = ne_tbcr & 0xFF00 | w; },
+            6 => { ne_tbcr = ne_tbcr & 0x00FF | w << 8; },
+            7 => { ne_isr &= ~v; ne_irq(); },
+            8 => { ne_rsar = ne_rsar & 0xFF00 | w; },
+            9 => { ne_rsar = ne_rsar & 0x00FF | w << 8; },
+            10 => { ne_rbcr = ne_rbcr & 0xFF00 | w; },
+            11 => { ne_rbcr = ne_rbcr & 0x00FF | w << 8; },
+            12 => { ne_rcr = v; },
+            13 => { ne_tcr = v; },
+            14 => { ne_dcr = v; },
+            _ => { ne_imr = v; ne_irq(); },
+        }
+        return;
+    }
+    if ne_cr >> 6 == 1 {
+        if off >= 1 && off <= 6 { ne_par[off - 1] = v; }
+        else if off == 7 { ne_curr = v; }
+        else if off >= 8 { ne_mar[off - 8] = v; }
+    }
+}
+
 // ---- Port dispatch ----
 
 
@@ -772,7 +1038,15 @@ fn port_in8(port: u16) -> u8 {
         0x3D5 => { return crtc[crtc_index & 31]; },
         0x3DA => { retrace ^= 0x09; return retrace; },
         0x3F8..0x400 => { return com_read(port - 0x3F8); },
-        _ => { note_unknown(port); return 0xFF; },
+        0xCF8..0xD00 => { if net_on { return pci_read(port); } note_unknown(port); return 0xFF; },
+        _ => {
+            if net_on {
+                let b = ne_base();
+                if b != 0 && port >= b && port < b + 32 { return ne_read(port - b); }
+            }
+            note_unknown(port);
+            return 0xFF;
+        },
     }
 }
 
@@ -795,7 +1069,14 @@ fn port_out8(port: u16, v: u8) {
         0x3D5 => { crtc[crtc_index & 31] = v; },
         0x190 => { post_trail.push(v); },
         0x3F8..0x400 => { com_write(port - 0x3F8, v); },
-        _ => { note_unknown(port); },
+        0xCF8..0xD00 => { if net_on { pci_write(port, v); } else { note_unknown(port); } },
+        _ => {
+            if net_on {
+                let b = ne_base();
+                if b != 0 && port >= b && port < b + 32 { ne_write(port - b, v); return; }
+            }
+            note_unknown(port);
+        },
     }
 }
 
