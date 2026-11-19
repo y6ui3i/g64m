@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | begun (E091, E093): a 64-bit CPU of its own, `src/x64.goose`, runs user-mode programs with SSE2 and matches a real CPU instruction for instruction; paging, faults, privilege level 3, SYSCALL and interrupts match the real CPU under KVM (E094 to E097); the 32-bit machine's devices are behind it; no kernel yet |
+| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the terminal as its console, the disk, the network, the screen, and speed |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -247,6 +247,27 @@ passes while the machine is halted, so the boot takes 7.5 seconds with `--jit` a
 speed and `sleep 3` still takes three, but the guest's clock runs ahead of the wall while it
 computes. It is off unless asked for.
 
+### The 64-bit machine
+
+The 64-bit CPU is a program of its own for now, built from a second root file:
+
+```bash
+goose build -o build/x64 src/x64.goose
+```
+
+With Alpine's x86_64 kernel as `images/vmlinuz64-lts` (the netboot `vmlinuz-lts` of Alpine
+3.23) and a small initramfs made from Alpine's own (`tools/images/make-mini64.py`, which
+reads the netboot `initramfs-lts` as `images/initramfs64-lts`), it boots to a shell, a
+billion and a half instructions later:
+
+```bash
+./build/x64 --initrd images/initramfs64-mini --wait "~ # " --type 'uname -a\n' --wait "x86_64 Linux" images/vmlinuz64-lts
+```
+
+The serial port is the console and is printed as it comes; input is by script only
+(`--wait TEXT`, `--type TEXT`). There is no terminal console, no disk, no network and no
+frame buffer behind this CPU yet, and no JIT: it runs some 30 million instructions a second.
+
 ## Tests
 
 ```bash
@@ -305,7 +326,7 @@ again.
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |
 | [src/g86m.goose](src/g86m.goose) | The run loop, interrupt delivery, pacing, the serial console, the session script, the command line |
-| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose), [src/sse64.goose](src/sse64.goose), [src/sys64.goose](src/sys64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, SSE and SSE2, long mode's paging and faults, and loaders of static ELF programs (with three system calls) and of system test images |
+| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose), [src/sse64.goose](src/sse64.goose), [src/sys64.goose](src/sys64.goose), [src/linux64.goose](src/linux64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, SSE and SSE2, long mode's paging and faults, and loaders of a Linux kernel (by the 64-bit boot protocol), of static ELF programs (with three system calls) and of system test images |
 | [src/big.goose](src/big.goose) | The large arrays (RAM and three others), in a file of their own so they come last in memory |
 
 The boot sectors in `testdata/` are copied from rustx86's `asm/` as they are, including the Japanese

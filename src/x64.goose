@@ -13,7 +13,17 @@
 //                  the same format as step64; what the program writes is then not printed
 //   --trace-xmm    the same, and on each line MXCSR (without its six status bits) and the XMM
 //                  registers that the instruction changed, as step64 -x prints them
-//   --max N        stop after N instructions (2 billion unless given)
+//   --max N        stop after N instructions (2 billion unless given; 60 billion for a kernel)
+//
+// program may also be a Linux kernel for x86_64 (a bzImage), which is entered at its 64-bit
+// entry point (linux64.goose), with the serial port as its console; what it prints is
+// printed as it comes.
+//   --initrd FILE  the initramfs
+//   --faults       report every fault on standard error (but not page faults from level 3)
+//   --append TEXT  the kernel's command line (default: console=ttyS0 tsc=reliable)
+//   --wait TEXT    script step: run until TEXT has been printed on the serial port
+//   --type TEXT    script step: send TEXT to the serial port (\n is Enter)
+// Script steps run in the order given, and the run ends when the last one is done.
 
 import std;
 import os;
@@ -21,6 +31,7 @@ import cpu64;
 import sse64;
 import sys64;
 import dev;
+import linux64;
 
 var out: u8[>..];
 var trace_buf: u8[>..];
@@ -201,9 +212,48 @@ fn load_test_image(img: u8[:]) -> const u8[:] {
     return "";
 }
 
+// ---- The script (for a kernel) ----
+
+var step_wait: bool[>..];        // each step: true to wait for its text, false to type it
+var step_arg: i64[>..];          // where its text is in args()
+var step_at = 0;                 // the step being done
+var searched = 0;                // how much of the serial output earlier waits have used up
+var typed = 0;                   // how much of the text being typed has been sent
+var shown = 0;                   // how much of the serial output has been printed
+
+// Prints what the guest has sent since last time, and moves the script on. True when the
+// script's last step is done.
+fn script_step(a: u8[:][>..]&) -> bool {
+    if com_out.len > shown { write_stdout(com_out[shown..]); shown = com_out.len; }
+    while step_at < step_wait.len {
+        let text = a[step_arg[step_at]];
+        if step_wait[step_at] {
+            let at = find(com_out[searched..], text);
+            if at < 0 { return false; }
+            searched += at + text.len;
+        } else {
+            // One character at a time, each when the guest has taken the one before.
+            if typed < text.len {
+                if com_has_input() { return false; }
+                var c = text[typed];
+                typed += 1;
+                if c == 0x5C && typed < text.len && text[typed] == 'n' { c = 13; typed += 1; }
+                com_receive(c);
+                return false;
+            }
+            typed = 0;
+        }
+        step_at += 1;
+    }
+    return step_wait.len > 0;
+}
+
 fn main() {
     let a = args();
     var trace = false;
+    var initrd_arg = 0;
+    var append_arg = 0;
+    var max_given = false;
     var max: u64 = 2000000000;
     var path: const u8[:] = "";
     var i = 1;
@@ -215,6 +265,15 @@ fn main() {
             let n, ok = parse_int(a[i]);
             guard ok else { write_stderr("x64: --max needs a number\n"); exit(2); }
             max = n as! u64;
+            max_given = true;
+        }
+        else if a[i] == "--faults" { show_faults = true; }
+        else if a[i] == "--initrd" && i + 1 < a.len { i++; initrd_arg = i; }
+        else if a[i] == "--append" && i + 1 < a.len { i++; append_arg = i; }
+        else if (a[i] == "--wait" || a[i] == "--type") && i + 1 < a.len {
+            step_wait.push(a[i] == "--wait");
+            i++;
+            step_arg.push(i);
         }
         else { path = a[i]; }
         i++;
@@ -222,12 +281,27 @@ fn main() {
     guard path.len > 0 else { write_stderr("usage: x64 [--trace] [--max N] program\n"); exit(2); }
     var img: u8[>..] = [];
     guard read_file(path, img) else { write_stderr("x64: cannot read the program\n"); exit(2); }
-    let problem = if is_test_image(img) { load_test_image(img) } else { load_elf(img) };
+    var problem: const u8[:] = "";
+    let kernel = is_kernel64(img);
+    if kernel {
+        var initrd: u8[>..] = [];
+        if initrd_arg > 0 {
+            guard read_file(a[initrd_arg], initrd) else { write_stderr("x64: cannot read the initramfs\n"); exit(2); }
+        }
+        // tsc=reliable: the TSC here is the instruction count, which is what the timer runs
+        // on, so there is nothing to check it against (E080).
+        let cmdline: const u8[:] = if append_arg > 0 { a[append_arg] } else { "console=ttyS0 tsc=reliable" };
+        problem = linux64_boot(img, initrd, cmdline);
+        if !max_given { max = 60000000000; }
+    }
+    else if is_test_image(img) { problem = load_test_image(img); }
+    else { problem = load_elf(img); }
     guard problem.len == 0 else { write_stderr(str("x64: ", problem, "\n")); exit(2); }
 
     tick_insns = 64;
     timer_on = false;
     var asleep = false;
+    var scripted = false;
     while !stopped && steps < max {
         // The devices' time is the instruction count. Only when the timer is due, the
         // machine is asleep or a request is waiting is there anything to do between two
@@ -243,8 +317,19 @@ fn main() {
         if shadow { sti_shadow = false; }
         steps += 1;
         if trace && !stopped { trace_line(); }
+        // A kernel's console is printed as it comes, and its script looked at, every 16,384
+        // instructions.
+        if kernel && steps & 0x3FFF == 0 && script_step(a) { scripted = true; break; }
     }
-    if trace { write_stdout(trace_buf); } else { write_stdout(out); write_stdout(com_out); }
+    if trace { write_stdout(trace_buf); } else { write_stdout(out); write_stdout(com_out[shown..]); }
+    if kernel {
+        var msg: u8[>..] = [];
+        format(msg, "\nx64: ", steps as! i64, " instructions, at ");
+        hex64(msg, rip);
+        format(msg, if scripted { ", the script done\n" } else { "\n" });
+        write_stderr(msg);
+        if scripted { exit(0); }
+    }
     if asleep { write_stderr("x64: halted, with nothing to wake it\n"); exit(3); }
     if !stopped { write_stderr("x64: stopped at the limit of --max\n"); exit(1); }
     if faulted { exit(1); }

@@ -10,7 +10,7 @@ desktop that can browse the web, still as an i686, and only then to x86_64.
 | M7 | A network (done) | `wget https://...` from the serial console fetches a page through the host |
 | M8 | A screen (done by script; the window by hand) | X (Xfbdev, twm, xterm) comes up in a window on the host, with keyboard and mouse |
 | M9 | A browser (done) | NetSurf or Dillo shows a page fetched over HTTPS |
-| M10 | x86_64 | A 64-bit Linux kernel boots to a shell |
+| M10 | x86_64 (done) | A 64-bit Linux kernel boots to a shell |
 | M11 | A backend for Docker | `docker run --platform linux/amd64 alpine` on an arm64 host runs its x86_64 programs through this CPU |
 
 ## Why 32-bit first
@@ -135,7 +135,19 @@ devices on a CPU that is still moving.
     the 64-bit CPU; interrupts from outside, the STI shadow, a HLT that waits.
   - E098: the x87 (`src/fpu.goose`, now of both CPUs) and FXSAVE. Its first comparison
     with a real CPU found ten things wrong, on the 32-bit machine as well; fixed for both.
-- Left: the kernel, entered at its 64-bit entry point.
+  - E099: the kernel. Alpine 3.23's x86_64 `vmlinuz-lts` (6.18.60), entered at its 64-bit
+    entry point by `src/linux64.goose`, boots to busybox's shell in 1.53 billion
+    instructions. It took three things beyond E098: one MSR, VERR and VERW, and a line of
+    the initramfs's `init`.
+- **M10's aim is met.** By this document's own rule the name changes now, in one step:
+  g86m becomes g64m (the repository, the directory, the executable, the root file, the
+  messages). That step is the owner's to start. Until the two programs are one, `build/x64`
+  is the 64-bit machine and `build/g86m` the 32-bit one.
+- What the 64-bit machine does not have yet, each of which the 32-bit one has and which
+  M11 or a desktop would want: the terminal as its console (input is by script only), the
+  disk, the network and the frame buffer behind this CPU (the devices are there, E097;
+  their options and tests are not), and speed: it interprets, decoding every instruction
+  every time, at some 30 million a second.
 
 ### M11: a backend for Docker
 

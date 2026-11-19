@@ -69,8 +69,23 @@ var cpl: u8 = 3;
 
 // ---- Faults ----
 
+var show_faults = false;         // --faults: every fault is reported on standard error
+var msr_asked: u64 = 0;          // the MSR the instruction at hand asked for, for that report
+
 fn fault(vec: u8, has_err: bool, err: u64) {
     if !machine { stop64("a fault, which nothing delivers in a user-mode program: vector", vec); }
+    if show_faults && (vec != 14 || cpl == 0) {
+        var msg: u8[>..] = [];
+        format(msg, "x64: fault ", vec as i64, " error ");
+        format_int(msg, err as! i64, 16, 1, '0');
+        format(msg, " at ");
+        hex64(msg, rip);
+        if vec == 14 { format(msg, " address "); hex64(msg, cr2); }
+        if vec == 13 && msr_asked != 0 { format(msg, " MSR "); format_int(msg, msr_asked as! i64, 16, 1, '0'); }
+        format(msg, "\n");
+        write_stderr(msg);
+    }
+    msr_asked = 0;
     for i in 16 { reg[i] = saved_reg[i]; }
     rflags = saved_flags;
     cpl = saved_cpl;
@@ -413,7 +428,13 @@ fn msr_get(n: u64) -> u64 {
         0xC0000100 => { return fs_base; },
         0xC0000101 => { return gs_base; },
         0xC0000102 => { return msr_kernel_gs; },
-        _ => { fault(13, true, 0); return 0; },
+        // IA32_MISC_ENABLE: fast strings on, nothing else. The kernel's first code reads it
+        // before it has a handler for a fault, to see that no-execute is not turned off.
+        0x1A0 => { return 1; },
+        // The platform's id and the microcode's revision, which an Intel CPU has and the
+        // kernel reads without asking whether it may: none, and none loaded.
+        0x17, 0x8B => { return 0; },
+        _ => { msr_asked = n; fault(13, true, 0); return 0; },
     }
 }
 
@@ -434,7 +455,8 @@ fn msr_set(n: u64, v: u64) {
         0xC0000100 => { fs_base = v; },
         0xC0000101 => { gs_base = v; },
         0xC0000102 => { msr_kernel_gs = v; },
-        _ => { fault(13, true, 0); },
+        0x1A0, 0x8B => {},
+        _ => { msr_asked = n; fault(13, true, 0); },
     }
 }
 
@@ -461,6 +483,25 @@ fn sys_group6() {
             tr_limit = lo & 0xFFFF | (lo >> 48 & 0xF) << 16;
             tr_sel = sel as! u16;
             own_wr(at, 64, lo | (2 as u64) << 40);
+        },
+        4, 5 => {
+            // VERR and VERW: ZF says whether the segment the selector names could be read
+            // (4) or written (5) from here. Nothing faults.
+            let sel = rm_get(16);
+            var ok = false;
+            if sel & 0xFFF8 != 0 && sel & 4 == 0 && (sel | 7) <= gdt_limit {
+                let desc = own_rd(gdt_base + (sel & 0xFFF8), 64);
+                let kind = desc >> 40 & 0x1F;                // S and the four type bits
+                let level = desc >> 45 & 3;
+                let rpl = sel & 3;
+                let code = kind & 0x18 == 0x18;
+                let data = kind & 0x18 == 0x10;
+                let conforming = code && kind & 4 != 0;
+                let reach = conforming || (level >= cpl && level >= rpl);
+                if m_reg & 7 == 4 { ok = reach && (data || (code && kind & 2 != 0)); }
+                else { ok = reach && data && kind & 2 != 0; }
+            }
+            if ok { rflags |= ZF; } else { rflags &= ~ZF; }
         },
         _ => { stop64("an instruction not written yet, 0F 00 field", m_reg); },
     }
