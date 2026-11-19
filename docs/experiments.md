@@ -7600,3 +7600,71 @@ flags, which every arithmetic instruction computes whether or not they are read
 
 **Next move**, by the card: the fetch (1 in the list of perf64.md), with the survey's
 190 of 654 as its card's prediction.
+
+## E105: an instruction's bytes read from its page, not fetched through the tables (2026-11-19)
+
+The first of [perf64.md](perf64.md)'s list.
+
+- **Hypothesis**: Every byte or constant of an instruction is a call of `code_rd`, through
+  `sys_rd`, the TLB's lookup and `mem_rd`: 63 host instructions a call, 3.2 calls an
+  instruction, about 190 of the 654 host instructions a guest instruction costs (E104).
+  **If the page the instruction starts on is translated once (and kept while RIP stays on
+  it at the same privilege level, until the TLB is emptied or a page forgotten), and the
+  bytes that lie on that page are read from memory directly, a guest instruction costs
+  under 500 host instructions, and the boot to the prompt takes at least a fifth less
+  time (40 seconds or under, from 50.4).** What does not lie on the page (an instruction
+  that runs across its end) goes the old way.
+- **What changed since last time**: E104 measured and changed nothing. This is the
+  32-bit machine's "code page" (E022), with two things it did not have to mind: the
+  privilege level (the execute tables are two, E096) and the no-execute bit, both checked
+  when the page is taken and not at each byte.
+- **Next move for each result**:
+  - Under 500 and a fifth less time, all tests as they were → kept; next is the run
+    loop (2 in the list)
+  - Fewer host instructions but not the time → the fetch was instructions and not
+    cycles (the host ran them in parallel with something slower): look at cycles for
+    each part before choosing the next, as E026 had to
+  - A test differs → the page was kept across something that should have dropped it:
+    that event joins the list of what forgets it, with a wrong build
+- **Cut-off**: the fetch only. The run loop, `exec64`'s beginning and ModRM are as they
+  were. Times in one sitting, three runs each.
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch, and by more than it said: a guest
+instruction costs 471 host instructions (654 before; the card said under 500) and 73 host
+cycles (103), and the boot to the prompt takes 35.8 seconds (50.4; 29% less, where the
+card said a fifth).** The boot runs the same 1,523,597,312 instructions and ends at the
+same address.
+
+| | Before | After |
+|---|---:|---:|
+| Boot to the prompt, three runs | 50.42 s | 35.88, 35.79, 35.68 s |
+| Host instructions for a guest instruction (boot) | 654 | 471 |
+| Host cycles for a guest instruction (boot) | 103 | 73 |
+| Guest instructions a second | 30.2 million | 42.6 million |
+| The loop of E096: host instructions for each of its 63 million | 703 | 537 |
+
+The fetch was 190 of 654 by E104's stepping, and 183 went: what is left of it is a
+compare and a load for each byte.
+
+**What was built.** `code_fill` in `src/cpu64.goose`: the page RIP is on, translated for
+executing (which is where the no-execute bit and the privilege level are checked), and
+`fb`, `fw`, `fd`, `fq` and `peek8` reading from memory when all of what they want lies on
+that page. Taken again when RIP is on another page or the privilege level is another;
+forgotten by `tlb_flush` and `tlb_forget`. A page that is not in memory is never kept.
+
+**Tests** (in `y_tlb`, against the real CPU under KVM; 70 lines now): a routine that
+points its own page at another copy of itself and then writes CR3, or invalidates the
+page, and says which copy it then is; an IRETQ at level 0 to the next instruction at
+level 3 on a page that is level 0's; and MOV with a constant of two, four and eight bytes
+lying across two pages that are not neighbours in memory.
+
+**Wrong builds.** 9 (`build/mut105.py`). **Only one was caught by the tests as they
+were** (the no-execute check): the system tests' code runs where linear and physical
+addresses are the same, so a wrong page gave the right bytes. With the cases above 8 are
+caught. The ninth changes nothing (what a fault during the fill leaves behind is never
+used). A kernel's boot would have caught most, a minute at a time and without saying
+where.
+
+**Next**, by the card: the run loop.

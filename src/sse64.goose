@@ -197,7 +197,7 @@ fn pick4(x0: u64, x1: u64, y0: u64, y1: u64, imm: u32) -> u64, u64 {
 
 // Is the 0F AE instruction at hand one with a register operand (a fence)? Looked at before
 // the ModRM byte is taken.
-fn m_ae_fence() -> bool { return code_rd(ip, 8) >> 6 == 3; }
+fn m_ae_fence() -> bool { return peek8() >> 6 == 3; }
 
 fn sse64_op(op: u8) {
     // Which prefix chose the instruction: 0 none, 1 66, 2 F3, 3 F2.
