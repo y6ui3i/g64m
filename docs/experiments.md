@@ -7293,3 +7293,62 @@ a boot of 50 seconds, which the guest counted as 19.
 the images are there.
 
 **Next.** The disk behind this CPU.
+
+## E101: the IDE disk behind the 64-bit CPU (2026-11-19)
+
+- **Hypothesis**: The disk is `src/dev.goose`'s (E075), shared since E097 and never
+  reached from the 64-bit CPU: it sits at ports 1F0h to 1F7h and interrupt line 14, and a
+  driver talks to it with 16-bit port reads and writes repeated by REP INSW and REP OUTSW,
+  which this CPU does not have yet. **With INS and OUTS written, and `--disk` given to
+  `x64`, a test image that identifies the disk, reads sectors, writes one and reads it
+  back prints the same as under KVM with the same image as QEMU's IDE disk: the size, the
+  data, the status after each step and one interrupt for each command. And with the
+  driver's modules in an initramfs, the 64-bit Linux mounts an ext2 file system from the
+  disk and moves its root there, as the 32-bit one does (E075).**
+- **What changed since last time**: E097's wrong builds of 16-bit and 32-bit port access
+  were not caught, for want of a device that needs them; this is that device. The other
+  side of the comparison is QEMU's model of a disk, not a CPU: where the two disks differ
+  in something a driver does not depend on (the model's name, timings), that is not
+  compared.
+- **Next move for each result**:
+  - The test prints the same and Linux mounts the disk → kept; next is the network
+  - The status after a step differs → read what ATA says a drive does there; if this
+    disk is wrong it is wrong for the 32-bit machine too: fix it there
+  - The kernel does not find the disk → its messages say which probe failed; the 32-bit
+    machine's `init` has the driver's options that worked (pata_legacy, the primary
+    channel only)
+- **Cut-off**: one disk, PIO only (no DMA: there is no PCI IDE controller), as on the
+  32-bit machine. Alpine's x86_64 kernel has neither the ATA drivers nor ext2 built in
+  (asked of the running kernel: no block file system in /proc/filesystems, no libata in
+  /sys/module); they come from its `modloop-lts`, a download of 296 MB that is the
+  owner's to allow. The first half of the hypothesis does not need it.
+
+### Result (the first half)
+
+2026-11-19. **The first half is kept: `y_ide`, 31 lines, prints the same on the 64-bit
+machine with `--disk` as under KVM with the same image as QEMU's IDE disk, the first time
+it was run.** The second half (Linux mounting the disk) waits for the owner's word on the
+download the card names.
+
+**What was built.** INS and OUTS (6C to 6F) in `src/cpu64.goose`, one repetition at a
+time like the other strings, at 8, 16 and 32 bits; the page a repeated INS writes to is
+asked for before the port is read, so that a fault does not lose what the device gave.
+`--disk FILE` and `--keep` in `src/x64.goose`. The disk's data port is one port at 32
+bits too (`io_in` and `io_out` took the upper half from port 1F2h). `tools/systest64.sh`
+makes the test's disk image and gives it to both sides.
+
+**The test**: the disk at rest; IDENTIFY (ATA, LBA, 2,048 sectors, one interrupt); two
+sectors read, the first by single IN AX and REP INSW, the second by REP INSD, with the
+status before and after and two interrupts; a sector written by OUT and REP OUTSW (no
+interrupt before the data, one after), read back, its neighbours unchanged; a sector past
+the end (the error bit); and a line sent to the serial port by REP OUTSB.
+
+**Wrong builds.** 9 (`build/mut101.py`). 8 caught, one after the OUTSB line was added
+(nothing had used OUTSB, and a build that took it for INSB passed). E097's two that no
+device needed are among the caught: 16-bit access done as 8, and the upper half of a
+32-bit read. One is still not: an 8-bit read done as a 16-bit one, which reads the next
+port too and shows only where that has an effect; none of these ports has one that both
+machines agree on.
+
+**Nothing was wrong in the disk itself** (`src/dev.goose`, E075): QEMU's model and this
+one give a driver the same.

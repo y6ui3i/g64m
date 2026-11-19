@@ -28,6 +28,9 @@
 // port: what is typed goes to the guest, and Ctrl-] leaves. The machine then keeps to the
 // clock: it sleeps while the guest is idle.
 //   --headless     never take the terminal
+//   --disk FILE    the image of an IDE disk. What the guest writes is kept in memory for this
+//                  run only, and the image is never changed, unless:
+//   --keep         with --disk: the guest's writes go to the image, in place
 
 import std;
 import os;
@@ -122,7 +125,8 @@ fn io_in(port: u64, w: u8) -> u64 {
     if w == 8 { return port_in8(p); }
     let lo: u64 = port_in(p);
     if w == 16 { return lo; }
-    let hi: u64 = port_in(p + 2);
+    // (The disk's data port is one port at every width: its next two bytes, not port 1F2h.)
+    let hi: u64 = port_in(if p == 0x1F0 { p } else { p + 2 });
     return lo | hi << 16;
 }
 
@@ -131,7 +135,7 @@ fn io_out(port: u64, w: u8, v: u64) {
     let p = port as! u16;
     if w == 8 { port_out8(p, v as! u8); return; }
     port_out(p, v as! u16);
-    if w == 32 { port_out(p + 2, (v >> 16) as! u16); }
+    if w == 32 { port_out(if p == 0x1F0 { p } else { p + 2 }, (v >> 16) as! u16); }
 }
 
 // What the machine does between two instructions: the timer, a halt, and an interrupt from
@@ -302,6 +306,8 @@ fn main() {
     var append_arg = 0;
     var max_given = false;
     var headless = false;
+    var disk_arg = 0;
+    var disk_scratch: i32 = 1;   // the disk's writes are not kept, unless --keep says so
     var max: u64 = 2000000000;
     var path: const u8[:] = "";
     var i = 1;
@@ -317,6 +323,8 @@ fn main() {
         }
         else if a[i] == "--faults" { show_faults = true; }
         else if a[i] == "--headless" { headless = true; }
+        else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }
+        else if a[i] == "--keep" { disk_scratch = 0; }
         else if a[i] == "--initrd" && i + 1 < a.len { i++; initrd_arg = i; }
         else if a[i] == "--append" && i + 1 < a.len { i++; append_arg = i; }
         else if (a[i] == "--wait" || a[i] == "--type") && i + 1 < a.len {
@@ -347,6 +355,10 @@ fn main() {
     else { problem = load_elf(img); }
     guard problem.len == 0 else { write_stderr(str("x64: ", problem, "\n")); exit(2); }
 
+    if disk_arg > 0 {
+        ide_sectors = disk_open(a[disk_arg], disk_scratch);
+        if ide_sectors < 1 { write_stderr("x64: cannot open the disk image, or it has no sector\n"); exit(2); }
+    }
     tick_insns = 64;
     timer_on = false;
     var asleep = false;

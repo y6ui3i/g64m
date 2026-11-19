@@ -32,13 +32,23 @@ for asm in $list; do
     nasm -w-other -I tests/sys64/ -f bin -l "build/s64/$name.lst" -o "build/s64/$name" "$asm" || exit 2
 done
 
+# The disk for y_ide: 2,048 sectors, word i of sector n holding n * 257 + i * 3.
+python3 -c "
+import struct
+open('build/s64/ide.img','wb').write(b''.join(struct.pack('<256H',*[(n*257+i*3)&0xFFFF for i in range(256)]) for n in range(2048)))"
+# What a test is given beyond its image, by this program and by QEMU.
+ours() { case "$1" in y_ide) echo "--disk build/s64/ide.img" ;; esac; }
+theirs() { case "$1" in y_ide) echo "-drive file=ide.img,format=raw,if=ide,snapshot=on" ;; esac; }
+
 QEMU="timeout 30 qemu-system-x86_64 -cpu max -m 64 -display none -no-reboot -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=4"
 if [ -n "${ORACLE_HOST:-}" ]; then
     ssh "$ORACLE_HOST" 'mkdir -p g86m-oracle/s' || exit 2
     for asm in $list; do
         name=$(basename "$asm" .asm)
         scp -q "build/s64/$name" "$ORACLE_HOST:g86m-oracle/s/" || exit 2
-        ssh "$ORACLE_HOST" "cd g86m-oracle/s && $QEMU -accel kvm -kernel $name > $name.1 2>/dev/null; echo \$? > $name.rc; $QEMU -accel kvm -kernel $name > $name.2 2>/dev/null; $QEMU -accel tcg -kernel $name > $name.tcg 2>/dev/null; cmp -s $name.1 $name.2 && test -s $name.1 && test \$(cat $name.rc) = 1 && { cmp -s $name.1 $name.tcg || echo 'note  $name: QEMU without KVM prints differently' >&2; cat $name.1; }" > "build/s64/$name.new"
+        x=$(theirs "$name")
+        if [ -n "$x" ]; then scp -q build/s64/ide.img "$ORACLE_HOST:g86m-oracle/s/" || exit 2; fi
+        ssh "$ORACLE_HOST" "cd g86m-oracle/s && $QEMU $x -accel kvm -kernel $name > $name.1 2>/dev/null; echo \$? > $name.rc; $QEMU $x -accel kvm -kernel $name > $name.2 2>/dev/null; $QEMU $x -accel tcg -kernel $name > $name.tcg 2>/dev/null; cmp -s $name.1 $name.2 && test -s $name.1 && test \$(cat $name.rc) = 1 && { cmp -s $name.1 $name.tcg || echo 'note  $name: QEMU without KVM prints differently' >&2; cat $name.1; }" > "build/s64/$name.new"
         # (The test must also have stopped by its own EXIT: QEMU's status is then 1.)
         if [ ! -s "build/s64/$name.new" ]; then echo "FAIL  $name: the oracle's two runs differ, or it printed nothing, or it did not reach its end"; exit 2; fi
         mv "build/s64/$name.new" "tests/expected64/$name.out"
@@ -50,8 +60,8 @@ for asm in $list; do
     name=$(basename "$asm" .asm)
     exp="tests/expected64/$name.out"
     if [ ! -f "$exp" ]; then fail=1; echo "FAIL  $name: no expected text"; continue; fi
-    build/x64-debug "build/s64/$name" > "build/s64/$name.out" 2> "build/s64/$name.err"
-    if ! build/x64 "build/s64/$name" 2>/dev/null | cmp -s - "$exp"; then
+    build/x64-debug $(ours "$name") "build/s64/$name" > "build/s64/$name.out" 2> "build/s64/$name.err"
+    if ! build/x64 $(ours "$name") "build/s64/$name" 2>/dev/null | cmp -s - "$exp"; then
         fail=1
         echo "FAIL  $name: release build prints differently"
     fi
