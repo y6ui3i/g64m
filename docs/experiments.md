@@ -7745,3 +7745,92 @@ when it gets round to it. That is QEMU's, not a CPU's, and the case was taken ou
 **Next.** `exec64`'s beginning is now the largest part (165 to 208 of 416), and a decode
 cache would take most of it and of ModRM: the decode cache, with what of the beginning
 it does not cover.
+
+## E107: a decode cache for the 64-bit CPU: the prefixes and ModRM remembered (2026-11-19)
+
+The fourth of [perf64.md](perf64.md)'s list, begun before the third: after E105 and E106
+`exec64` itself is 177 to 222 of the 416 host instructions a guest instruction costs
+(stepped again: a taken JNZ is 257 in all, 177 of them `exec64`'s; `add rbx, rax` is 422,
+with 191 and ModRM's 46 + 31 + 22 + 19 + 18).
+
+- **Hypothesis**: Two parts of an instruction's cost depend only on its bytes, and E104
+  found the bytes at an address almost never change (addresses run fewer than 8 times are
+  0.02% of what is executed): the prefix loop (a fetch and eleven comparisons for each
+  prefix byte, twice for the half of instructions that have REX), and the parsing of
+  ModRM, SIB and displacement (`modrm`, 46 to 68, with its fetches). **With a table found
+  by the instruction's physical address that remembers the prefixes, the opcode, and what
+  `modrm` worked out (the three fields, the registers and scale of the address, the
+  displacement, where the operand ends), a guest instruction costs under 380 host
+  instructions and the boot takes 29.5 seconds or under (31.8 now).** An entry is good
+  while the page it was made from is not written to: pages that hold entries are marked,
+  and a write to one drops its entries (the 32-bit machine's way for 32-bit code, E044).
+- **What changed since last time**: E105 and E106 took what was outside the instruction.
+  This is the first structure: a table, and a watch on writes. It is also what the next
+  step stands on: an entry that also says which of a few dozen common forms the
+  instruction is, so that those skip `exec64`'s chain of comparisons too (the 32-bit
+  machine's short executors). That step is not in this entry.
+- **Next move for each result**:
+  - Under 380 and all tests as they were → kept; next is the common forms, on this table
+  - Over 380 but under 416 → the lookup and the watch cost more than was thought: kept
+    if the tests hold, since the next step needs it, and the ledger says what it cost
+  - No gain or a loss → the table as built is in the way: count its lookup, and whether
+    writes to marked pages are common (the kernel patches itself at boot), before
+    anything is built on it
+  - A test differs → an entry outlived its bytes, or was made from bytes that are not
+    all on its page: the case goes into the tests with a wrong build
+- **Cut-off**: the prefixes and ModRM only. Constants are read from the page each time
+  (which E105 made cheap); the opcode's arm is still found by `exec64`'s comparisons.
+  `--no-decode-cache` turns it off, for looking for a fault in it.
+
+**Result: 399 host instructions for a guest instruction (416 before), and the boot in 31.4
+to 31.9 seconds (31.8 before): the card's second branch. Kept, and what it cost is below.**
+
+| Boot to the prompt (1,523,597,312 instructions) | Host instructions | Cycles | Time |
+|---|---:|---:|---:|
+| E106 | 634 thousand million (416 each) | 99.2 | 31.8 s |
+| this entry, the cache on | 608 (399) | 96.8 to 97.1 | 31.4 to 31.9 s |
+| this entry, `--no-decode-cache` | 680 (447) | 109.8 to 110.1 | 35.1 to 35.2 s |
+
+- **The table works as E104 said it would.** Counted in a build with counters: 97.1% of
+  instructions are found (1,479,755,533), 2,630,988 are decoded and remembered, 41,201,435
+  begin on a page that has been given up or lie across two; `modrm` takes what it needs
+  from the entry 1,139,895,519 times and parses 32,393,842 times. Pages are dropped 1,741
+  times in the boot and 9 pages are given up (code and data on one page).
+- **It saves 48 and its upkeep costs 31.** With the cache turned off the same build needs
+  447, not E106's 416: the watch in every store, the entry's index kept for `modrm`, and
+  the branch around the old decoder are paid whether an entry is found or not. Found, the
+  entry saves 48 of the 447. The estimate was wrong in both halves: the prefix loop and
+  `modrm` were less than was counted, and the upkeep was not counted at all.
+- **Why a found entry is not cheap** (one guest instruction's host instructions written
+  out, a `ret`: 368, of them `exec64` 186): each field of the entry is unpacked into a
+  global of its own (`rex`, `p66`, `asz32`, `rep`, `seg_base`, `ip`, then `m_mod`, `m_reg`,
+  `m_rm`, `m_off`, `m_ea`), and the globals lie on both sides of the 256 MB of memory, so
+  each store is three or four host instructions; `exec64` then tests those globals again.
+  What the same listing shows beside it: `exec64` saves twelve registers on entry and
+  restores them; the start of the instruction is saved (17 words) every time; and reading
+  the eight bytes of the return address is 72 host instructions in `mem_rd`, which tests
+  and loads each byte by itself, after 49 in `sys_rd`.
+- **Held to the real CPU.** A new program, `a_smc` (1,028 instructions traced on the real
+  CPU by ptrace): an instruction run three times, then its opcode, its ModRM, its
+  displacement, a prefix, its REX prefix or its RIP-relative address changed and run three
+  times more; stores that begin on the page before the code's; code far into a page; an
+  instruction on two pages changed on the second; a store beside code forty times (the
+  page is given up). In `y_tlb` (75 lines, from KVM): code changed through another
+  address of its page, and FS's base in an instruction that repeats. 18 programs and 8
+  system tests pass, and the kernel boots its four ways.
+- **Wrong builds: 15 of 15 caught**, 8 of them at first. The seven that passed showed the
+  tests' holes, not the cache's: nothing ran code in the upper half of a page; nothing
+  changed the second page of an instruction on two; no page was reached at an address
+  other than its physical one and then changed; and the repeated instructions sat on a
+  page with data, which the stores had given up, so that what `modrm` remembers (the
+  constant after a RIP-relative address, an address of 32 bits, a segment's base) was
+  never used twice. Each has its case now. One wrong build was itself wrong the first
+  time (it changed the tag looked for and not the tag stored, and so found nothing).
+- **Not caught by anything but the boot**: an entry depends on nothing but the bytes,
+  because this CPU runs 64-bit code only. A second mode would have to be part of the tag.
+
+**Next.** The listing names three things that cost more than the table saves, none of
+them a structure: `mem_rd` and `mem_wr` a word at a time (72 host instructions for eight
+bytes now); the instruction's state in a few locals or one small record instead of
+globals far apart; the start of the instruction saved only when something can fault.
+After those, the common forms on this table, as the card said.
