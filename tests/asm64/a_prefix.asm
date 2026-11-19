@@ -1,8 +1,6 @@
 ; Prefixes end with their instruction (E109): the instruction after one with a prefix 67h,
 ; 66h, F3h or REX.W is met for the first time just then, and has none of it. And REX in
 ; front of the x87, which names no other register of its stack and no other operation.
-;
-; Not in the suite yet: its expected trace has to come from the real CPU (E109).
 %include "elf.inc"
 
     mov rbx, 0x100000010
@@ -24,7 +22,7 @@
     mov rdx, [buf + 32]
 
     fninit
-    fld1
+    db 0x41, 0xD9, 0xE8                 ; REX.B, FLD1: the field is part of the opcode here
     fldz
     fld dword [three]                   ; ST0 3, ST1 0, ST2 1
     db 0x41, 0xD8, 0xC2                 ; REX.B, FADD ST0, ST2

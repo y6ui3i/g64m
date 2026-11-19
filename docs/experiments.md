@@ -7976,14 +7976,19 @@ to 27.8 seconds (29.4 to 30.3): the card's first branch. Kept.**
     opcode.
   - *REX.B left in the x87's register field.* The same hole; and on three register forms
     it gave the right build's result, so it may be no wrong build at all (not looked into).
-- **A test for those is written and not in the suite**: `tests/asm64/pending/a_prefix.asm`
-  (an instruction met for the first time after one with 67h, 66h, REX.W and F3h; REX in
-  front of four x87 instructions). The first two wrong builds differ from the right build
-  on it. Its expected trace has to come from the real CPU, and the oracle's host could not
-  be reached from where this was run (another network; a wake-on-LAN packet was sent and
-  nothing answered in a few minutes). **Open: take the trace
-  (`ORACLE_HOST=hal tools/difftest64.sh a_prefix` after moving the file up); only then is
-  it known that the right build is right there.**
+- **The test for those: `a_prefix`, 36 traced instructions, and all 23 are caught.** An
+  instruction met for the first time after one with 67h, 66h, REX.W and F3h; REX in front
+  of five x87 instructions (register forms, a memory form, and FLD1, where the register
+  field is part of the opcode). The right build gave the real CPU's trace at the first
+  run. The third wrong build was a wrong build after all: the x87's code takes a register
+  number modulo 8, so REX.B left in it named the same register, but FLD1 with REX.B was
+  taken for an opcode that does not exist. The first version of the test had no such
+  instruction.
+- **A wrong reading on the way, corrected.** The test was first written when the oracle's
+  host did not answer, set aside under `tests/asm64/pending/`, and the entry said the host
+  could not be reached. It had been up all along (32 days); the machine this was run on
+  was on another network for that half hour. The wake-on-LAN packets sent then did
+  nothing.
 
 **Next.** As the card said for this branch: the twelve registers `exec64` saves and
 restores (16), with `save_start` (18) the largest things every instruction still pays
