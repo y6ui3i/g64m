@@ -140,6 +140,11 @@ it is worth trying.
   `docker run --platform linux/amd64 alpine echo` → a shell session → a program with
   threads. Compared against QEMU's user-mode emulator on the same image for results, and
   for speed once it works.
+- **The tests are part of it** (E092): the ptrace oracle and the generated tests run
+  against any user-mode emulator, not only this one (`tools/qemu64.py` does it for QEMU).
+  Their first run on QEMU 10.2.1 met a bug in RCL and RCR that upstream had fixed a few
+  months before. A table of where each emulator parts from a real CPU is something this
+  project can offer that the others do not have.
 - **Speed** is the JIT's, as on the 32-bit machine: the design carries over (docs/perf.md),
   and under Linux the generated code's memory is made executable with `mprotect`.
 - **It does not need the kernel half of M10** (long mode, paging, devices): it needs the
