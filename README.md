@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the network, the screen, and speed |
+| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the screen, and speed |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -282,8 +282,17 @@ file system on `/dev/sda`; `--keep` and `off` in the guest are as on the 32-bit 
 ./build/x64 --disk images/disk64.img --initrd images/initramfs64-disk images/vmlinuz64-lts
 ```
 
-There is no network and no frame buffer behind this CPU yet, and no JIT: it runs some 30
-million instructions a second.
+With `--net` and an initramfs that has the card's driver (`tools/images/make-mini64.py`
+makes `images/initramfs64-net` too), the guest gets an address and reaches the Internet
+through the host, as on the 32-bit machine (`--rtc host` gives it the date a certificate is
+checked against):
+
+```bash
+./build/x64 --net --initrd images/initramfs64-net images/vmlinuz64-lts
+```
+
+There is no frame buffer behind this CPU yet, and no JIT: it runs some 30 million
+instructions a second.
 
 ## Tests
 

@@ -148,7 +148,7 @@ devices on a CPU that is still moving.
   disk, the network and the frame buffer behind this CPU (the devices are there, E097;
   their options and tests are not), and speed: it interprets, decoding every instruction
   every time, at some 30 million a second.
-  - Done since: the terminal as its console (E100); the disk (E101).
+  - Done since: the terminal as its console (E100); the disk (E101); the network (E102).
 
 ### M11: a backend for Docker
 

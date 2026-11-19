@@ -82,7 +82,7 @@ if [ $# -eq 0 ]; then
     if [ -f images/vmlinuz64-lts ] && [ -f images/initramfs64-mini ]; then
         out=$(build/x64 --initrd images/initramfs64-mini --wait "~ # " \
             --type 'uname -m; echo $((6*7)) > /tmp/a; cat /tmp/a; grep -c processor /proc/cpuinfo; echo end-$?\n' --wait "end-0" \
-            images/vmlinuz64-lts 2>build/s64/linux.err | tr -d '\r' | sed -n '/^x86_64$/,$p' | tr '\n' ' ')
+            images/vmlinuz64-lts 2>build/s64/linux.err | tr -d '\r' | sed -n '/^x86_64$/,$p' | tr '\n' ' ' | sed 's/ *$//')
         if [ "$out" = "x86_64 42 1 end-0" ]; then
             echo "ok    linux64 shell: $(sed -n 's/^x64: \([0-9]*\) instructions.*/\1/p' build/s64/linux.err) instructions to the end of the script"
         else
@@ -103,8 +103,8 @@ if [ $# -eq 0 ]; then
             --type 'echo kept-$((6*7)) > /f; mount | grep -c "sda on / type ext2"; off\n' --wait "System halted" \
             images/vmlinuz64-lts > build/s64/disk1.out 2>build/s64/disk1.err
         out=$(build/x64 --disk build/s64/disk64.img --initrd images/initramfs64-disk --wait "root on /dev/sda" --wait "~ # " \
-            --type 'cat /f; echo end-$?\n' --wait "end-0" images/vmlinuz64-lts 2>build/s64/disk2.err | tr -d '\r' | sed -n '/^kept-42$/,$p' | tr '\n' ' ')
-        if [ "$out" = "kept-42 end-0 " ] || [ "$out" = "kept-42 end-0" ]; then
+            --type 'cat /f; echo end-$?\n' --wait "end-0" images/vmlinuz64-lts 2>build/s64/disk2.err | tr -d '\r' | sed -n '/^kept-42$/,$p' | tr '\n' ' ' | sed 's/ *$//')
+        if [ "$out" = "kept-42 end-0" ]; then
             echo "ok    linux64 disk: an ext2 root on /dev/sda; a file written before \`off\` is there at the next boot"
         else
             fail=1
@@ -114,6 +114,23 @@ if [ $# -eq 0 ]; then
         fi
     else
         echo "skip  linux64 disk (images/disk64.img and images/initramfs64-disk are not there; tools/images/make-disk.sh makes them)"
+    fi
+    # On a network (E102): the card found on PCI, an address by DHCP, the gateway pinged.
+    # Nothing leaves the host: the gateway is libslirp's.
+    if [ -f images/initramfs64-net ] && build/x64 --net build/s64/y_first >/dev/null 2>&1; then
+        out=$(build/x64 --net --headless --initrd images/initramfs64-net --wait "root on" --wait "# " \
+            --type "ifconfig eth0 | grep -c 'inet addr:10.0.2.15'\n" --wait "# " \
+            --type "ping -c 3 10.0.2.2 | grep -c '3 packets received'\n" --wait "# " \
+            images/vmlinuz64-lts 2>build/s64/net.err | tr -d '\r')
+        if [ "$(echo "$out" | grep -c '^1$')" = 2 ]; then
+            echo "ok    linux64 on a network: the card on PCI, an address by DHCP, the gateway pinged"
+        else
+            fail=1
+            echo "FAIL  linux64 on a network: no address, or no answer from the gateway"
+            echo "$out" | tail -6 | sed 's/^/    |/'
+        fi
+    else
+        echo "skip  linux64 on a network (libslirp or images/initramfs64-net is not there)"
     fi
     # The same kernel with a pseudo-terminal as its console (E100): a command typed, `sleep 3`
     # timed against the clock, Ctrl-] to leave.
