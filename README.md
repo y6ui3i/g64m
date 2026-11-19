@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | begun (E091): a 64-bit CPU of its own, `src/x64.goose`, runs integer user-mode programs and matches a real CPU instruction for instruction; no SSE, no machine around it yet |
+| M10 | x86_64 | begun (E091, E093): a 64-bit CPU of its own, `src/x64.goose`, runs user-mode programs with SSE2 and matches a real CPU instruction for instruction; no machine around it yet |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -272,7 +272,7 @@ Its tests are static ELF programs (`tests/asm64/`, most of them written by
 [tools/gen64_tests.py](tools/gen64_tests.py), and `tests/c64/`), and the expected traces in
 `tests/expected64/` come from a real CPU: [tools/oracle/step64.c](tools/oracle/step64.c) runs a
 program one instruction at a time under `ptrace` on an x86_64 Linux host and prints the
-registers after each. `ORACLE_HOST=name tools/difftest64.sh` takes them again over ssh. The
+registers after each (and the XMM registers, for the tests of SSE). `ORACLE_HOST=name tools/difftest64.sh` takes them again over ssh. The
 flags the manual leaves undefined are in the traces as that CPU (an Intel Core i7-3770K) left
 them, and the emulator gives the same.
 
@@ -286,6 +286,7 @@ them, and the emulator gives the same.
 | [src/exec.goose](src/exec.goose) | Instruction decode and execution; the cache of decoded instructions |
 | [src/fpu.goose](src/fpu.goose) | The x87 FPU of the i686 machine |
 | [src/sse.goose](src/sse.goose) | MMX and SSE2 of the i686 machine |
+| [src/lanes.goose](src/lanes.goose) | What MMX and SSE2 compute, apart from any CPU: shared by the i686 machine and the 64-bit CPU |
 | [src/bios.goose](src/bios.goose) | Power-on setup and the BIOS services the emulator performs: screen, disk, keyboard, time |
 | [src/dev.goose](src/dev.goose), [src/disk.c](src/disk.c), [src/net.c](src/net.c) | Interrupt controllers, timer, keyboard controller, CMOS clock, IDE disk, PCI and the network card, I/O port dispatch; the disk's image file and the host side of the network in C |
 | [src/linux.goose](src/linux.goose) | Loading a Linux kernel and entering it directly (zero page, memory map, initramfs, frame buffer) |
@@ -293,7 +294,7 @@ them, and the emulator gives the same.
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |
 | [src/g86m.goose](src/g86m.goose) | The run loop, interrupt delivery, pacing, the serial console, the session script, the command line |
-| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, and a loader of static ELF programs with three system calls |
+| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose), [src/sse64.goose](src/sse64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, SSE and SSE2, and a loader of static ELF programs with three system calls |
 | [src/big.goose](src/big.goose) | The large arrays (RAM and three others), in a file of their own so they come last in memory |
 
 The boot sectors in `testdata/` are copied from rustx86's `asm/` as they are, including the Japanese

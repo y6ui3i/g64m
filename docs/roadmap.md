@@ -113,6 +113,8 @@ devices on a CPU that is still moving.
 - Done so far:
   - E091: the integer instructions in user mode, and the ptrace oracle
     (`tools/oracle/step64.c`, `tools/difftest64.sh`).
+  - E093: SSE and SSE2 with sixteen XMM registers, by the same oracle. What they compute is
+    shared with the 32-bit machine (`src/lanes.goose`).
 
 ### M11: a backend for Docker
 

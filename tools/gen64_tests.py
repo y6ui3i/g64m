@@ -660,7 +660,369 @@ def gen_string():
     t.write()
 
 
+# ---- SSE and SSE2 (E093): traced with the XMM registers ----
+
+import struct
+
+
+def f32(x):
+    return struct.unpack("<I", struct.pack("<f", x))[0]
+
+
+def f64(x):
+    return struct.unpack("<Q", struct.pack("<d", x))[0]
+
+
+SINGLES = [f32(x) for x in [0.0, 1.0, -1.0, 0.5, 1.5, 2.5, -2.5, 3.0, 0.1, 1e10, -1e10, 1e-10, 3.4e38, 1e-38,
+                            2147483520.0, 2147483648.0, -2147483648.0, 4294967296.0, 16777217.0, 123456.789,
+                            9.2233720368547758e18, -9.2233720368547758e18, 0.49999997, -0.5, 7.5, -7.5]] + [
+    0x80000000, 0x7F800000, 0xFF800000, 0x7FC00000, 0xFFC00000, 0x7FA00001, 0xFF800123, 0x7FC12345,
+    0x00000001, 0x007FFFFF, 0x00800000, 0x80000001, 0x7F7FFFFF]
+DOUBLES = [f64(x) for x in [0.0, 1.0, -1.0, 0.5, 1.5, 2.5, -2.5, 3.0, 0.1, 1e10, -1e10, 1e-10, 1.7e308, 1e-308,
+                            2147483647.0, 2147483647.5, 2147483648.0, -2147483648.0, -2147483648.5, 4294967296.0,
+                            9007199254740993.0, 9.2233720368547758e18, -9.2233720368547758e18, 1e19,
+                            123456.789, 0.49999999999999994, -0.5, 7.5, -7.5, 3.4028235677973366e38, 1e-46]] + [
+    0x8000000000000000, 0x7FF0000000000000, 0xFFF0000000000000, 0x7FF8000000000000, 0xFFF8000000000000,
+    0x7FF4000000000001, 0xFFF0000000000123, 0x7FF8000012345678, 0x0000000000000001, 0x000FFFFFFFFFFFFF,
+    0x0010000000000000, 0x7FEFFFFFFFFFFFFF]
+LANES = {8: [0, 1, 0x7F, 0x80, 0x81, 0xFF, 0x40], 16: [0, 1, 0x7FFF, 0x8000, 0x8001, 0xFFFF, 0x00FF, 0x0100],
+         32: [0, 1, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x0000FFFF, 0x00010000],
+         64: [0, 1, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF, 0x100000000]}
+
+
+class XTest(Test):
+    """A test with 128-bit constants in a table after the code."""
+
+    def __init__(self, name, what, seed):
+        super().__init__(name, what, seed)
+        self.consts = []
+
+    def const(self, lo, hi):
+        self.consts.append((lo, hi))
+        return f"c{len(self.consts) - 1}"
+
+    def ints(self, w=None):
+        """128 bits of lanes w wide (any width if not given), edges and random ones."""
+        r = self.rng
+        w = w or r.choice([8, 16, 32, 64])
+        v = 0
+        for i in range(128 // w):
+            lane = r.choice(LANES[w]) if r.random() < 0.6 else r.getrandbits(w)
+            v |= lane << (i * w)
+        return v & (1 << 64) - 1, v >> 64
+
+    def singles(self):
+        r = self.rng
+        l = [r.choice(SINGLES) if r.random() < 0.8 else f32(r.uniform(-1000, 1000)) for _ in range(4)]
+        return l[0] | l[1] << 32, l[2] | l[3] << 32
+
+    def doubles(self):
+        r = self.rng
+        l = [r.choice(DOUBLES) if r.random() < 0.8 else f64(r.uniform(-1000, 1000)) for _ in range(2)]
+        return l[0], l[1]
+
+    def xload(self, i, lo, hi):
+        self.e(f"movdqu xmm{i}, [{self.const(lo, hi)}]")
+
+    def xregs(self, n):
+        return self.rng.sample(range(16), n)
+
+    def write(self):
+        self.lines += ["    EXIT", "    align 16"]
+        for i, (lo, hi) in enumerate(self.consts):
+            self.lines.append(f"c{i}: dq 0x{lo:X}, 0x{hi:X}")
+        self.lines += ["buf: times 64 dq 0x0123456789ABCDEF", "file_end:"]
+        path = os.path.join(os.path.dirname(__file__), "..", "tests", "asm64", self.name + ".asm")
+        with open(path, "w") as f:
+            f.write("\n".join(self.lines) + "\n")
+
+
+def gen_xmove():
+    t = XTest("x_move", "The moves of SSE and SSE2 between XMM registers, memory and general registers; shuffles and unpacking.", 9301)
+    r = t.rng
+    for op in ["movaps", "movups", "movapd", "movupd", "movdqa", "movdqu"]:
+        for _ in range(3):
+            a, b = t.xregs(2)
+            t.xload(a, *t.ints())
+            t.e(f"{op} xmm{b}, xmm{a}")
+            t.e(f"{op} [buf + 32], xmm{b}")
+            t.xload(a, *t.ints())
+            t.e(f"{op} xmm{a}, [buf + 32]")
+    for op, size in [("movss", "dword"), ("movsd", "qword")]:
+        for _ in range(4):
+            a, b = t.xregs(2)
+            t.xload(a, *t.ints())
+            t.xload(b, *t.ints())
+            t.e(f"{op} xmm{b}, xmm{a}")
+            t.e(f"{op} [buf + 8], xmm{b}")
+            t.e(f"{op} xmm{a}, [buf + 16]")
+            t.e("mov rax, [buf + 8]")
+    for _ in range(4):
+        a, b = t.xregs(2)
+        g, h = t.regs(2)
+        t.xload(a, *t.ints())
+        t.load(g)
+        t.load(h)
+        t.e(f"movd {R32[g]}, xmm{a}")
+        t.e(f"movq {R64[h]}, xmm{a}")
+        t.load(g)
+        t.e(f"movd xmm{b}, {R32[g]}")
+        t.e(f"movq xmm{a}, {R64[g]}")
+        t.e(f"movd [buf], xmm{b}")
+        t.e(f"movq [buf + 8], xmm{a}")
+        t.xload(a, *t.ints())
+        t.e(f"movd xmm{a}, dword [buf + 8]")
+        t.e(f"movq xmm{b}, qword [buf + 8]")
+        t.xload(b, *t.ints())
+        t.e(f"movq xmm{b}, xmm{a}")
+        t.e("mov rax, [buf]")
+        t.e("mov rdx, [buf + 8]")
+    for op in ["movlps", "movhps", "movlpd", "movhpd"]:
+        a, = t.xregs(1)
+        t.xload(a, *t.ints())
+        t.e(f"{op} [buf + 24], xmm{a}")
+        t.e(f"{op} xmm{a}, [buf + 40]")
+        t.e("mov rax, [buf + 24]")
+    for op in ["movhlps", "movlhps", "unpcklps", "unpckhps", "unpcklpd", "unpckhpd"]:
+        for _ in range(2):
+            a, b = t.xregs(2)
+            t.xload(a, *t.ints())
+            t.xload(b, *t.ints())
+            t.e(f"{op} xmm{a}, xmm{b}")
+            if op.startswith("unpck"):
+                t.e(f"{op} xmm{b}, [{t.const(*t.ints())}]")
+    for op in ["movntps", "movntpd", "movntdq"]:
+        a, = t.xregs(1)
+        t.xload(a, *t.ints())
+        t.e(f"{op} [buf + 48], xmm{a}")
+        t.e("mov rax, [buf + 48]")
+        t.e("mov rdx, [buf + 56]")
+    t.load(3)
+    t.e("movnti [buf + 64], ebx")
+    t.e("movnti [buf + 72], rbx")
+    t.e("mov rax, [buf + 64]")
+    t.e("mov rdx, [buf + 72]")
+    for _ in range(6):
+        a, = t.xregs(1)
+        g, = t.regs(1)
+        t.xload(a, *t.ints())
+        t.load(g)
+        t.e(f"movmskps {R32[g]}, xmm{a}")
+        t.load(g)
+        t.e(f"movmskpd {R32[g]}, xmm{a}")
+        t.load(g)
+        t.e(f"pmovmskb {R32[g]}, xmm{a}")
+        t.e(f"pextrw {R32[g]}, xmm{a}, {r.randrange(8)}")
+        t.load(g)
+        t.e(f"pinsrw xmm{a}, {R32[g]}, {r.randrange(8)}")
+        t.e(f"pinsrw xmm{a}, word [buf + 1], {r.randrange(8)}")
+    for op in ["shufps", "shufpd", "pshufd", "pshufhw", "pshuflw"]:
+        for _ in range(5):
+            a, b = t.xregs(2)
+            t.xload(a, *t.ints())
+            t.xload(b, *t.ints())
+            t.e(f"{op} xmm{a}, xmm{b}, 0x{r.getrandbits(8):X}")
+            t.e(f"{op} xmm{b}, [{t.const(*t.ints())}], 0x{r.getrandbits(8):X}")
+    for _ in range(3):
+        a, b = t.xregs(2)
+        t.xload(a, *t.ints())
+        t.xload(b, *t.ints(8))
+        t.e("lea rdi, [buf + 96]")
+        t.e(f"maskmovdqu xmm{a}, xmm{b}")
+        t.e("mov rax, [buf + 96]")
+        t.e("mov rdx, [buf + 104]")
+    t.e("lfence")
+    t.e("mfence")
+    t.e("sfence")
+    t.e("prefetcht0 [buf]")
+    t.write()
+
+
+PINT = {8: ["paddb", "psubb", "paddsb", "paddusb", "psubsb", "psubusb", "pcmpeqb", "pcmpgtb", "pavgb", "pminub",
+            "pmaxub", "psadbw", "punpcklbw", "punpckhbw"],
+        16: ["paddw", "psubw", "paddsw", "paddusw", "psubsw", "psubusw", "pcmpeqw", "pcmpgtw", "pavgw", "pminsw",
+             "pmaxsw", "pmullw", "pmulhw", "pmulhuw", "pmaddwd", "punpcklwd", "punpckhwd", "packsswb", "packuswb"],
+        32: ["paddd", "psubd", "pcmpeqd", "pcmpgtd", "pmuludq", "punpckldq", "punpckhdq", "packssdw"],
+        64: ["paddq", "psubq", "pand", "pandn", "por", "pxor", "punpcklqdq", "punpckhqdq"]}
+
+
+def gen_xint():
+    t = XTest("x_int", "The packed integer instructions of SSE2 on XMM registers: arithmetic, comparisons, packing, unpacking, shifts.", 9302)
+    r = t.rng
+    for w, ops in PINT.items():
+        for op in ops:
+            for _ in range(4):
+                a, b = t.xregs(2)
+                t.xload(a, *t.ints(w))
+                t.xload(b, *t.ints(w))
+                t.e(f"{op} xmm{a}, xmm{b}")
+                t.e(f"{op} xmm{b}, [{t.const(*t.ints(w))}]")
+            a, = t.xregs(1)
+            t.xload(a, *t.ints(w))
+            t.e(f"{op} xmm{a}, xmm{a}")
+    for op, w in [("psrlw", 16), ("psrld", 32), ("psrlq", 64), ("psraw", 16), ("psrad", 32),
+                  ("psllw", 16), ("pslld", 32), ("psllq", 64)]:
+        for n in [0, 1, 3, w // 2, w - 1, w, w + 1, 200]:
+            a, b = t.xregs(2)
+            t.xload(a, *t.ints(w))
+            t.e(f"{op} xmm{a}, {n}")
+            t.xload(a, *t.ints(w))
+            t.xload(b, n, r.getrandbits(64))
+            t.e(f"{op} xmm{a}, xmm{b}")
+        a, b = t.xregs(2)
+        t.xload(a, *t.ints(w))
+        t.xload(b, 1 << 40, 0)
+        t.e(f"{op} xmm{a}, xmm{b}")
+        t.e(f"{op} xmm{a}, [{t.const(3, 0)}]")
+    for op in ["psrldq", "pslldq"]:
+        for n in [0, 1, 3, 7, 8, 9, 15, 16, 200]:
+            a, = t.xregs(1)
+            t.xload(a, *t.ints())
+            t.e(f"{op} xmm{a}, {n}")
+    t.write()
+
+
+def gen_xfloat():
+    t = XTest("x_float", "The floating-point instructions of SSE and SSE2: arithmetic, comparisons, and the conversions, with numbers, zeros, infinities, denormals and NaNs.", 9303)
+    r = t.rng
+    for op in ["add", "sub", "mul", "div", "min", "max", "sqrt"]:
+        for kind in ["ps", "pd", "ss", "sd"]:
+            for _ in range(10):
+                a, b = t.xregs(2)
+                gen = t.singles if kind[1] == "s" else t.doubles
+                t.xload(a, *gen())
+                t.xload(b, *gen())
+                t.e(f"{op}{kind} xmm{a}, xmm{b}")
+                size = "" if kind[0] == "p" else ("dword " if kind == "ss" else "qword ")
+                t.e(f"{op}{kind} xmm{b}, {size}[{t.const(*gen())}]")
+    for op in ["and", "andn", "or", "xor"]:
+        for kind in ["ps", "pd"]:
+            a, b = t.xregs(2)
+            t.xload(a, *t.ints())
+            t.xload(b, *t.ints())
+            t.e(f"{op}{kind} xmm{a}, xmm{b}")
+            t.e(f"{op}{kind} xmm{b}, [{t.const(*t.ints())}]")
+    for kind in ["ps", "pd", "ss", "sd"]:
+        for pred in range(8):
+            for _ in range(3):
+                a, b = t.xregs(2)
+                gen = t.singles if kind[1] == "s" else t.doubles
+                x = gen()
+                t.xload(a, *x)
+                t.xload(b, *(x if r.random() < 0.25 else gen()))
+                t.e(f"cmp{kind} xmm{a}, xmm{b}, {pred}")
+    for op in ["comiss", "ucomiss", "comisd", "ucomisd"]:
+        for _ in range(16):
+            a, b = t.xregs(2)
+            gen = t.singles if op.endswith("ss") else t.doubles
+            x = gen()
+            t.xload(a, *x)
+            t.xload(b, *(x if r.random() < 0.25 else gen()))
+            t.flags(True)
+            t.e(f"{op} xmm{a}, xmm{b}")
+            t.flags(True)
+            t.e(f"{op} xmm{b}, [{t.const(*gen())}]")
+    # Conversions, under each rounding mode of MXCSR (to nearest, down, up, toward zero).
+    for rc in [0, 1, 2, 3]:
+        t.e(f"mov dword [buf], 0x{0x1F80 | rc << 13:X}")
+        t.e("ldmxcsr [buf]")
+        t.e("stmxcsr [buf + 4]")
+        t.e("mov eax, [buf + 4]")
+        for _ in range(8):
+            a, b = t.xregs(2)
+            g, = t.regs(1)
+            t.xload(a, *t.singles())
+            t.xload(b, *t.doubles())
+            for op, x in [("cvtss2si", a), ("cvttss2si", a), ("cvtsd2si", b), ("cvttsd2si", b)]:
+                t.e(f"{op} {R32[g]}, xmm{x}")
+                t.e(f"{op} {R64[g]}, xmm{x}")
+            t.e(f"cvtsd2si {R64[g]}, qword [{t.const(*t.doubles())}]")
+            t.e(f"cvtss2si {R32[g]}, dword [{t.const(*t.singles())}]")
+        for op, gen in [("cvtps2dq", t.singles), ("cvttps2dq", t.singles), ("cvtpd2dq", t.doubles), ("cvttpd2dq", t.doubles)]:
+            for _ in range(5):
+                a, b = t.xregs(2)
+                t.xload(a, *gen())
+                t.xload(b, *t.ints())
+                t.e(f"{op} xmm{b}, xmm{a}")
+                t.e(f"{op} xmm{a}, [{t.const(*gen())}]")
+    t.e("mov dword [buf], 0x1F80")
+    t.e("ldmxcsr [buf]")
+    for _ in range(12):
+        a, = t.xregs(1)
+        g, = t.regs(1)
+        t.xload(a, *t.ints())
+        t.load(g)
+        t.e(f"cvtsi2ss xmm{a}, {R32[g]}")
+        t.e(f"cvtsi2sd xmm{a}, {R32[g]}")
+        t.xload(a, *t.ints())
+        t.e(f"cvtsi2ss xmm{a}, {R64[g]}")
+        t.e(f"cvtsi2sd xmm{a}, {R64[g]}")
+        t.e(f"mov [buf + 8], {R64[g]}")
+        t.e(f"cvtsi2sd xmm{a}, qword [buf + 8]")
+        t.e(f"cvtsi2ss xmm{a}, dword [buf + 8]")
+    # The integers that a single cannot hold: where the rounding falls.
+    for v in [0x1000001, 0x1000003, 0x7FFFFFFFFFFFFFFF, 0x8000000000000001, 0x20000040000001, 0x20000040000000,
+              0x200000C0000000, 0xFFFFFF7FFFFFFFFF, 0x40000080000001, 0x7FFFFFBFFFFFFFFF, 0x7FFFFFC000000000]:
+        t.load(0, v)
+        t.e("cvtsi2ss xmm1, rax")
+        t.e("cvtsi2sd xmm2, rax")
+        t.e("neg rax")
+        t.e("cvtsi2ss xmm3, rax")
+    for op, gen in [("cvtss2sd", t.singles), ("cvtsd2ss", t.doubles), ("cvtps2pd", t.singles), ("cvtpd2ps", t.doubles),
+                    ("cvtdq2ps", lambda: t.ints(32)), ("cvtdq2pd", lambda: t.ints(32))]:
+        for _ in range(10):
+            a, b = t.xregs(2)
+            t.xload(a, *gen())
+            t.xload(b, *t.ints())
+            t.e(f"{op} xmm{b}, xmm{a}")
+            size = {"cvtss2sd": "dword ", "cvtsd2ss": "qword ", "cvtps2pd": "qword ", "cvtdq2pd": "qword "}.get(op, "")
+            t.e(f"{op} xmm{a}, {size}[{t.const(*gen())}]")
+    # Cases the random ones did not reach (each is a wrong build that passed without it).
+    # The smaller and the larger of equal operands, which is to say of the two zeros.
+    pz, nz, one, nan = f64(0.0), f64(-0.0), f64(1.0), 0x7FF8000000000000
+    spz, snz, sone, snan = f32(0.0), f32(-0.0), f32(1.0), 0x7FC00000
+    for op in ["min", "max"]:
+        for x, y in [(pz, nz), (nz, pz), (one, one)]:
+            t.xload(1, x, y)
+            t.xload(9, y, x)
+            t.e(f"{op}pd xmm1, xmm9")
+            t.xload(1, x, y)
+            t.e(f"{op}sd xmm1, xmm9")
+        for x, y in [(spz, snz), (snz, spz), (sone, sone)]:
+            t.xload(2, x | y << 32, y | x << 32)
+            t.xload(10, y | x << 32, x | y << 32)
+            t.e(f"{op}ps xmm2, xmm10")
+            t.xload(2, x | y << 32, y | x << 32)
+            t.e(f"{op}ss xmm2, xmm10")
+    # Every predicate with a NaN on either side, with equal numbers and with unequal ones.
+    for pred in range(8):
+        t.xload(3, nan, one)
+        t.xload(11, one, nan)
+        t.e(f"cmppd xmm3, xmm11, {pred}")
+        t.xload(3, one, f64(2.0))
+        t.xload(11, one, one)
+        t.e(f"cmppd xmm3, xmm11, {pred}")
+        t.xload(3, nan, 0)
+        t.e(f"cmpsd xmm3, xmm11, {pred}")
+        t.xload(4, snan | sone << 32, sone | f32(2.0) << 32)
+        t.xload(12, sone | snan << 32, sone | sone << 32)
+        t.e(f"cmpps xmm4, xmm12, {pred}")
+        t.xload(4, sone, 0)
+        t.xload(12, snan, 0)
+        t.e(f"cmpss xmm4, xmm12, {pred}")
+    # An integer whose lowest bit alone decides which way its single rounds.
+    for v in [0x40000040000001, 0x40000040000000, 0x400000C0000001, 0x4000004000000400]:
+        t.load(0, v)
+        t.e("cvtsi2ss xmm5, rax")
+        t.e("neg rax")
+        t.e("cvtsi2ss xmm6, rax")
+    t.write()
+
+
 def main():
+    gen_xmove()
+    gen_xint()
+    gen_xfloat()
     gen_mov()
     gen_stack()
     gen_string()

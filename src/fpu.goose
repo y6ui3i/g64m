@@ -27,13 +27,8 @@ import exec;
 extern fn ldexp(x: f64, e: i32) -> f64 = "ldexp";
 extern fn logb(x: f64) -> f64 = "logb";
 extern fn remainder(x: f64, y: f64) -> f64 = "remainder";
-extern fn rint(x: f64) -> f64 = "rint";
 
 // A float's bits, through the runtime functions the standard library's binary module uses.
-extern fn f32_of_bits(bits: u32) -> f32 = "gs_f32_from_bits";
-extern fn f64_of_bits(bits: u64) -> f64 = "gs_f64_from_bits";
-extern fn bits_of_f32(v: f32) -> u32 = "gs_f32_to_bits";
-extern fn bits_of_f64(v: f64) -> u64 = "gs_f64_to_bits";
 
 // The condition codes, at their places in the status word.
 let C0 = 0x0100; let C1 = 0x0200; let C2 = 0x0400; let C3 = 0x4000;
