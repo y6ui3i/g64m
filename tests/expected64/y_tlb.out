@@ -63,6 +63,14 @@ an instruction that lies across two pages that are not neighbours in memory
 0000000011223344
 0000000000007788
 8877665544332211
+stores and loads that reach one byte into the next page
+8877665544332211
+00C3887766554488
+00000000AABBCCDD
+00C38877665544AA
+0000000000001234
+00C3887766554412
+AAAAAAAAAAAAAAAA
 code changed by a store at another address of its page
 0000000000000079
 0000000000000064

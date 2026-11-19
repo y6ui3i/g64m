@@ -257,10 +257,17 @@ fn walk(a: u64, acc: u8) -> u64 {
     return p;
 }
 
-// A read through the page tables. One that crosses a page is done a byte at a time.
-fn sys_rd(a: u64, w: u8, acc: u8) -> u64 {
+// A read through the page tables. One that crosses a page is done a byte at a time, in a
+// function of its own, called from an arm that ends in a return (which is what keeps the
+// compiler from putting it back here): the usual access saves no registers for a loop it
+// does not run (E108).
+inline fn sys_rd(a: u64, w: u8, acc: u8) -> u64 {
     let n: u64 = w / 8;
-    if (a & 0xFFF) + n <= 0x1000 { return phys_rd(xlate(a, acc), w); }
+    if (a & 0xFFF) + n > 0x1000 { return sys_rd_across(a, n, acc); }
+    return phys_rd(xlate(a, acc), w);
+}
+
+fn sys_rd_across(a: u64, n: u64, acc: u8) -> u64 {
     var v: u64 = 0;
     for i in n as! i64 {
         let k = i as! u64;
@@ -269,9 +276,13 @@ fn sys_rd(a: u64, w: u8, acc: u8) -> u64 {
     return v;
 }
 
-fn sys_wr(a: u64, w: u8, v: u64, acc: u8) {
+inline fn sys_wr(a: u64, w: u8, v: u64, acc: u8) {
     let n: u64 = w / 8;
-    if (a & 0xFFF) + n <= 0x1000 { phys_wr(xlate(a, acc | ACC_WRITE), w, v); return; }
+    if (a & 0xFFF) + n > 0x1000 { sys_wr_across(a, n, v, acc); return; }
+    phys_wr(xlate(a, acc | ACC_WRITE), w, v);
+}
+
+fn sys_wr_across(a: u64, n: u64, v: u64, acc: u8) {
     // Both pages are found before anything is written, so that a fault leaves nothing half done.
     xlate(a, acc | ACC_WRITE);
     xlate((a | 0xFFF) + 1, acc | ACC_WRITE);       // CR2 is the second page's first byte

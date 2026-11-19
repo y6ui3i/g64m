@@ -119,6 +119,7 @@ The numbers give each a ceiling. None has been tried.
 | 1 | E105: the code page | 471 | 35.8 s |
 | 2 | E106: one test between two instructions | 416 | 31.8 s |
 | 4 | E107: a decode cache (prefixes and ModRM) | 399 | 31.4 to 31.9 s |
+| | E108: memory a word at a time | 378 | 29.4 to 30.3 s |
 
 The decode cache finds 97% of instructions and saves 48 host instructions each, but its
 upkeep (the watch in every store, the index kept for `modrm`) costs 31, and a found entry
