@@ -8062,8 +8062,9 @@ It came in four steps, each measured:
 - **So there is one implementation now.** An instruction of a kind is run by the front
   whether it was in the cache or has just been decoded (`decode` is a function of its
   own, `exec64_miss` calls it), and the rest has no arms for those opcodes. With the
-  two-byte opcodes in, 66% of the boot's instructions go through the front; that step was
-  the largest (308 to 289).
+  two-byte opcodes in, 86% of the instructions go through the front (of 219 consecutive
+  ones of the boot, stepped; not counted over the whole boot); that step was the largest
+  (308 to 289).
 - **The start of an instruction is saved in full only by the rest.** The front saves the
   flags and clears `start_saved`; a fault puts back the registers and the level only if
   they were saved. A fault or interrupt that is waiting is delivered after a full save.
@@ -8083,8 +8084,8 @@ It came in four steps, each measured:
   every instruction is decoded, classified and then run, through two functions. It is a
   switch for comparing, not a way to run.
 
-**Next.** `exec64` and the rest together are 152 of the 289 (stepped: 102 and 50), `main`
-31, `modrm` 29. The front still pays the checks for a machine and a waiting fault, the
+**Next.** Stepped through those 219 instructions (274 for each there): `exec64` 110 and
+the rest 17, where E109 had 166; `main` 31, `modrm` 29, `alu` 23. The front still pays the checks for a machine and a waiting fault, the
 code page's test (and the level's), and ten registers. What the count no longer shows is
 where the cycles go: the globals' step took 13 instructions and no time. The next entry
 is to begin from cycles (the jump on the kind, the loads that follow the copy of `ins`),

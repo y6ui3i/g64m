@@ -136,7 +136,7 @@ nothing unpacked. `exec64` itself went from 200 to 166 host instructions and `mo
 48 a call to 34. What every instruction still pays in `exec64` is the save of the start
 (18), the twelve registers (16) and the checks before the lookup.
 
-E110 runs a dozen kinds of instruction (two thirds of the boot's) at the top of `exec64`,
+E110 runs a dozen kinds of instruction (most of what the boot runs) at the top of `exec64`,
 by a jump on a kind kept in the cache's entry, without the save of the registers: none of
 them changes a register before the last point it can fault at. There is one
 implementation of each: the rest of the CPU has no arms for them.
