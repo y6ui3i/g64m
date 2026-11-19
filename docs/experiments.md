@@ -6674,3 +6674,102 @@ wrong builds at all: reading 64 bits of memory where 32 are used, and `>` for `>
 
 **Next.** By the card: the choice between M11's first step and M10's long mode, which is
 the owner's.
+
+## E094: long mode's system side: paging and faults, against the real CPU under KVM (2026-11-19)
+
+The owner chose M10's kernel half before M11. This is its first step. The whole of it, in
+the order planned ([roadmap.md](roadmap.md)): paging and faults at privilege level 0
+(this entry); privilege level 3, the TSS's stacks, SYSCALL and SYSRET, interrupts from
+outside; the devices of the 32-bit machine put behind the 64-bit CPU; the kernel.
+
+- **Hypothesis**: The roadmap named QEMU's own emulation as the oracle for system
+  instructions. The Linux host has QEMU with KVM, where the guest's instructions run on
+  the real CPU: a better oracle, and the one used. A test is a small image that QEMU loads
+  by the multiboot protocol; its 32-bit beginning turns long mode on and jumps to 64-bit
+  code, and this project's loader, which has no 32-bit CPU to run that beginning, sets the
+  state it leaves and starts at the 64-bit code. The test prints what it finds on the
+  serial port and stops through a port. **With control registers, four-level paging (4 KB
+  and 2 MB pages, the present, write, user and no-execute bits, CR0.WP, accessed and dirty
+  bits), faults delivered through a 64-bit IDT (error code, CR2, the frame pushed, the
+  IST), IRETQ, and the instructions that load the tables, the 64-bit CPU prints the same
+  text as the real CPU under KVM for every test.**
+- **What changed since last time**: E091 and E093 ran programs in user mode with memory
+  as one block, compared line by line under ptrace. Here the CPU has privilege level 0,
+  memory goes through page tables, a fault is delivered and not the end of the run, and
+  what is compared is what the test prints, since nothing steps a guest under KVM as
+  cheaply as ptrace steps a process.
+- **Next move for each result**:
+  - Every test prints the same → the tests and their expected text go in; next is
+    privilege level 3 and interrupts (E095)
+  - The image does not start under KVM, or prints differently on two runs → fall back to
+    QEMU's own emulation for that test and say so; if neither starts it, the way in is
+    wrong: read what multiboot leaves and fix the frame before any CPU code
+  - A printed value differs and the manual does not settle it → what the real CPU does is
+    taken, as in E091, with a comment
+  - A fault's frame cannot be made right without restoring registers the instruction had
+    changed → every instruction's start is saved (seventeen words copied), and its cost
+    is written down for the speed work
+- **Cut-off**: privilege level 0 only; no TLB in the emulator (every access walks the
+  tables: slow, and the tests invalidate as a real CPU needs, so that a TLB can be added
+  under them); no devices but a port to print to and a port to stop by.
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: three tests print the same text on the
+64-bit CPU as on the real CPU under KVM, 197 lines, and KVM's two runs of each are the
+same.** `y_first` matched before any system code was written beyond the loader, `y_fault`
+(101 lines) the first time it was run, and `y_paging` (87 lines) after one fix.
+
+**What was built.**
+- `tests/sys64/sys.inc`: the frame the card describes. QEMU enters by multiboot and the
+  image's 32-bit beginning turns long mode on; `x64` sees the "G64T" header and sets the
+  same state. It started under KVM and under QEMU's own emulation at the first try.
+  `tests/sys64/idt.inc`: an IDT whose gates all reach one handler, which writes down the
+  vector, the error code, the frame, CR2 and its own flags, and returns to where it came
+  from or to a place the test names; a hook lets a test put right what faulted.
+- `tools/systest64.sh`: builds the tests, compares what they print with
+  `tests/expected64/y_*.out`; with `ORACLE_HOST`, takes that text again under KVM, twice,
+  and once under QEMU without KVM, naming a test that prints differently there.
+- `src/sys64.goose` (426 lines): control registers, EFER and the MSRs of SYSCALL and of
+  the FS and GS bases; `xlate`, the walk of four levels; `fault` and `deliver`; LGDT,
+  LIDT, SGDT, SIDT, LTR, STR, LLDT, SLDT, SMSW, INVLPG, CLTS; IRETQ and the far return.
+  In `src/cpu64.goose`: MOV to and from segment and control registers, PUSH and POP of FS
+  and GS, RDMSR and WRMSR, IN and OUT, HLT, CLI and STI, INT and INT3, UD2 and the divide
+  error as faults. `src/x64.goose`: the loader, and two ports (the serial port's data and
+  status, and the port that stops the machine).
+- **Every instruction's start is saved** (sixteen registers, the flags, the privilege
+  level), by the card's last branch: a POP to memory that is not there must leave RSP as
+  it was, and `y_fault` has that case. It is a copy of 137 bytes on every instruction, and
+  the first byte's page is walked once more to see that it may be executed: both are for
+  the speed work, with the TLB.
+
+**What the real CPU does, taken as found.**
+- The flags pushed with a fault have RF set (a divide error, an undefined opcode, a page
+  fault, a protection fault); those pushed by INT and INT3 do not.
+- A write that lies across two pages, the second of which is not there, writes nothing,
+  and CR2 is the second page's first byte. (The first version walked to the access's last
+  byte: CR2 came out three too high. The one fix.)
+- A write that is refused sets no accessed bit on a page nothing else has touched.
+- Bit 63 of an entry while EFER.NXE is clear is a fault with error code 9: "there", and a
+  reserved bit.
+- LTR marks the TSS's descriptor busy; a gate's stack from the TSS is aligned to sixteen
+  like any other.
+
+**Where QEMU's own emulation prints differently from the real CPU** (10.2.1; found
+because the script runs both; none is reported, each is one line of a table for later):
+- RDMSR of an MSR that does not exist: no fault (the real CPU: #GP).
+- WRMSR to EFER with a reserved bit set: no fault (the real CPU: #GP).
+- The reserved-bit page fault's error code: 8 (the real CPU: 9).
+
+**Wrong builds.** 49, in `src/sys64.goose` and `src/cpu64.goose` (`build/mut94.py`). 39
+caught at once. Nine passed and got cases or a better test: bit 63 without NXE, the
+accessed bit after a refused write, a vector past the IDT's end where what lies there
+looks like a good gate, a handler above 4 GB (the gate's upper half), IRETQ giving back
+IF and IOPL, a TSS above 16 MB (the descriptor's upper parts), LTR's busy mark, and MOV
+from a segment register to a register and to memory. One is not caught and cannot be by
+these tests: RF left set on the way into a handler, which PUSHF does not show; it would
+take a fault inside a handler to see it.
+
+**Not done, and next.** No privilege level 3, no SYSCALL, no interrupt from outside, no
+TLB, no devices: E095 and after, as the card's first paragraph says. The 32-bit machine's
+sources are untouched in this entry; the 64-bit user-mode suite is as it was (14 ok).

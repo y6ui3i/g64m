@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | begun (E091, E093): a 64-bit CPU of its own, `src/x64.goose`, runs user-mode programs with SSE2 and matches a real CPU instruction for instruction; no machine around it yet |
+| M10 | x86_64 | begun (E091, E093): a 64-bit CPU of its own, `src/x64.goose`, runs user-mode programs with SSE2 and matches a real CPU instruction for instruction; paging and faults at privilege level 0 match the real CPU under KVM (E094); no devices and no kernel yet |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -276,6 +276,17 @@ registers after each (and the XMM registers, for the tests of SSE). `ORACLE_HOST
 flags the manual leaves undefined are in the traces as that CPU (an Intel Core i7-3770K) left
 them, and the emulator gives the same.
 
+The system side of the 64-bit CPU (paging, faults) is tested by what small images print:
+
+```bash
+tools/systest64.sh
+```
+
+The images (`tests/sys64/`) start in long mode at privilege level 0. The expected text
+(`tests/expected64/y_*.out`) was printed by the same images as guests of QEMU with KVM, where
+the host's CPU runs the guest's instructions; `ORACLE_HOST=name tools/systest64.sh` takes it
+again.
+
 ## Layout
 
 | File | Contents |
@@ -294,7 +305,7 @@ them, and the emulator gives the same.
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |
 | [src/g86m.goose](src/g86m.goose) | The run loop, interrupt delivery, pacing, the serial console, the session script, the command line |
-| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose), [src/sse64.goose](src/sse64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, SSE and SSE2, and a loader of static ELF programs with three system calls |
+| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose), [src/sse64.goose](src/sse64.goose), [src/sys64.goose](src/sys64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, SSE and SSE2, long mode's paging and faults, and loaders of static ELF programs (with three system calls) and of system test images |
 | [src/big.goose](src/big.goose) | The large arrays (RAM and three others), in a file of their own so they come last in memory |
 
 The boot sectors in `testdata/` are copied from rustx86's `asm/` as they are, including the Japanese

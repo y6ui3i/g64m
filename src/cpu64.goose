@@ -27,6 +27,7 @@ import std;
 import os;
 import x64;
 import sse64;
+import sys64;
 
 let MEM_SIZE = 67108864;        // 64 MB
 
@@ -59,6 +60,7 @@ var m_rm: u8 = 0;
 var p66 = false;
 var asz32 = false;
 
+var halted = false;
 var stopped = false;
 var faulted = false;
 var exit_code: i64 = 0;
@@ -117,8 +119,8 @@ inline fn sx(v: u64, w: u8) -> u64 {
     return v;
 }
 
-fn rd(a: u64, w: u8) -> u64 {
-    if a >= MEM_SIZE - 8 { stop64("a read outside memory, at", a); }
+// The block itself: i is inside it.
+fn mem_rd(a: u64, w: u8) -> u64 {
     let i = a as! i64;
     let b0: u64 = mem[i];
     if w == 8 { return b0; }
@@ -135,8 +137,7 @@ fn rd(a: u64, w: u8) -> u64 {
     return lo | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56;
 }
 
-fn wr(a: u64, w: u8, v: u64) {
-    if a >= MEM_SIZE - 8 { stop64("a write outside memory, at", a); }
+fn mem_wr(a: u64, w: u8, v: u64) {
     let i = a as! i64;
     mem[i] = v as! u8;
     if w == 8 { return; }
@@ -149,6 +150,20 @@ fn wr(a: u64, w: u8, v: u64) {
     mem[i + 5] = (v >> 40) as! u8;
     mem[i + 6] = (v >> 48) as! u8;
     mem[i + 7] = (v >> 56) as! u8;
+}
+
+// A program's view of memory: in a user-mode program the block itself, in a machine through
+// the page tables (sys64.goose).
+fn rd(a: u64, w: u8) -> u64 {
+    if machine { return sys_rd(a, w, 0); }
+    if a >= MEM_SIZE - 8 { stop64("a read outside memory, at", a); }
+    return mem_rd(a, w);
+}
+
+fn wr(a: u64, w: u8, v: u64) {
+    if machine { sys_wr(a, w, v, 0); return; }
+    if a >= MEM_SIZE - 8 { stop64("a write outside memory, at", a); }
+    mem_wr(a, w, v);
 }
 
 // ---- Fetching ----
@@ -498,7 +513,7 @@ fn muldiv(kind: u8, src: u64, w: u8) {
         mul_flags(over, lo, w);
         return;
     }
-    if src == 0 { stop64("a division by zero, operand bits", w); }
+    if src == 0 { fault(0, false, 0); }
     var q: u64 = 0;
     var r: u64 = 0;
     // The dividend: AX for a byte, the D register and the A register together for the rest.
@@ -510,19 +525,19 @@ fn muldiv(kind: u8, src: u64, w: u8) {
         if kind == 6 {
             q = n / src;
             r = n - q * src;
-            if q > m { stop64("a quotient too large, operand bits", w); }
+            if q > m { fault(0, false, 0); }
         } else {
             let sn = sx(n, w * 2) as! i64;
             let sd = sx(src, w) as! i64;
             let sq = sn / sd;
             let rem = sn - sq * sd;
             let top = (msb(w)) as! i64;
-            if sq >= top || sq < 0 - top { stop64("a quotient too large, operand bits", w); }
+            if sq >= top || sq < 0 - top { fault(0, false, 0); }
             q = (sq as! u64) & m;
             r = (rem as! u64) & m;
         }
     } else if kind == 6 {
-        if hi >= src { stop64("a quotient too large, operand bits", w); }
+        if hi >= src { fault(0, false, 0); }
         q, r = div128(hi, lo, src);
     } else {
         // Signed: divide the sizes, then put the signs on.
@@ -530,12 +545,12 @@ fn muldiv(kind: u8, src: u64, w: u8) {
         let dneg = src >> 63 != 0;
         if nneg { lo = ~lo + 1; hi = ~hi + (if lo == 0 { 1 } else { 0 }); }
         let d = if dneg { ~src + 1 } else { src };
-        if hi >= d { stop64("a quotient too large, operand bits", w); }
+        if hi >= d { fault(0, false, 0); }
         q, r = div128(hi, lo, d);
         if nneg != dneg {
-            if q > 0x8000000000000000 { stop64("a quotient too large, operand bits", w); }
+            if q > 0x8000000000000000 { fault(0, false, 0); }
             q = ~q + 1;
-        } else if q > 0x7FFFFFFFFFFFFFFF { stop64("a quotient too large, operand bits", w); }
+        } else if q > 0x7FFFFFFFFFFFFFFF { fault(0, false, 0); }
         if nneg { r = ~r + 1; }
     }
     if w == 8 { sr(RAX, 16, r << 8 | q & 0xFF); }
@@ -638,6 +653,13 @@ fn bit_op(kind: u8, w: u8, off: u64, from_reg: bool) {
     if m_mod == 3 { sr(m_rm, w, r); } else { wr(a, w, r); }
 }
 
+// The instructions that touch ports and the interrupt flag need IOPL to allow the current
+// privilege level; a user-mode program has neither.
+fn io_level() {
+    if !machine { stop64("an instruction of a machine in a user-mode program, at privilege level", 3); }
+    if cpl > (rflags >> 12 & 3) { fault(13, true, 0); }
+}
+
 // ---- CPUID ----
 
 fn cpuid() {
@@ -657,6 +679,12 @@ fn cpuid() {
 
 // Runs the instruction at RIP. False if the run stopped in it.
 fn exec64() -> bool {
+    if machine {
+        if pending >= 0 { deliver_pending(); return true; }
+        save_start();
+        // The first byte's page must be one that may be executed.
+        xlate(rip, ACC_EXEC);
+    }
     ip = rip;
     rex = 0;
     rep = 0;
@@ -708,13 +736,34 @@ fn exec64() -> bool {
         match op2 >> 4 {
             0x0 => {
                 if op2 == 0x05 {
+                    if machine { stop64("SYSCALL in a machine, which is not written yet, 0F", op2); }
                     reg[RCX] = ip;
                     reg[11] = rflags;
                     rip = ip;
                     syscall64();
                     return !stopped;
                 } else if op2 == 0x0D { modrm(0); }
+                else if op2 == 0x0B { fault(6, false, 0); }
+                else if !machine { stop64("an instruction not written yet, 0F", op2); }
+                else if op2 == 0x00 { sys_group6(); }
+                else if op2 == 0x01 { sys_group7(); }
+                else if op2 == 0x06 { need_level0(); cr0 &= ~8; }                    // CLTS
+                else if op2 == 0x08 || op2 == 0x09 { need_level0(); }                // INVD, WBINVD
                 else { stop64("an instruction not written yet, 0F", op2); }
+            },
+            0x2 => {
+                // MOV to and from the control registers (CR8 by REX.R) and the debug registers,
+                // which read as zero and keep nothing.
+                if !machine { stop64("an instruction not written yet, 0F", op2); }
+                need_level0();
+                modrm(0);
+                match op2 {
+                    0x20 => { reg[m_rm | (rex & 1) << 3] = cr_get(m_reg); },
+                    0x22 => { cr_set(m_reg, reg[m_rm | (rex & 1) << 3]); },
+                    0x21 => { reg[m_rm | (rex & 1) << 3] = 0; },
+                    0x23 => {},
+                    _ => { stop64("an instruction not written yet, 0F", op2); },
+                }
             },
             0x1 => {
                 if op2 >= 0x18 { modrm(0); }
@@ -722,6 +771,15 @@ fn exec64() -> bool {
             },
             0x3 => {
                 if op2 == 0x31 { reg[RAX] = steps & 0xFFFFFFFF; reg[RDX] = steps >> 32; }
+                else if machine && op2 == 0x30 {
+                    need_level0();
+                    msr_set(reg[RCX] & 0xFFFFFFFF, reg[RAX] & 0xFFFFFFFF | reg[RDX] << 32);
+                } else if machine && op2 == 0x32 {
+                    need_level0();
+                    let v = msr_get(reg[RCX] & 0xFFFFFFFF);
+                    reg[RAX] = v & 0xFFFFFFFF;
+                    reg[RDX] = v >> 32;
+                }
                 else { stop64("an instruction not written yet, 0F", op2); }
             },
             0x4 => {
@@ -741,6 +799,10 @@ fn exec64() -> bool {
             0xA => {
                 match op2 {
                     0xA2 => { cpuid(); },
+                    0xA0 => { push(seg[SEG_FS], ssz()); },
+                    0xA8 => { push(seg[SEG_GS], ssz()); },
+                    0xA1 => { let v = pop(ssz()); seg_load(SEG_FS, v); },
+                    0xA9 => { let v = pop(ssz()); seg_load(SEG_GS, v); },
                     0xA3 => { modrm(0); bit_op(0, osz, gr(m_reg, osz), true); },
                     0xAB => { modrm(0); bit_op(1, osz, gr(m_reg, osz), true); },
                     0xA4, 0xAC => {
@@ -890,6 +952,18 @@ fn exec64() -> bool {
                         if m_mod == 3 { stop64("LEA of a register,", op); }
                         sr(m_reg, osz, m_off);
                     },
+                    0x8C => {
+                        // A segment register's selector: to a register at the operand size,
+                        // to memory as 16 bits.
+                        modrm(0);
+                        if m_reg & 7 > 5 { fault(6, false, 0); }
+                        rm_set(if m_mod == 3 { osz } else { 16 }, seg[m_reg & 7]);
+                    },
+                    0x8E => {
+                        modrm(0);
+                        if m_reg & 7 > 5 || m_reg & 7 == 1 { fault(6, false, 0); }
+                        seg_load(m_reg & 7, rm_get(16));
+                    },
                     0x8F => {
                         // The operand's address is worked out with RSP already moved.
                         let v = pop(ssz());
@@ -918,9 +992,11 @@ fn exec64() -> bool {
                     0x99 => { sr(RDX, osz, ones(reg[RAX] & msb(osz) != 0)); },
                     0x9C => { push(rflags & 0xFCFFFF, ssz()); },
                     0x9D => {
-                        // In user mode IF and IOPL stay as they are.
+                        // IF and IOPL stay as they are unless the privilege level may change them.
                         let v = pop(ssz());
-                        let can: u64 = if p66 { 0x4DD5 } else { 0x244DD5 };
+                        var can: u64 = if p66 { 0x4DD5 } else { 0x244DD5 };
+                        if machine && cpl == 0 { can |= 0x3200; }
+                        else if machine && cpl <= (rflags >> 12 & 3) { can |= 0x200; }
                         rflags = rflags & ~can | v & can;
                     },
                     0x9E => { rflags = rflags & ~0xD5 | reg[RAX] >> 8 & 0xD5; },
@@ -961,6 +1037,11 @@ fn exec64() -> bool {
                         rm_set(w, v);
                     },
                     0xC9 => { reg[RSP] = reg[RBP]; let v = pop(ssz()); sr(RBP, ssz(), v); },
+                    0xCA => { let n = fw(); far_ret(n); return true; },
+                    0xCB => { far_ret(0); return true; },
+                    0xCC => { if !machine { stop64("INT3 in a user-mode program,", op); } deliver(3, false, 0, ip, true); return true; },
+                    0xCD => { let n = fb(); if !machine { stop64("INT in a user-mode program,", n); } deliver(n, false, 0, ip, true); return true; },
+                    0xCF => { if !machine { stop64("IRET in a user-mode program,", op); } iret(); return true; },
                     _ => { stop64("an instruction not written yet,", op); },
                 }
             },
@@ -984,6 +1065,10 @@ fn exec64() -> bool {
                         let d = fs8();
                         if reg[RCX] & mask(if asz32 { 32 } else { 64 }) == 0 { next = ip + d; jump = true; }
                     },
+                    0xE4, 0xE5 => { let port = fb(); io_level(); sr(RAX, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 }, port_in(port, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 })); },
+                    0xE6, 0xE7 => { let port = fb(); io_level(); port_out(port, if op == 0xE6 { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
+                    0xEC, 0xED => { io_level(); sr(RAX, if op == 0xEC { 8 } else if p66 { 16 } else { 32 }, port_in(reg[RDX] & 0xFFFF, if op == 0xEC { 8 } else if p66 { 16 } else { 32 })); },
+                    0xEE, 0xEF => { io_level(); port_out(reg[RDX] & 0xFFFF, if op == 0xEE { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
                     0xE8 => { let d = fs32(); push(ip, 64); next = ip + d; jump = true; },
                     0xE9 => { let d = fs32(); next = ip + d; jump = true; },
                     0xEB => { let d = fs8(); next = ip + d; jump = true; },
@@ -992,6 +1077,15 @@ fn exec64() -> bool {
             },
             0xF => {
                 match op {
+                    0xF4 => {
+                        // HLT. Nothing can wake the machine yet, so it is the end of the run.
+                        io_level();
+                        need_level0();
+                        halted = true;
+                        stopped = true;
+                    },
+                    0xFA => { io_level(); rflags &= ~IF; },
+                    0xFB => { io_level(); rflags |= IF; },
                     0xF5 => { rflags ^= CF; },
                     0xF8 => { rflags &= ~CF; },
                     0xF9 => { rflags |= CF; },

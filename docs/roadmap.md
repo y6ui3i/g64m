@@ -115,6 +115,14 @@ devices on a CPU that is still moving.
     (`tools/oracle/step64.c`, `tools/difftest64.sh`).
   - E093: SSE and SSE2 with sixteen XMM registers, by the same oracle. What they compute is
     shared with the 32-bit machine (`src/lanes.goose`).
+  - E094: long mode's system side at privilege level 0: four-level paging, faults through
+    the IDT, IRETQ, the tables' registers and the MSRs. The oracle is the real CPU under
+    KVM (`tools/systest64.sh`), not QEMU's own emulation as first planned, which is run
+    beside it and differs in three places so far.
+- Left, in order: privilege level 3, the TSS's stacks, SYSCALL and SYSRET, SWAPGS and
+  interrupts from outside; a TLB under the walk; the 32-bit machine's devices behind the
+  64-bit CPU (the interrupt controller, the timer, the serial port first); the x87 and
+  FXSAVE the kernel wants; then the kernel, entered at its 64-bit entry point.
 
 ### M11: a backend for Docker
 
