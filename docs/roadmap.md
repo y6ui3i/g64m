@@ -97,6 +97,14 @@ devices on a CPU that is still moving.
   64-bit IDT and TSS.
 - **128-bit products and quotients** (`MUL`, `IMUL`, `DIV` on 64-bit operands): Goose has no
   128-bit integer, so they are done in 32-bit halves or in a few lines of C.
+- **What decides is the real CPU.** Where this CPU and anything else disagree (the manual's
+  silence, another emulator, what was expected), the answer is what an x86_64 processor
+  does, and it is asked directly: a program single-stepped under `ptrace` for user-mode
+  instructions (E091), a guest under KVM for system instructions (E094). QEMU's own
+  emulation is run beside KVM as a second opinion and is never the expected result: it
+  has parted from the real CPU every time the two were compared (E092, E094). What one
+  processor does that another might not (the flags the manual leaves undefined) is
+  written down with the processor's name.
 - **A new oracle**, since rustx86 has no long mode:
   - user-mode instructions, against real hardware: single-step a static ELF under ptrace on an
     x86_64 Linux host and compare the registers after each instruction, as test386 was compared
@@ -119,9 +127,11 @@ devices on a CPU that is still moving.
     the IDT, IRETQ, the tables' registers and the MSRs. The oracle is the real CPU under
     KVM (`tools/systest64.sh`), not QEMU's own emulation as first planned, which is run
     beside it and differs in three places so far.
-- Left, in order: privilege level 3, the TSS's stacks, SYSCALL and SYSRET, SWAPGS and
-  interrupts from outside; a TLB under the walk; the 32-bit machine's devices behind the
-  64-bit CPU (the interrupt controller, the timer, the serial port first); the x87 and
+  - E095: privilege level 3 and back: IRETQ, SYSRET, SYSCALL, SWAPGS, faults and INT from
+    level 3 with the TSS's stack, the single step.
+- Left, in order: a TLB under the walk; the 32-bit machine's devices behind the
+  64-bit CPU (the interrupt controller, the timer, the serial port first), and with them
+  interrupts from outside and a HLT that wakes; the x87 and
   FXSAVE the kernel wants; then the kernel, entered at its 64-bit entry point.
 
 ### M11: a backend for Docker

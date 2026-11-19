@@ -680,6 +680,7 @@ fn cpuid() {
 // Runs the instruction at RIP. False if the run stopped in it.
 fn exec64() -> bool {
     if machine {
+        delivered = false;
         if pending >= 0 { deliver_pending(); return true; }
         save_start();
         // The first byte's page must be one that may be executed.
@@ -736,7 +737,7 @@ fn exec64() -> bool {
         match op2 >> 4 {
             0x0 => {
                 if op2 == 0x05 {
-                    if machine { stop64("SYSCALL in a machine, which is not written yet, 0F", op2); }
+                    if machine { syscall_enter(ip); return true; }
                     reg[RCX] = ip;
                     reg[11] = rflags;
                     rip = ip;
@@ -747,21 +748,22 @@ fn exec64() -> bool {
                 else if !machine { stop64("an instruction not written yet, 0F", op2); }
                 else if op2 == 0x00 { sys_group6(); }
                 else if op2 == 0x01 { sys_group7(); }
+                else if op2 == 0x07 { sysret(); return true; }
                 else if op2 == 0x06 { need_level0(); cr0 &= ~8; }                    // CLTS
                 else if op2 == 0x08 || op2 == 0x09 { need_level0(); }                // INVD, WBINVD
                 else { stop64("an instruction not written yet, 0F", op2); }
             },
             0x2 => {
-                // MOV to and from the control registers (CR8 by REX.R) and the debug registers,
-                // which read as zero and keep nothing.
+                // MOV to and from the control registers (CR8 by REX.R) and the debug registers:
+                // DR6 and DR7 keep what is written, the rest read as zero, and none does anything.
                 if !machine { stop64("an instruction not written yet, 0F", op2); }
                 need_level0();
                 modrm(0);
                 match op2 {
                     0x20 => { reg[m_rm | (rex & 1) << 3] = cr_get(m_reg); },
                     0x22 => { cr_set(m_reg, reg[m_rm | (rex & 1) << 3]); },
-                    0x21 => { reg[m_rm | (rex & 1) << 3] = 0; },
-                    0x23 => {},
+                    0x21 => { reg[m_rm | (rex & 1) << 3] = if m_reg & 7 == 6 { dr6 } else if m_reg & 7 == 7 { dr7 } else { 0 }; },
+                    0x23 => { if m_reg & 7 == 6 { dr6 = reg[m_rm | (rex & 1) << 3]; } else if m_reg & 7 == 7 { dr7 = reg[m_rm | (rex & 1) << 3]; } },
                     _ => { stop64("an instruction not written yet, 0F", op2); },
                 }
             },

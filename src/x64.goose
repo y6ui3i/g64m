@@ -190,7 +190,8 @@ fn main() {
     guard problem.len == 0 else { write_stderr(str("x64: ", problem, "\n")); exit(2); }
 
     while !stopped && steps < max {
-        exec64();
+        let tf = rflags & 0x100 != 0;
+        if exec64() && machine { single_step(tf); }
         steps += 1;
         if trace && !stopped { trace_line(); }
     }

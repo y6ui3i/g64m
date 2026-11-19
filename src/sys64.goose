@@ -12,10 +12,12 @@
 //   here, with IRETQ and the far return.
 // When it is false (a user-mode program, E091) memory is one block and a fault stops the run.
 //
-// Not yet: privilege level 3 as a place to return to (the TSS's stacks are read, but
-// nothing here has been run with them), SYSCALL and SYSRET, SWAPGS, interrupts from
-// outside, debug registers that do anything, and any check of a descriptor beyond what the
-// tests reach.
+// Privilege level 3 (E095) is reached by IRETQ and SYSRET and left by SYSCALL, by INT
+// and by a fault, whose handler gets the stack the TSS names.
+//
+// Not yet: interrupts from outside, compatibility mode (32-bit code at level 3), a far
+// return to level 3, debug registers that do anything, and any check of a descriptor
+// beyond what the tests reach.
 
 import std;
 import cpu64;
@@ -40,6 +42,8 @@ var msr_lstar: u64 = 0;
 var msr_cstar: u64 = 0;
 var msr_fmask: u64 = 0;
 var msr_kernel_gs: u64 = 0;
+var dr6: u64 = 0xFFFF0FF0;
+var dr7: u64 = 0x400;
 
 // The state the instruction at hand started from, to go back to when it faults.
 var saved_reg: u64[16] = [0; 16];
@@ -50,6 +54,10 @@ var saved_cpl: u8 = 0;
 var pending: i64 = -1;
 var pending_err: u64 = 0;
 var pending_has_err = false;
+var pending_trap = false;    // it is a trap: nothing is put back, and RF is not set
+// True once the instruction at hand has gone to a handler: no single step after that.
+var delivered = false;
+var by_syscall = false;      // the instruction at hand was SYSCALL or SYSRET
 // The vector being delivered, or -1: a fault met while delivering one is a double fault,
 // and one met while delivering that ends the run, as it resets a machine.
 var delivering: i64 = -1;
@@ -77,6 +85,7 @@ fn fault(vec: u8, has_err: bool, err: u64) {
         pending_err = err;
         pending_has_err = has_err;
     }
+    pending_trap = false;
     delivering = -1;
     return false from exec64;
 }
@@ -215,6 +224,7 @@ fn deliver(vec: u64, has_err: bool, err: u64, ret: u64, soft: bool) {
     if level > cpl { fault(13, true, sel & 0xFFFC); }
     if desc >> 47 & 1 == 0 { fault(11, true, sel & 0xFFFC); }
 
+    delivered = true;
     let old_cpl = cpl;
     let old_ss: u64 = seg[SEG_SS];
     let old_cs: u64 = seg[SEG_CS];
@@ -247,10 +257,30 @@ fn deliver_pending() {
     pending = -1;
     delivering = vec;
     // A fault's return address is the instruction itself, and RF is set in the flags saved
-    // with it, so that coming back to it does not meet the same instruction breakpoint.
-    rflags |= RF;
+    // with it, so that coming back to it does not meet the same instruction breakpoint. A
+    // trap comes after its instruction and has neither.
+    if !pending_trap { rflags |= RF; }
+    pending_trap = false;
     deliver(vec as! u64, pending_has_err, pending_err, rip, false);
     delivering = -1;
+}
+
+// The single step: vector 1 follows an instruction that began with TF set, unless the
+// instruction itself went to a handler. So the instruction after a POPF or an IRETQ that
+// sets TF is the first to be followed by one, and a POPF that clears it still is. SYSCALL
+// and SYSRET are the exception, on the CPU these tests were taken from: for them it is TF
+// as they leave it that counts, so SYSRET with TF in R11 is followed by one at once, and
+// SYSCALL with TF in FMASK by none. began: TF before the instruction. Called after every
+// instruction.
+inline fn single_step(began: bool) {
+    let tf = if by_syscall { rflags & TF != 0 } else { began };
+    by_syscall = false;
+    if tf && !delivered && pending < 0 {
+        pending = 1;
+        pending_has_err = false;
+        pending_trap = true;
+        dr6 |= 0x4000;
+    }
 }
 
 // ---- Segment registers ----
@@ -374,6 +404,14 @@ fn sys_group7() {
     let field = m_reg & 7;
     if m_mod == 3 {
         if field == 4 { sr(m_rm, osz, cr0); return; }
+        if field == 7 && m_rm & 7 == 0 {
+            // SWAPGS: GS's base and the one kept aside for the kernel change places.
+            need_level0();
+            let t = gs_base;
+            gs_base = msr_kernel_gs;
+            msr_kernel_gs = t;
+            return;
+        }
         stop64("an instruction not written yet, 0F 01 with a register, field", field);
     }
     match field {
@@ -401,14 +439,52 @@ fn iret() {
     if level < cpl || (ncs | 7) > gdt_limit { fault(13, true, ncs & 0xFFFC); }
     // IOPL and IF are for privilege level 0 to change (IF also at a level IOPL allows).
     var can: u64 = 0x254DD5;
-    if cpl == 0 { can |= 0x3200; }
+    if cpl == 0 { can |= 0x183200; }      // IOPL, IF, and the two virtual-interrupt bits
     else if cpl <= (rflags >> 12 & 3) { can |= 0x200; }
     rflags = rflags & ~can | nfl & can | 2;
     seg[SEG_CS] = ncs as! u16;
     seg[SEG_SS] = nss as! u16;
+    if level > cpl {
+        // A data segment register that the new level may not use is made null.
+        for i: u8 in 6 {
+            if i == SEG_CS || i == SEG_SS || seg[i] & 0xFFF8 == 0 { continue; }
+            let desc = own_rd(gdt_base + (seg[i] & 0xFFF8), 64);
+            if (desc >> 45 & 3) < level { seg[i] = 0; }
+        }
+    }
     cpl = level;
     reg[RSP] = nrsp;
     rip = nrip;
+}
+
+// SYSCALL: to privilege level 0 at the address in LSTAR, on the stack it came with. Where
+// it came from is left in RCX and its flags in R11.
+fn syscall_enter(ret: u64) {
+    if efer & 1 == 0 { fault(6, false, 0); }
+    by_syscall = true;
+    reg[RCX] = ret;
+    reg[11] = rflags;
+    rflags &= ~msr_fmask;
+    seg[SEG_CS] = (msr_star >> 32 & 0xFFFC) as! u16;
+    seg[SEG_SS] = ((msr_star >> 32 & 0xFFFC) + 8) as! u16;
+    cpl = 0;
+    rip = msr_lstar;
+}
+
+// SYSRET with a 64-bit operand size: back to level 3 at the address in RCX with the flags
+// in R11.
+fn sysret() {
+    if efer & 1 == 0 { fault(6, false, 0); }
+    need_level0();
+    if osz != 64 { stop64("SYSRET to compatibility mode, which is not written, operand bits", osz); }
+    let top = reg[RCX] >> 47;
+    if top != 0 && top != 0x1FFFF { fault(13, true, 0); }
+    by_syscall = true;
+    rflags = reg[11] & 0x3C7FD7 | 2;
+    seg[SEG_CS] = ((msr_star >> 48) + 16 | 3) as! u16;
+    seg[SEG_SS] = ((msr_star >> 48) + 8 | 3) as! u16;
+    cpl = 3;
+    rip = reg[RCX];
 }
 
 // The far return, to the same privilege level.

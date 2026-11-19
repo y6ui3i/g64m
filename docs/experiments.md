@@ -6773,3 +6773,81 @@ take a fault inside a handler to see it.
 **Not done, and next.** No privilege level 3, no SYSCALL, no interrupt from outside, no
 TLB, no devices: E095 and after, as the card's first paragraph says. The 32-bit machine's
 sources are untouched in this entry; the 64-bit user-mode suite is as it was (14 ok).
+
+## E095: privilege level 3, SYSCALL and SYSRET, against the real CPU under KVM (2026-11-19)
+
+The second step of M10's kernel half.
+
+- **Hypothesis**: With a return to privilege level 3 by IRETQ and by SYSRET, the way back
+  by SYSCALL (STAR, LSTAR, FMASK), by INT through a gate that allows it and by a fault (the
+  stack from the TSS, SS made null), SWAPGS, and the checks that level 3 meets (privileged
+  instructions, IOPL for CLI, STI, IN and OUT, the user bit of a page, a gate's privilege
+  level, IRETQ to a more privileged level), **a test that goes to level 3 and back some
+  dozens of times prints the same on the 64-bit CPU as on the real CPU under KVM**: the
+  selectors and flags seen at level 3, what SYSCALL leaves in RCX and R11, every fault's
+  vector, error code and frame.
+- **What changed since last time**: E094 never left privilege level 0; `deliver` read the
+  TSS's stack for a more privileged handler and IRETQ took a privilege level from the
+  frame, and neither had run. One thing is taken out of this step that the plan had in it:
+  **interrupts from outside**. They need a device to come from; they go with the devices,
+  two steps on, where HLT also gets something to wake it.
+- **Next move for each result**:
+  - The test prints the same → it goes in; next is the TLB under the walk (E096)
+  - A selector, a base or a flag at level 3 differs and the manual leaves it open (what
+    IRETQ does to DS, ES, FS and GS that level 3 may not use; FS's base after that) → what
+    the real CPU does is taken, with a comment
+  - SYSRET with an address that is not canonical does not fault on the real CPU the way
+    Intel's manual says (in privilege level 0, after nothing has changed) → the test keeps
+    the case and the code follows the real CPU
+- **Cut-off**: 64-bit code at level 3 only (no compatibility mode: SYSRET without REX.W
+  and a 32-bit code segment stop the run); a far return to level 3 is not written (IRETQ
+  and SYSRET are what a 64-bit kernel uses).
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: `y_user`, 404 lines, prints the same on the
+64-bit CPU as on the real CPU under KVM; the other three system tests still do.** It goes
+to privilege level 3 eleven times and takes 42 faults and traps on the way.
+
+**What was built.** In `src/sys64.goose`: SYSCALL and SYSRET, SWAPGS, IRETQ to an outer
+level (the data segment registers that level may not use are made null), DR6 and DR7 as
+places that keep what is written, and the single step. `deliver` and `xlate` had the rest
+since E094, unrun: the stack from the TSS, SS made null, the user bit of a page, the gate's
+privilege level. All of it ran the first time except what follows.
+
+**Not in the card: the single step.** The test's first version gave SYSRET a set of flags
+with TF in it, by carelessness; the real CPU answered with seven traps through vector 1
+and the emulator with none. TF is what a debugger in the guest steps a program with, so it
+is written and the test now sets it on purpose, three ways. What the real CPU does, which
+took two tries to get right:
+- **Vector 1 follows an instruction that began with TF set.** So the instruction after a
+  POPF or an IRETQ that sets TF is the first to be followed by one (not the POPF itself),
+  and a POPF that clears TF still is followed by one. This is what the manual says.
+- **SYSCALL and SYSRET go by TF as they leave it.** SYSRET with TF in R11 is followed by
+  a trap at once, before the first instruction at level 3; SYSCALL with TF in FMASK is
+  followed by none, though it began with TF set. (The first version went by TF afterwards
+  for everything, the second by TF before for everything; each was right for half.)
+- An instruction that itself goes to a handler (INT, a fault) is followed by none. The
+  flags pushed with the trap have TF and not RF.
+
+**What else the real CPU does, taken as found.**
+- IRETQ to level 3 makes DS, ES, FS and GS null when their descriptor is level 0's, and
+  leaves one whose descriptor is level 3's. FS's base is not touched by that.
+- SYSRET takes from R11 every flag but RF and VM (3C7FD7h), IOPL and the two
+  virtual-interrupt bits included; POPF at level 0 then leaves those two as they are, and
+  IRETQ at level 0 loads them from its frame.
+- SYSRET to an address that is not canonical faults at level 0, on the stack it was run
+  with, as Intel's manual says.
+- At level 3, POPF and IRETQ that would turn IF on, or change IOPL, leave them and say
+  nothing; SGDT, SIDT, STR and SMSW are allowed and give the real values.
+
+**Wrong builds.** 41 (`build/mut95.py`). 36 caught at once; four got cases (a segment
+register level 3 may use is not made null; IRETQ at level 3 cannot set IF; SS is null in
+a handler reached from level 3; the IDT and the TSS in pages level 3 may not use, which
+the CPU reads as itself). One changes nothing.
+
+**QEMU's own emulation** does not finish this test: after SYSCALL its flags are 2 where
+the real CPU's are 896h, and nothing is printed after the SYSRET. Not looked into.
+
+**Not done, and next.** Interrupts from outside (with the devices, as the card says),
+compatibility mode, the far return to level 3. Next by the card: the TLB (E096).
