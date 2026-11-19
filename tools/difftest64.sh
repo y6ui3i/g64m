@@ -49,7 +49,8 @@ if [ -n "${ORACLE_HOST:-}" ]; then
         name=$(basename "$asm" .asm)
         scp -q "build/t64/$name" "$ORACLE_HOST:g86m-oracle/t/" || exit 2
         # Twice: a trace that is not the same on two runs is no trace to compare with.
-        ssh "$ORACLE_HOST" "cd g86m-oracle && ./step64 t/$name > t/$name.1 && ./step64 t/$name > t/$name.2 && cmp -s t/$name.1 t/$name.2 && gzip -9nc t/$name.1" > "build/t64/$name.gz"
+        case "$name" in x_*|cx_*) x="-x" ;; *) x="" ;; esac
+        ssh "$ORACLE_HOST" "cd g86m-oracle && ./step64 $x t/$name > t/$name.1 && ./step64 $x t/$name > t/$name.2 && cmp -s t/$name.1 t/$name.2 && gzip -9nc t/$name.1" > "build/t64/$name.gz"
         if [ $? -ne 0 ]; then echo "FAIL  $name: the oracle's two runs differ, or it did not run"; exit 2; fi
         mv "build/t64/$name.gz" "tests/expected64/$name.trace.gz"
     done
@@ -60,10 +61,12 @@ for asm in $list; do
     name=$(basename "$asm" .asm)
     exp="tests/expected64/$name.trace.gz"
     if [ ! -f "$exp" ]; then fail=1; echo "FAIL  $name: no expected trace"; continue; fi
-    build/x64-debug --trace "build/t64/$name" > "build/t64/$name.trace" 2> "build/t64/$name.err"
+    # Tests named x_ and cx_ use SSE: their traces have the XMM registers too.
+    case "$name" in x_*|cx_*) tr="--trace-xmm" ;; *) tr="--trace" ;; esac
+    build/x64-debug $tr "build/t64/$name" > "build/t64/$name.trace" 2> "build/t64/$name.err"
     gunzip -c "$exp" > "build/t64/$name.expected"
     # The release build must produce the same trace: optimization must not change behaviour.
-    if ! build/x64 --trace "build/t64/$name" 2>/dev/null | cmp -s - "build/t64/$name.expected"; then
+    if ! build/x64 $tr "build/t64/$name" 2>/dev/null | cmp -s - "build/t64/$name.expected"; then
         fail=1
         echo "FAIL  $name: release build differs from the expected trace"
     fi

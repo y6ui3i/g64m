@@ -40,7 +40,7 @@ def main():
         for i in range(1, min(len(exp), len(got))):
             if exp[i - 1] == got[i - 1] and exp[i] != got[i]:
                 e, g = fields(exp[i]), fields(got[i])
-                diff = ", ".join(f"{k} {e[k]} not {g[k]}" for k in e if e[k] != g[k])
+                diff = ", ".join(f"{k} {e.get(k, 'unchanged')} not {g.get(k, 'unchanged')}" for k in list(e) + [k for k in g if k not in e] if e.get(k) != g.get(k))
                 was = fields(exp[i - 1])
                 print(f"{i + 1}: {src.get(int(was['RIP'], 16), '?')}  [F was {was['F']}]  {diff}")
         return
@@ -57,10 +57,11 @@ def main():
         print("  expected: nothing (the run ended)")
         return
     e, g = fields(exp[n - 1]), fields(got[n - 1])
-    for k in e:
-        if e[k] != g.get(k):
+    # An XMM register is on a line only when the instruction changed it.
+    for k in list(e) + [k for k in g if k not in e]:
+        if e.get(k) != g.get(k):
             show = flags if k == "F" else (lambda t: t)
-            print(f"  {k}: expected {show(e[k])}, got {show(g.get(k, '?'))}")
+            print(f"  {k}: expected {show(e[k]) if k in e else 'no change'}, got {show(g[k]) if k in g else 'no change'}")
 
 
 main()

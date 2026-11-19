@@ -10,15 +10,21 @@
 //
 //   --trace        print the registers and flags after every instruction, one line each, in
 //                  the same format as step64; what the program writes is then not printed
+//   --trace-xmm    the same, and on each line MXCSR (without its six status bits) and the XMM
+//                  registers that the instruction changed, as step64 -x prints them
 //   --max N        stop after N instructions (2 billion unless given)
 
 import std;
 import os;
 import cpu64;
+import sse64;
 
 var out: u8[>..];
 var trace_buf: u8[>..];
 let HEX = "0123456789ABCDEF";
+var trace_xmm = false;
+var seen_xmm: u64[32] = [0; 32];
+var seen_mxcsr: u32 = 0x1F80;
 
 fn hex(v: u64, digits: i64) {
     for i in digits { trace_buf.push(HEX[v >> (((digits - 1 - i) * 4) as! u64) & 15]); }
@@ -37,6 +43,27 @@ fn trace_line() {
     field(" R12=", reg[12]); field(" R13=", reg[13]); field(" R14=", reg[14]); field(" R15=", reg[15]);
     trace_buf.append(" F=");
     hex(rflags, 8);
+    if trace_xmm {
+        // MXCSR without its status bits, and the XMM registers, each when it has changed.
+        if mxcsr & 0xFFC0 != seen_mxcsr {
+            seen_mxcsr = mxcsr & 0xFFC0;
+            trace_buf.append(" MXCSR=");
+            hex(seen_mxcsr, 4);
+        }
+        for i in 16 {
+            if xmm[i * 2] != seen_xmm[i * 2] || xmm[i * 2 + 1] != seen_xmm[i * 2 + 1] {
+                seen_xmm[i * 2] = xmm[i * 2];
+                seen_xmm[i * 2 + 1] = xmm[i * 2 + 1];
+                trace_buf.append(" X");
+                if i > 9 { trace_buf.push('1'); }
+                trace_buf.push(HEX[i % 10]);
+                trace_buf.push('=');
+                hex(xmm[i * 2 + 1], 16);
+                trace_buf.push(':');
+                hex(xmm[i * 2], 16);
+            }
+        }
+    }
     trace_buf.push('\n');
     if trace_buf.len > 60000 { write_stdout(trace_buf); trace_buf.clear(); }
 }
@@ -101,6 +128,7 @@ fn main() {
     var i = 1;
     while i < a.len {
         if a[i] == "--trace" { trace = true; }
+        else if a[i] == "--trace-xmm" { trace = true; trace_xmm = true; }
         else if a[i] == "--max" && i + 1 < a.len {
             i++;
             let n, ok = parse_int(a[i]);

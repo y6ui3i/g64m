@@ -6589,3 +6589,88 @@ not tried (the card's cut-off).
 **Rejected on the way.** The first count had 1,988 differences: a flag that differs stays
 different until the next instruction that sets it, and each line was counted. The comparer
 now shows only what an instruction brings.
+
+## E093: SSE and SSE2 on the 64-bit CPU, against the real one (2026-11-19)
+
+The second step of M10, and what M11 needs too: the x86_64 ABI passes and returns floating
+point in XMM registers, and every C library copies memory through them.
+
+- **Hypothesis**: The oracle of E091, made to print the XMM registers and MXCSR as well,
+  gives lines that are the same on two runs. **The packed-integer and floating-point
+  helpers of the 32-bit machine's `src/sse.goose` (E077, written against rustx86 and never
+  against a real CPU), moved to a file both CPUs share (`src/lanes.goose`) and used with sixteen XMM registers
+  and the 64-bit forms, give the real CPU's XMM registers, general registers and flags
+  after every instruction of generated tests and of a C program that computes in doubles
+  and singles.** MXCSR's six status bits are left out of the comparison on both sides:
+  floats here are the host's, and nothing says after an operation whether it was exact.
+- **What changed since last time**: E091 had no XMM register in its trace and no opcode
+  of these. E077's SSE2 was compared with rustx86 only; this is its first comparison with
+  hardware. The shared file changes which file the 32-bit machine's helpers are in, and
+  nothing else of it.
+- **Next move for each result**:
+  - Everything matches → the tests and traces go in; next is the choice between M11's
+    first step (system calls passed to a Linux host) and M10's long mode
+  - A helper from E077 is wrong against the real CPU → it is wrong on the 32-bit machine
+    too: fix it in the shared file, and say so in the ledger with the case
+  - A result depends on something the host's floats do not give (a NaN's payload, a
+    denormal, the rounding mode in arithmetic) → written by hand for that case if a
+    compiler's code can meet it; else the tests leave it out and the ledger says what is
+    not modelled
+  - The 32-bit suite or its layout check changes with the shared file → the helpers are
+    copied instead of shared, and the 32-bit sources go back to what they were
+- **Cut-off**: SSE and SSE2 as compilers and C libraries use them. No MMX registers on the
+  64-bit CPU, no SSE3 or later, no x87. The reciprocal approximations (RCPPS, RSQRTPS) are
+  not compared: the chip's are approximate by a table.
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: four programs, 10,031 instructions, give the
+real CPU's general registers, flags, XMM registers and MXCSR (without its status bits) after
+every instruction, and the oracle's two runs of each are the same. The three generated
+tests and the C program all matched the first time each was run: no helper from E077 was
+wrong against the real CPU.** With E091's ten the 64-bit suite is fourteen programs and
+37,558 instructions. The 32-bit suite is as it was with the helpers in the shared file,
+and its layout check passes.
+
+**What was built.**
+- `src/lanes.goose`: what MMX and SSE2 compute, apart from any CPU (the packed integers
+  lane by lane, shifts, unpacking, packing, shuffling, floats with the chip's rules for
+  NaNs), moved out of `src/sse.goose` with the declarations of `rint` and the four
+  bit-conversions they need. No global in it. (The file's first name, `simd`, is a word
+  Goose keeps for itself.)
+- `src/sse64.goose` (442 lines): the 64-bit CPU's operands around them. XMM8 to XMM15 by
+  REX, the 64-bit forms (MOVQ with a general register, CVTSI2SS and SD from 64 bits, the
+  conversions to 64 bits, MOVNTI), MASKMOVDQU. No MMX register: those forms stop the run.
+- New against E077: **MXCSR's rounding mode is obeyed where a float becomes an integer**
+  (to nearest, down, up, toward zero), and **a 64-bit integer becomes a single with one
+  rounding**: by way of a double it would be rounded twice, so the integer is cut to 53
+  bits with one more bit saying whether anything was lost.
+- The oracle's `-x` and `x64 --trace-xmm`: a line gains MXCSR and each XMM register when
+  it is not what it was on the line before, so the traces stay small (115 KB for the four).
+- Tests: `x_move`, `x_int`, `x_float` from the generator, with 128-bit constants in a
+  table after the code and pools of edge lanes and of floats (zeros of both signs,
+  infinities, denormals, quiet and signalling NaNs with payloads, the numbers around
+  2^31, 2^53 and 2^63); `tests/c64/cx_float` in C: a square root by Newton's method, a
+  polynomial, a dot product of singles, a structure of doubles passed and returned by
+  value, conversions each way, and structure and block copies.
+
+**Wrong builds.** 47, in `src/sse64.goose` and `src/lanes.goose` (`build/mut93.py`). 42
+caught at once. Three passed and each got cases: the smaller and the larger of equal
+operands (the two zeros: the second operand comes out), a predicate that is true of a NaN,
+and an integer whose lowest bit alone decides which way its single rounds. Two are not
+wrong builds at all: reading 64 bits of memory where 32 are used, and `>` for `>=` at
+2^31, where the indefinite integer and the number have the same bits.
+
+**Not modelled, and not in the tests.**
+- MXCSR's six status bits (was the result exact, did it underflow, was an operand
+  invalid): left out of the trace on both sides, as the card said. A program that reads
+  them (`fetestexcept`) gets what it last wrote.
+- MXCSR's rounding mode in arithmetic: add, subtract, multiply, divide and the square root
+  round to nearest whatever it says. The conversions obey it.
+- The masks: with an exception unmasked the real CPU would fault. Nothing faults here.
+- RCPPS, RCPSS, RSQRTPS, RSQRTSS are exact here and approximate on the chip.
+- Denormals-are-zero and flush-to-zero.
+- An aligned move of unaligned memory, which faults on the real CPU.
+
+**Next.** By the card: the choice between M11's first step and M10's long mode, which is
+the owner's.

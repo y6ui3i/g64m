@@ -13,7 +13,8 @@
 //   90-9F SETcc; A2 CPUID; A3 AB B3 BB BA the bit tests; A4 A5 AC AD SHLD SHRD; AF IMUL;
 //   B0 B1 CMPXCHG; B6 B7 BE BF MOVZX MOVSX; B8 POPCNT; BC BD BSF BSR; C0 C1 XADD; C7
 //   CMPXCHG8B and 16B; C8-CF BSWAP.
-// Not yet: SSE and x87, segment registers, anything privileged, and faults: an instruction
+// SSE and SSE2 are in sse64.goose (0F 10-17, 28-2F, 50-7F, AE, C2-C6, D0-FF).
+// Not yet: x87, segment registers, anything privileged, and faults: an instruction
 // that would fault stops the run with a message.
 //
 // The flags the manual leaves undefined are what an Intel Core i7-3770K (Ivy Bridge) leaves
@@ -25,6 +26,7 @@
 import std;
 import os;
 import x64;
+import sse64;
 
 let MEM_SIZE = 67108864;        // 64 MB
 
@@ -645,7 +647,7 @@ fn cpuid() {
     var c: u64 = 0;
     var d: u64 = 0;
     if leaf == 0 { a = 1; b = 0x756E6547; d = 0x49656E69; c = 0x6C65746E; }      // "GenuineIntel"
-    else if leaf == 1 { a = 0x000306A9; d = 0x00008111; c = 0x00800000; }        // FPU TSC CX8 CMOV; POPCNT
+    else if leaf == 1 { a = 0x000306A9; d = 0x06008111; c = 0x00800000; }        // FPU TSC CX8 CMOV SSE SSE2; POPCNT
     else if leaf == 0x80000000 { a = 0x80000001; }
     else if leaf == 0x80000001 { d = 0x20000800; c = 1; }                        // long mode, SYSCALL; LAHF
     reg[RAX] = a; reg[RBX] = b; reg[RCX] = c; reg[RDX] = d;
@@ -702,6 +704,7 @@ fn exec64() -> bool {
     } else if op == 0x0F {
         let op2 = fb() as! u8;
         let w2: u8 = if op2 & 1 == 0 { 8 } else { osz };
+        if sse64_is(op2) { sse64_op(op2); rip = ip; return true; }
         match op2 >> 4 {
             0x0 => {
                 if op2 == 0x05 {
