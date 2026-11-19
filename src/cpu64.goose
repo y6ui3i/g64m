@@ -6,7 +6,8 @@
 // compiler emits. A list, by first byte:
 //   00-3F the eight arithmetic operations; 50-5F PUSH and POP; 63 MOVSXD; 68 6A PUSH of a
 //   constant; 69 6B IMUL; 70-7F Jcc; 80 81 83; 84 85 TEST; 86 87 XCHG; 88-8B MOV; 8D LEA;
-//   8F POP; 90-97; 98 99; 9C 9D PUSHF POPF; 9E 9F; A0-A3; A4-A7 AA-AF the strings, with REP;
+//   8F POP; 90-97; 98 99; 9C 9D PUSHF POPF; 9E 9F; A0-A3; A4-A7 AA-AF the strings, with REP
+//   (and 6C-6F, those of the ports, in a machine);
 //   A8 A9; B0-BF; C0 C1 D0-D3 shifts and rotates; C2 C3 RET; C6 C7; C9 LEAVE; E0-E3; E8 E9
 //   EB; F5 F8 F9 FC FD; F6 F7; FE FF.
 //   0F: 05 SYSCALL; 0B UD2; 0D 18-1F (no operation); 31 RDTSC; 40-4F CMOVcc; 80-8F Jcc;
@@ -642,6 +643,36 @@ fn string_op(op: u8) -> u64 {
     return rip;
 }
 
+// INS and OUTS: a string instruction between a port (DX) and memory, one repetition at a time
+// like the others. The width is a byte, or 16 bits with the prefix 66h, or 32.
+fn port_string(op: u8) -> u64 {
+    io_level();
+    let w: u8 = if op & 1 == 0 { 8 } else if p66 { 16 } else { 32 };
+    let n: u64 = w / 8;
+    let am: u64 = if asz32 { 0xFFFFFFFF } else { 0xFFFFFFFFFFFFFFFF };
+    if rep != 0 && reg[RCX] & am == 0 { return ip; }
+    let step = if flag(DF) { 0 - n } else { n };
+    let port = reg[RDX] & 0xFFFF;
+    if op < 0x6E {
+        // The page is asked for before the port is read: a fault must not lose what the
+        // device gave.
+        let di = reg[RDI] & am;
+        if machine { xlate(di, ACC_WRITE); xlate(di + n - 1, ACC_WRITE); }
+        wr(di, w, io_in(port, w));
+        reg[RDI] = (di + step) & am;
+    } else {
+        let si = reg[RSI] & am;
+        io_out(port, w, rd(si + seg_base, w));
+        reg[RSI] = (si + step) & am;
+    }
+    if rep == 0 { return ip; }
+    let left = (reg[RCX] - 1) & am;
+    reg[RCX] = left;
+    if left == 0 { return ip; }
+    rflags |= RF;
+    return rip;
+}
+
 // ---- Bits ----
 
 fn bit_op(kind: u8, w: u8, off: u64, from_reg: bool) {
@@ -937,6 +968,7 @@ fn exec64() -> bool {
                     0x6A => { let v = fs8(); push(v, ssz()); },
                     0x69 => { modrm(imm_len(osz)); let b = fimm(osz); sr(m_reg, osz, imul2(rm_get(osz), b, osz)); },
                     0x6B => { modrm(1); let b = fs8(); sr(m_reg, osz, imul2(rm_get(osz), b, osz)); },
+                    0x6C, 0x6D, 0x6E, 0x6F => { next = port_string(op); jump = true; },
                     _ => { stop64("an instruction not written yet,", op); },
                 }
             },
