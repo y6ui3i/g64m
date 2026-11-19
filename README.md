@@ -56,16 +56,9 @@ checked against rustx86:
 | M4 | 386 protected mode and paging; pass test386 | done (no task switching) |
 | M5 | 32-bit Linux and busybox | done (no disk, no network, no clock chip) |
 | M6 | A clock and a disk | done (E074, E075): the host's date, and a root file system on an IDE disk |
-
 | M7 | A network | done (E076, E077): `wget https://...` in the guest fetches a page through the host. MMX and SSE2 came with it, which the guest's OpenSSL is compiled for |
 | M8 | A screen | done by script (E078): X comes up on a frame buffer, takes the keyboard and the mouse; the window on the host is to be tried by hand |
 | M9 | A browser | done (E079): Dillo, in X, shows a page fetched over HTTPS |
-
-What comes after is in [docs/roadmap.md](docs/roadmap.md).
-| M6 | A clock (CMOS/RTC) and an IDE disk | planned |
-| M7 | A network: NE2000, and libslirp on the host | planned |
-| M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
-| M9 | Browsing with NetSurf or Dillo | planned |
 | M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: speed, and X on its screen |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
