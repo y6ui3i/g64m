@@ -6412,3 +6412,105 @@ part of it. It is not started: the host keeps up with `--speed 4` by the stretch
 measure, which was the plan's other stopping point.
 
 `tools/difftest.sh` has 163 lines, all ok (the four new self-checks are two lines each).
+
+## E091: 64-bit user-mode instructions against a real CPU, one step at a time (2026-11-19)
+
+The first step of M10 ([roadmap.md](roadmap.md)). rustx86 has no long mode, so there is no
+oracle yet for anything 64-bit; this step builds one and the first part of the CPU it is for.
+
+- **Hypothesis**: A static x86_64 ELF with no library, single-stepped under `ptrace` on a
+  real x86_64 Linux host, gives a line of registers and flags for each instruction that
+  does not depend on the host: with address randomizing off, every register starts at zero
+  but RSP, and a test that loads RSP first has the same lines on every run. **A new CPU in
+  its own files (sixteen 64-bit registers, REX, RIP-relative addresses, operands of 8, 16,
+  32 and 64 bits), run on the same ELF, prints the same lines for the integer instructions
+  a compiler emits, undefined flags included, because the flags are taken from the real
+  CPU and not from the manual.** Two things single-stepping itself changes are put right in
+  the oracle and not in the CPU: the TF bit in what PUSHF pushes and in R11 after SYSCALL.
+- **What changed since last time**: every earlier trace was against rustx86 (a 386 and an
+  i686). This is a second root file, `src/x64.goose`, beside `src/g86m.goose`: nothing of
+  the 32-bit machine is touched, and its suite must stay as it is.
+- **Next move for each result**:
+  - Traces are the same on two runs of the oracle, and the new CPU matches them on every
+    test → the tests and their traces go in; next is SSE2 with sixteen XMM registers by
+    the same oracle (E092)
+  - The oracle's lines differ between two runs → find what the kernel leaves in a
+    register or a flag (the vDSO, AT_RANDOM, the direction the stack grows from) and keep
+    it out of the tests, or start the comparison after the tests' first instructions
+  - An undefined flag cannot be made to match by a rule on the operands → the test masks
+    that flag for that instruction, and the ledger says which and why
+- **Cut-off**: the integer instructions of the list in `src/cpu64.goose`'s head; no SSE, no
+  x87, no faults delivered (a fault ends the run), three system calls (write, exit,
+  exit_group).
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: ten programs, 27,527 instructions in all,
+give the same line of registers and flags after every instruction on the new CPU as on the
+real one, and the oracle's two runs of each are the same.** No flag had to be masked: every
+undefined flag the tests reach follows a rule on the operands, which is now in
+`src/cpu64.goose`.
+
+**What was built.**
+- `tools/oracle/step64.c`: forks, turns address randomizing off, runs the program with no
+  arguments and no environment under `PTRACE_SINGLESTEP`, and prints RIP, the sixteen
+  registers and the flags after each step. Built and run on the host over ssh by
+  `ORACLE_HOST=name tools/difftest64.sh`.
+- `src/cpu64.goose` (1,027 lines): the CPU. Prefixes and REX, ModRM with SIB and RIP-relative
+  addresses, operands of 8, 16, 32 and 64 bits, the instructions listed at its head.
+  Products of 128 bits in 32-bit halves and quotients of 128 by 64 bits one bit at a time,
+  in Goose; no C.
+- `src/x64.goose`: the second root file. Loads a static ELF, answers write, exit and
+  exit_group, prints the trace.
+- `tools/gen64_tests.py` writes eight of the tests (`tests/asm64/g_*.asm`): cases from a pool
+  of edge values and random ones with a fixed seed, nothing checked inside the test. One test
+  by hand (`a_first`), and one in C built with gcc on the host and kept built
+  (`tests/c64/c_mix`): a CRC, a sort, GCDs, 128-bit products and remainders. The C test ran
+  the same as the real CPU the first time it was tried.
+- `tools/diff64.py` names the instruction where two traces part and the fields that differ;
+  with `all`, every place where they agree on one line and not on the next.
+
+**What the real CPU does that the manual does not say** (an Intel Core i7-3770K, Ivy Bridge;
+each is in the code with a comment, and each has a wrong build below):
+- **Shifts and rotates: OF is what a count of one would give, at every count.** It is a
+  function of the operand (and for RCR of CF, for SHRD of the source's lowest bit), not of
+  the result. The 32-bit CPU here follows a 386, which leaves OF alone for right shifts
+  unless the count is one. Found by tabulating, for each instruction and form, which of six
+  candidate rules agreed with all 46 cases: none did until this one.
+- **The one exception: ROL and ROR of a register by a constant over one leave OF as it was.**
+  By CL, or of memory by a constant, they follow the rule above. (Two forms of one
+  instruction that differ in a flag: the trace is of what this CPU's own decoding does.)
+- RCL and RCR by a whole turn (9 for a byte, 17 for a word) change nothing, flags included.
+- The shifts clear AF; the rotates leave it. MUL and IMUL set SF and PF from the lower half
+  and clear ZF and AF.
+- BSF and BSR of zero leave the whole destination, upper half included, even with a 32-bit
+  operand; a CMOVcc with a 32-bit operand clears the upper half even when it does not move.
+- **Between two repetitions of REPE or REPNE CMPS and SCAS, the flags are still those the
+  instruction began with**: the comparison's flags appear only when the repetition ends. RF
+  is set in between, as the manual says.
+
+**What single-stepping changes, put right in the oracle.** Three, where the card expected
+two: TF in the word PUSHF pushes, TF in R11 after SYSCALL, and TF in the flags the kernel
+reports for the instruction after a POPF (it hides the bit otherwise; after POPF it takes the
+program to have set it). TF is never printed.
+
+**Wrong builds.** 38, each one change to `src/cpu64.goose` (`build/mut91.py`): REX's three
+bits, the SIB byte's special base, RIP-relative with a constant behind, 32-bit addresses,
+the cleared upper half, the high byte registers, carry and borrow at 64 bits, each rule
+above, the 128-bit multiply and divide, the bit tests' far offsets, POP to an address made
+from RSP, POPF's mask, the strings, LOOP, RET with a constant, and others. 37 were caught at
+once; the 38th (a CMOVcc that does not move, leaving the upper half) passed because no test
+had anything in the upper half, a case was added to `g_cond`, and it is caught.
+
+**Rejected on the way.**
+- The first parity table, typed in again instead of taken from `src/alu.goose`, had two
+  wrong rows: 30 differences in `g_alu`, all PF. The table is now the 32-bit one's, copied.
+- OF "by the formula on the result at every count" (the first version), then "unchanged
+  unless the count is one" for the rotates (right for one form of two).
+- A test that read through `[r12 + r12]`, an address outside the program: the real CPU
+  ended it with a signal, and the oracle's trace stopped there, which is how it was seen.
+
+**Not done, and next.** No SSE and no x87: E092 is SSE2 with sixteen XMM registers by this
+oracle, the x86_64 ABI's floating point being all SSE. No faults are delivered. Speed was
+not looked at: the CPU decodes every instruction every time, into globals. The 32-bit
+machine's sources are untouched, and its suite is as it was (163 lines ok).
