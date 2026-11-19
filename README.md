@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | begun (E091, E093): a 64-bit CPU of its own, `src/x64.goose`, runs user-mode programs with SSE2 and matches a real CPU instruction for instruction; paging, faults, privilege level 3 and SYSCALL match the real CPU under KVM (E094, E095); no devices and no kernel yet |
+| M10 | x86_64 | begun (E091, E093): a 64-bit CPU of its own, `src/x64.goose`, runs user-mode programs with SSE2 and matches a real CPU instruction for instruction; paging, faults, privilege level 3, SYSCALL and interrupts match the real CPU under KVM (E094 to E097); the 32-bit machine's devices are behind it; no kernel yet |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).

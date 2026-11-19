@@ -11,7 +11,8 @@
 ;                          the stack pointer that were pushed
 ;
 ; Gates 3 and 80h may be called from privilege level 3; 80h is a trap gate (IF is left as it
-; is), the rest are interrupt gates. Gate 30h is marked not present. The IDT has 82h gates.
+; is), the rest are interrupt gates. Gates 20h to 2Fh are where the tests put the interrupt
+; controllers' sixteen lines. Gate 30h is marked not present. The IDT has 82h gates.
 
 IDT_AT equ 0x200000
 IDT_GATES equ 0x82
@@ -27,7 +28,7 @@ stub%1:
 %endmacro
 
 %assign v 0
-%rep 32
+%rep 48
     STUB v
 %assign v v + 1
 %endrep
@@ -109,7 +110,7 @@ idt_init:
     cmp ecx, IDT_GATES
     jb .all
 %assign v 0
-%rep 32
+%rep 48
     mov ecx, v
     lea rax, [stub %+ v]
     mov dl, 0x8E

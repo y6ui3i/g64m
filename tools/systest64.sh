@@ -38,8 +38,9 @@ if [ -n "${ORACLE_HOST:-}" ]; then
     for asm in $list; do
         name=$(basename "$asm" .asm)
         scp -q "build/s64/$name" "$ORACLE_HOST:g86m-oracle/s/" || exit 2
-        ssh "$ORACLE_HOST" "cd g86m-oracle/s && $QEMU -accel kvm -kernel $name > $name.1 2>/dev/null; $QEMU -accel kvm -kernel $name > $name.2 2>/dev/null; $QEMU -accel tcg -kernel $name > $name.tcg 2>/dev/null; cmp -s $name.1 $name.2 && test -s $name.1 && { cmp -s $name.1 $name.tcg || echo 'note  $name: QEMU without KVM prints differently' >&2; cat $name.1; }" > "build/s64/$name.new"
-        if [ ! -s "build/s64/$name.new" ]; then echo "FAIL  $name: the oracle's two runs differ, or it printed nothing"; exit 2; fi
+        ssh "$ORACLE_HOST" "cd g86m-oracle/s && $QEMU -accel kvm -kernel $name > $name.1 2>/dev/null; echo \$? > $name.rc; $QEMU -accel kvm -kernel $name > $name.2 2>/dev/null; $QEMU -accel tcg -kernel $name > $name.tcg 2>/dev/null; cmp -s $name.1 $name.2 && test -s $name.1 && test \$(cat $name.rc) = 1 && { cmp -s $name.1 $name.tcg || echo 'note  $name: QEMU without KVM prints differently' >&2; cat $name.1; }" > "build/s64/$name.new"
+        # (The test must also have stopped by its own EXIT: QEMU's status is then 1.)
+        if [ ! -s "build/s64/$name.new" ]; then echo "FAIL  $name: the oracle's two runs differ, or it printed nothing, or it did not reach its end"; exit 2; fi
         mv "build/s64/$name.new" "tests/expected64/$name.out"
     done
 fi

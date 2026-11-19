@@ -61,6 +61,7 @@ var p66 = false;
 var asz32 = false;
 
 var halted = false;
+var sti_shadow = false;      // the instruction at hand follows an STI that set IF
 var stopped = false;
 var faulted = false;
 var exit_code: i64 = 0;
@@ -1073,10 +1074,10 @@ fn exec64() -> bool {
                         let d = fs8();
                         if reg[RCX] & mask(if asz32 { 32 } else { 64 }) == 0 { next = ip + d; jump = true; }
                     },
-                    0xE4, 0xE5 => { let port = fb(); io_level(); sr(RAX, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 }, port_in(port, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 })); },
-                    0xE6, 0xE7 => { let port = fb(); io_level(); port_out(port, if op == 0xE6 { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
-                    0xEC, 0xED => { io_level(); sr(RAX, if op == 0xEC { 8 } else if p66 { 16 } else { 32 }, port_in(reg[RDX] & 0xFFFF, if op == 0xEC { 8 } else if p66 { 16 } else { 32 })); },
-                    0xEE, 0xEF => { io_level(); port_out(reg[RDX] & 0xFFFF, if op == 0xEE { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
+                    0xE4, 0xE5 => { let port = fb(); io_level(); sr(RAX, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 }, io_in(port, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 })); },
+                    0xE6, 0xE7 => { let port = fb(); io_level(); io_out(port, if op == 0xE6 { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
+                    0xEC, 0xED => { io_level(); sr(RAX, if op == 0xEC { 8 } else if p66 { 16 } else { 32 }, io_in(reg[RDX] & 0xFFFF, if op == 0xEC { 8 } else if p66 { 16 } else { 32 })); },
+                    0xEE, 0xEF => { io_level(); io_out(reg[RDX] & 0xFFFF, if op == 0xEE { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
                     0xE8 => { let d = fs32(); push(ip, 64); next = ip + d; jump = true; },
                     0xE9 => { let d = fs32(); next = ip + d; jump = true; },
                     0xEB => { let d = fs8(); next = ip + d; jump = true; },
@@ -1086,14 +1087,19 @@ fn exec64() -> bool {
             0xF => {
                 match op {
                     0xF4 => {
-                        // HLT. Nothing can wake the machine yet, so it is the end of the run.
+                        // HLT: asleep until an interrupt from outside (x64.goose's between()).
                         io_level();
                         need_level0();
                         halted = true;
-                        stopped = true;
                     },
                     0xFA => { io_level(); rflags &= ~IF; },
-                    0xFB => { io_level(); rflags |= IF; },
+                    0xFB => {
+                        // STI: an interrupt is not taken until the instruction after this one
+                        // is done, if IF was clear.
+                        io_level();
+                        if rflags & IF == 0 { sti_shadow = true; }
+                        rflags |= IF;
+                    },
                     0xF5 => { rflags ^= CF; },
                     0xF8 => { rflags &= ~CF; },
                     0xF9 => { rflags |= CF; },

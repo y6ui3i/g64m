@@ -131,10 +131,10 @@ devices on a CPU that is still moving.
     level 3 with the TSS's stack, the single step.
   - E096: a TLB under the walk (six tables: read, write and execute, for level 3 and for
     the rest).
-- Left, in order: the 32-bit machine's devices behind the
-  64-bit CPU (the interrupt controller, the timer, the serial port first), and with them
-  interrupts from outside and a HLT that wakes; the x87 and
-  FXSAVE the kernel wants; then the kernel, entered at its 64-bit entry point.
+  - E097: the 32-bit machine's devices (`src/dev.goose`, with one import taken out) behind
+    the 64-bit CPU; interrupts from outside, the STI shadow, a HLT that waits.
+- Left, in order: the x87 and FXSAVE the kernel wants; then the kernel, entered at its
+  64-bit entry point.
 
 ### M11: a backend for Docker
 
