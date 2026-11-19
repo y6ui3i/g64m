@@ -118,11 +118,19 @@ The numbers give each a ceiling. None has been tried.
 | | the survey (E104) | 654 | 50.4 s |
 | 1 | E105: the code page | 471 | 35.8 s |
 | 2 | E106: one test between two instructions | 416 | 31.8 s |
+| 4 | E107: a decode cache (prefixes and ModRM) | 399 | 31.4 to 31.9 s |
+
+The decode cache finds 97% of instructions and saves 48 host instructions each, but its
+upkeep (the watch in every store, the index kept for `modrm`) costs 31, and a found entry
+is unpacked into globals that are far apart: E107 has the listing. What that listing puts
+first is not a structure: memory read and written a word at a time (eight bytes read are
+72 host instructions), the instruction's state near at hand, and the start of the
+instruction saved only when a fault is possible.
 
 1 to 3 change no structure and can each be measured alone; 4 is a structure; 5 is a
 project. What the survey does not say is how much of 3 and 4 overlap: a decode cache makes
 most of `exec64`'s beginning unnecessary, so 3 may be worth doing only in part before 4.
 
-The tests that hold each step to the real CPU are there already: 17 programs compared
+The tests that hold each step to the real CPU are there already: 18 programs compared
 instruction by instruction (`tools/difftest64.sh`) and 8 system tests with a kernel booted
 four ways (`tools/systest64.sh`).

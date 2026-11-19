@@ -151,8 +151,59 @@ fn mem_rd(a: u64, w: u8) -> u64 {
     return lo | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56;
 }
 
+// ---- The decode cache (E107) ----
+//
+// What an instruction's bytes say that does not change from one execution to the next: its
+// prefixes and opcode, and what its ModRM, SIB and displacement bytes describe. An entry is
+// found by the physical address of the instruction's first byte and holds:
+//   dc_info   bits 0-7 the opcode; 8-15 REX; 16 the prefix 66h; 17 the prefix 67h; 18-19
+//             REP (2 for F2h, 3 for F3h); 20-21 a segment prefix (1 FS, 2 GS); 22-25 how
+//             many bytes the prefixes and the opcode take;
+//             26 "the rest is there": 27-28 mod; 29-32 reg; 33-36 r/m; 37-41 the base
+//             register (16 none, 17 RIP); 42-46 the index register (16 none); 47-48 the
+//             scale; 49-52 how many bytes the instruction takes up to the operand's end
+//   dc_disp   the displacement, sign-extended
+// Constants are not kept: they are read from the code page each time.
+//
+// An entry is made only from bytes that all lie on one page (the code page, E105), and is
+// good while that page is not written to: a page that holds entries is marked, and a write
+// to a marked page drops its entries. A page that is dropped again and again (code and data
+// that is written on one page) is given up: nothing is remembered from it.
+let DC_BITS = 18;
+let DC_SIZE = 1 << DC_BITS;
+let DC_NONE: u64 = 0xFFFFFFFFFFFFFFFF;
+let DC_GIVE_UP = 32;             // drops of one page after which it is not remembered from
+
+var dc_tag: u64[DC_SIZE] = [0xFFFFFFFFFFFFFFFF; DC_SIZE];
+var dc_info: u64[DC_SIZE] = [0; DC_SIZE];
+var dc_disp: u64[DC_SIZE] = [0; DC_SIZE];
+var dc_mark: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];      // 1: holds entries; 2: given up
+var dc_drops: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
+var dc_cur: i64 = -1;            // the entry of the instruction at hand; -1 if it can have none
+var dc_on = true;                // --no-decode-cache clears it
+
+inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
+
+// A marked page was written to: its entries go.
+fn dc_drop(page: i64) {
+    if dc_mark[page] != 1 { return; }
+    let base = (page << 12) as! u64;
+    for k in 4096 {
+        let at = base + (k as! u64);
+        let slot = dc_slot(at);
+        if dc_tag[slot] == at { dc_tag[slot] = DC_NONE; }
+    }
+    if dc_drops[page] < 255 { dc_drops[page] += 1; }
+    dc_mark[page] = if dc_drops[page] >= DC_GIVE_UP { 2 } else { 0 };
+}
+
 fn mem_wr(a: u64, w: u8, v: u64) {
     let i = a as! i64;
+    if dc_mark[i >> 12] | dc_mark[(i + 7) >> 12] != 0 {
+        dc_drop(i >> 12);
+        let last = (i + w / 8 - 1) >> 12;
+        if last != i >> 12 { dc_drop(last); }
+    }
     mem[i] = v as! u8;
     if w == 8 { return; }
     mem[i + 1] = (v >> 8) as! u8;
@@ -302,29 +353,66 @@ fn sr(i: u8, w: u8, v: u64) {
 // come after the operand (a constant): an address relative to RIP is relative to the end of
 // the whole instruction.
 fn modrm(after: u64) {
+    if dc_cur >= 0 {
+        let d = dc_info[dc_cur];
+        if d >> 26 & 1 != 0 {
+            // Remembered: the fields, and the address from the registers as they are now.
+            m_mod = (d >> 27 & 3) as! u8;
+            m_reg = (d >> 29 & 15) as! u8;
+            m_rm = (d >> 33 & 15) as! u8;
+            ip = rip + (d >> 49 & 15);
+            if m_mod == 3 { return; }
+            let base = d >> 37 & 31;
+            let index = d >> 42 & 31;
+            var a = dc_disp[dc_cur];
+            if base < 16 { a += reg[base]; } else if base == 17 { a += ip + after; }
+            if index < 16 { a += reg[index] << (d >> 47 & 3); }
+            if asz32 { a &= 0xFFFFFFFF; }
+            m_off = a;
+            m_ea = a + seg_base;
+            return;
+        }
+    }
     let b = fb() as! u8;
     m_mod = b >> 6;
     m_reg = b >> 3 & 7 | (rex & 4) << 1;
     m_rm = b & 7;
-    if m_mod == 3 { m_rm |= (rex & 1) << 3; return; }
     var a: u64 = 0;
-    if m_rm == 4 {
-        let s = fb() as! u8;
-        let base = s & 7 | (rex & 1) << 3;
-        let index = s >> 3 & 7 | (rex & 2) << 2;
-        let scale: u64 = s >> 6;
-        if index != 4 { a = reg[index] << scale; }
-        if s & 7 == 5 && m_mod == 0 { let d = fs32(); a += d; } else { a += reg[base]; }
-    } else if m_rm == 5 && m_mod == 0 {
-        let d = fs32();
-        a = ip + after + d;
-    } else {
-        a = reg[m_rm | (rex & 1) << 3];
+    var base: u64 = 16;
+    var index: u64 = 16;
+    var scale: u64 = 0;
+    var disp: u64 = 0;
+    if m_mod == 3 { m_rm |= (rex & 1) << 3; }
+    else {
+        if m_rm == 4 {
+            let s = fb() as! u8;
+            let i = s >> 3 & 7 | (rex & 2) << 2;
+            scale = s >> 6;
+            if i != 4 { index = i; a = reg[i] << scale; }
+            if s & 7 == 5 && m_mod == 0 { disp = fs32(); }
+            else { base = s & 7 | (rex & 1) << 3; a += reg[base]; }
+        } else if m_rm == 5 && m_mod == 0 {
+            disp = fs32();
+            base = 17;
+            a = ip + after;
+        } else {
+            base = m_rm | (rex & 1) << 3;
+            a = reg[base];
+        }
+        if m_mod == 1 { let d = fs8(); disp += d; } else if m_mod == 2 { let d = fs32(); disp += d; }
+        a += disp;
+        if asz32 { a &= 0xFFFFFFFF; }
+        m_off = a;
+        m_ea = a + seg_base;
     }
-    if m_mod == 1 { let d = fs8(); a += d; } else if m_mod == 2 { let d = fs32(); a += d; }
-    if asz32 { a &= 0xFFFFFFFF; }
-    m_off = a;
-    m_ea = a + seg_base;
+    // Remembered for the next time, if all of it lies on the page.
+    if dc_cur >= 0 && ip <= code_end && ip - rip <= 15 {
+        let mo: u64 = m_mod;
+        let rg: u64 = m_reg;
+        let rm: u64 = m_rm;
+        dc_info[dc_cur] |= 1 << 26 | mo << 27 | rg << 29 | rm << 33 | base << 37 | index << 42 | scale << 47 | (ip - rip) << 49;
+        dc_disp[dc_cur] = disp;
+    }
 }
 
 fn rm_get(w: u8) -> u64 {
@@ -790,26 +878,64 @@ fn exec64() -> bool {
     }
     if rip >> 12 != code_page || cpl != code_cpl { code_fill(); }
     ip = rip;
-    rex = 0;
-    rep = 0;
-    p66 = false;
-    asz32 = false;
-    seg_base = 0;
     var op: u8 = 0;
-    while true {
-        op = fb() as! u8;
-        if op & 0xF0 == 0x40 { rex = op; continue; }
-        match op {
-            0x66 => { p66 = true; },
-            0x67 => { asz32 = true; },
-            0xF2, 0xF3 => { rep = op; },
-            0xF0, 0x26, 0x2E, 0x36, 0x3E => {},
-            0x64 => { seg_base = fs_base; },
-            0x65 => { seg_base = gs_base; },
-            _ => { break; },
+    var known = false;
+    dc_cur = -1;
+    if dc_on && code_end != 0 {
+        // The decode cache: found by the instruction's physical address.
+        let ph = rip - code_delta;
+        let slot = dc_slot(ph);
+        dc_cur = slot;
+        if dc_tag[slot] == ph {
+            let d = dc_info[slot];
+            op = d as! u8;
+            rex = (d >> 8) as! u8;
+            p66 = d >> 16 & 1 != 0;
+            asz32 = d >> 17 & 1 != 0;
+            let r = d >> 18 & 3;
+            rep = if r == 0 { 0 } else { (0xF0 + r) as! u8 };
+            let sg = d >> 20 & 3;
+            seg_base = if sg == 0 { 0 } else if sg == 1 { fs_base } else { gs_base };
+            ip = rip + (d >> 22 & 15);
+            known = true;
         }
-        // A REX prefix counts only when it is the last prefix.
+    }
+    if !known {
         rex = 0;
+        rep = 0;
+        p66 = false;
+        asz32 = false;
+        seg_base = 0;
+        var sg: u64 = 0;
+        while true {
+            op = fb() as! u8;
+            if op & 0xF0 == 0x40 { rex = op; continue; }
+            match op {
+                0x66 => { p66 = true; },
+                0x67 => { asz32 = true; },
+                0xF2, 0xF3 => { rep = op; },
+                0xF0, 0x26, 0x2E, 0x36, 0x3E => {},
+                0x64 => { seg_base = fs_base; sg = 1; },
+                0x65 => { seg_base = gs_base; sg = 2; },
+                _ => { break; },
+            }
+            // A REX prefix counts only when it is the last prefix.
+            rex = 0;
+        }
+        if dc_cur >= 0 {
+            // Remembered, if the prefixes and the opcode lie on the page and the page has
+            // not been given up.
+            let ph = rip - code_delta;
+            let page = (ph >> 12) as! i64;
+            if ip <= code_end && ip - rip <= 15 && dc_mark[page] != 2 {
+                let o: u64 = op;
+                let x: u64 = rex;
+                let r: u64 = if rep == 0 { 0 } else { rep & 3 };
+                dc_tag[dc_cur] = ph;
+                dc_info[dc_cur] = o | x << 8 | (if p66 { 1 << 16 } else { 0 }) | (if asz32 { 1 << 17 } else { 0 }) | r << 18 | sg << 20 | (ip - rip) << 22;
+                dc_mark[page] = 1;
+            } else { dc_cur = -1; }
+        }
     }
     osz = if rex & 8 != 0 { 64 } else if p66 { 16 } else { 32 };
     let w: u8 = if op & 1 == 0 { 8 } else { osz };

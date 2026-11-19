@@ -312,6 +312,41 @@ test:
     call rbx
     PRINT rax
 
+    PUTS "code changed by a store at another address of its page"
+    ; One page at two addresses, and at its own. What runs at the first is put there, and
+    ; then changed, by stores at the others, after it has run three times (E107).
+    MAP V + 0x60000, P + 0x14000, 3
+    MAP V + 0x61000, P + 0x14000, 3
+    mov rbx, V + 0x60000
+    mov r13, V + 0x61000
+    mov dword [r13], 0xC3C80148             ; ADD RAX, RCX, and RET
+    mov eax, 100
+    mov ecx, 7
+%macro THRICE 0
+    mov r14d, 3
+%%again:
+    call rbx
+    dec r14d
+    jnz %%again
+    PRINT rax
+%endmacro
+    THRICE
+    mov byte [r13 + 1], 0x29                ; SUB
+    THRICE
+    mov byte [abs P + 0x14001], 0x31        ; XOR
+    THRICE
+    ; FS's base in an instruction that runs three times.
+    mov qword [abs P + 0x14800], 0x1001
+    mov ecx, 0xC0000100
+    mov eax, P + 0x14000
+    xor edx, edx
+    wrmsr
+    mov rax, 0x000000C301034864             ; ADD RAX, FS:[RCX], and RET
+    mov [r13], rax
+    mov ecx, 0x800
+    xor eax, eax
+    THRICE
+
     PUTS "a page of 2 MB invalidated by any address in it"
     mov rdi, V + 0x400000
     mov ecx, 21

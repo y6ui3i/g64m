@@ -19,6 +19,7 @@
 // entry point (linux64.goose), with the serial port as its console; what it prints is
 // printed as it comes.
 //   --initrd FILE  the initramfs
+//   --no-decode-cache  decode every instruction every time (for finding a fault in the cache)
 //   --faults       report every fault on standard error (but not page faults from level 3)
 //   --append TEXT  the kernel's command line (default: console=ttyS0 tsc=reliable)
 //   --wait TEXT    script step: run until TEXT has been printed on the serial port
@@ -463,6 +464,7 @@ fn main() {
             max_given = true;
         }
         else if a[i] == "--faults" { show_faults = true; }
+        else if a[i] == "--no-decode-cache" { dc_on = false; }
         else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }
         else if a[i] == "--keep" { disk_scratch = 0; }
