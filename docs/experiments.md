@@ -7037,3 +7037,105 @@ PCI's tests.
 
 **Not done, and next.** The devices beyond the three are untested behind this CPU. No
 local APIC. Next: the x87 and FXSAVE (E098), then the kernel.
+
+## E098: the x87 on the 64-bit CPU, and FXSAVE (2026-11-19)
+
+The fifth step of M10's kernel half. The owner chose it before the kernel is tried: a
+64-bit kernel saves and restores the floating-point state with FXSAVE at every switch
+between programs, and `long double` in a C library is the x87's 80 bits.
+
+- **Hypothesis**: `src/fpu.goose` (E013 to E016, for the i686; never compared with a real
+  CPU, only with rustx86 and by what C libraries print) touches the CPU it serves in a
+  dozen places: the memory operand, three flags, AX, the size of the environment, and two
+  ways of stopping. **With those behind a few functions that each CPU gives, the file is
+  in both programs; the 32-bit suite and its layout check are as they were; and on the
+  64-bit CPU, under the ptrace oracle of E091, loads and stores of every width, the four
+  operations at each precision and rounding of the control word, comparisons, the
+  conversions to integers, and FXSAVE and FXRSTOR in their 64-bit layout give the real
+  CPU's registers and memory after every instruction.**
+- **What changed since last time**: E093 did the same for SSE2 and found nothing wrong in
+  the shared code. The x87 has more that the host's doubles cannot give: 64 bits of
+  mantissa, and constants and a square root to that precision.
+- **Next move for each result**:
+  - Everything compared matches → kept; next is the kernel (E099)
+  - A result's last bits differ where the file computes in doubles (the square root, the
+    constants, FSCALE, FPREM) → done in integers at 64 bits if a C library's `long double`
+    code can meet it; else out of the comparison, and the ledger says so
+  - The status word's exception bits make a trace differ (the file never sets them) → the
+    tests clear them before reading the status word, and that is said; they are not
+    modelled
+  - A helper is wrong against the real CPU → wrong on the 32-bit machine too: fixed for
+    both, with the case
+  - The 32-bit suite or layout changes with the file shared → a copy for the 64-bit CPU
+    instead, as E097's card had it
+- **Cut-off**: no floating-point exception is delivered (as on the 32-bit machine). The
+  functions that go through the host's library (FSIN, FCOS, FPTAN, FPATAN, F2XM1, FYL2X,
+  FYL2XP1) are not compared: the chip's last bits are its own. FXSAVE's record of the last
+  instruction's address is not kept.
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch, after the fourth: `src/fpu.goose` is in both
+programs behind seven names; on the 64-bit CPU four new programs (the generated `f_x87`,
+5,298 instructions; `x_fxsave`; `c_ld` in C with `long double`; and the system test
+`y_fpu`) give the real CPU's registers and memory, or print what it prints. But the file
+was not right against the real CPU as it stood: 50 of `f_x87`'s first 4,663 lines differed,
+from nine causes, and all nine were wrong on the 32-bit machine too. They are fixed for
+both.** E093 found nothing wrong in the shared SSE code; here the oracle earned its keep.
+
+**What the real CPU does that the file did not** (each fixed in `src/fpu.goose` unless
+said, each with a wrong build):
+1. **FCOMI and its kin clear OF, SF and AF** as well as setting ZF, PF and CF. (In the
+   two CPUs' `fp_set_zpc`.)
+2. **A comparison clears C1.**
+3. **A NaN loaded from a single or a double comes in quiet.**
+4. **A result that is not a number, of operands that were** (infinity less infinity, zero
+   by zero), **is the indefinite: quiet, sign set.** The host's own is positive.
+5. **An empty register reads as the indefinite** (the masked answer to a stack fault).
+   The saves (FNSAVE, FXSAVE) still write what is in it: `raw80`.
+6. **A store to a single or a double rounds once, from all 64 bits, as the control word
+   says.** It went by way of the register's double: twice for a single, and to nearest
+   whatever the rounding. `store_float`, with the cases a double-then-single path gets
+   wrong: ties, the carry out of the mantissa, overflow under each rounding, denormals.
+7. **The square root to 64 bits**, by a root of a 128-bit number in integers
+   (`sqrt80`), where it was the host's to 53. Newton's method in `long double` (`c_ld`)
+   lands on these bits.
+8. **The constants to 64 bits, and by the rounding**: FLDPI and the four logarithms were
+   doubles. They are the chip's 64 bits cut off, one more when rounding to nearest (all
+   but log2 of 10) or upward (all).
+9. **FXTRACT, FPREM and FPREM1 in integers**: the mantissa kept whole; the remainder by
+   long division, in parts when the exponents are 64 or more apart (C2 says so, and 32
+   bits and the odd ones of the quotient are done), FPREM1 to the nearest with ties to
+   even.
+10. **FNSTENV and FNSAVE write ones in the upper half of the three words' places** in
+    the 32-bit layout.
+
+**The 32-bit machine.** Its suite then failed three traces, each at one instruction and
+its consequences: the sign of zero by zero (`v_fpu1`) and the ones in the environment
+(`v_fpu3`, `v_sse07`). Those traces were rustx86's. A small image run under KVM in 32-bit
+protected mode said the real CPU does there what it does in long mode
+(`FFFF037F FFFF0000 FFFFFFFF`, and 0/0 with its sign set). **The three expected traces
+are now this machine's, which is to say the real CPU's, and `tools/difftest.sh` leaves
+them alone when the rest are taken again from rustx86.** The other 160 lines are as they
+were; so the Linux boots, X and the browser do not meet any of the ten.
+
+**What was built besides.** `frd`, `fwr`, `fp_env32`, `fp_set_ax`, `fp_set_zpc`,
+`fp_stop` in `src/exec.goose` and in `src/cpu64.goose`; the check of CR0's EM and TS
+moved from the file to its two callers. FXSAVE and FXRSTOR in the 64-bit layout
+(`src/sse64.goose`). In a machine: SSE is an undefined opcode until CR4.OSFXSR is set or
+while CR0.EM is; x87 and SSE trap (vector 7) while CR0.TS is set; FWAIT traps only with
+CR0.MP too; a fence never does. CPUID says FXSR.
+
+**Wrong builds.** 37 (`build/mut98.py`). 25 caught at once; ten got cases (the stores'
+ties, carry, overflow, denormals and NaNs; remainders in parts, at a tie, and of a
+dividend between half the divisor and the whole; FNSAVE of a freed register); two were
+wrong builds that did not build and were written again, and are caught. One changes
+nothing: a REX prefix's bit in the register number, which the register stack's own
+arithmetic drops.
+
+**Not modelled, and not compared.** The status word's exception bits (the tests clear
+them before reading it, as the card's third branch has it), exceptions unmasked, the
+functions through the host's library (FSIN and the rest), FBLD and FBSTP (they stop the
+run), FXSAVE's record of the last instruction.
+
+**Next.** The kernel (E099).

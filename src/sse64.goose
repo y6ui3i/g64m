@@ -15,6 +15,7 @@ import std;
 import math;
 import cpu64;
 import lanes;
+import fpu;
 
 var xmm: u64[32] = [0; 32];
 var mxcsr: u32 = 0x1F80;
@@ -111,8 +112,59 @@ fn farith64(op: u8, p: u8, r: i64) {
     }
 }
 
-// 0F AE: LDMXCSR and STMXCSR by the reg field with a memory operand; the fences with a
-// register one, and CLFLUSH, which have nothing to do here.
+// FXSAVE and FXRSTOR: the x87's and SSE's state in 512 bytes of memory, which is how a
+// kernel keeps it for a program that is not running. The control and status words, a bit
+// for each x87 register in use, MXCSR and the bits of it that exist, the eight x87
+// registers as 80-bit values in sixteen bytes each, and the sixteen XMM registers. The
+// last x87 instruction's address and operand are not kept, and are written as zero.
+fn fxsave64() {
+    let used: u8 = ~fp_empty;
+    fwr(0, 16, fp_cw);
+    fwr(2, 16, status());
+    fwr(4, 16, used);
+    fwr(6, 16, 0);
+    for k: u32 in 4 { fwr(8 + k * 4, 32, 0); }
+    fwr(24, 32, mxcsr);
+    fwr(28, 32, 0xFFFF);
+    for i: u8 in 8 {
+        let m, se = raw80(i);
+        let at: u32 = 32 + (i as u32) * 16;
+        fwr64(at, m);
+        fwr(at + 8, 32, se);
+        fwr(at + 12, 32, 0);
+    }
+    for i in 16 {
+        let at: u32 = 160 + (i as! u32) * 16;
+        fwr64(at, xmm[i * 2]);
+        fwr64(at + 8, xmm[i * 2 + 1]);
+    }
+}
+
+fn fxrstor64() {
+    let cw = frd(0, 16) as! u16;
+    let sw = frd(2, 16) as! u16;
+    let used = frd(4, 16) as! u8;
+    let mx = frd(24, 32);
+    if mx & 0xFFFF0000 != 0 { fault(13, true, 0); }
+    mxcsr = mx;
+    fp_cw = cw;
+    fp_top = (sw >> 11 & 7) as! u8;
+    fp_cond = sw & (C0 | C1 | C2 | C3);
+    for i: u8 in 8 {
+        let at: u32 = 32 + (i as u32) * 16;
+        let m = frd64(at);
+        set_st80(i, m, frd(at + 8, 16) as! u16);
+    }
+    fp_empty = ~used;
+    for i in 16 {
+        let at: u32 = 160 + (i as! u32) * 16;
+        xmm[i * 2] = frd64(at);
+        xmm[i * 2 + 1] = frd64(at + 8);
+    }
+}
+
+// 0F AE: FXSAVE, FXRSTOR, LDMXCSR and STMXCSR by the reg field with a memory operand; the
+// fences with a register one, and CLFLUSH, which have nothing to do here.
 fn sse64_group15() {
     modrm(0);
     if m_mod == 3 {
@@ -120,6 +172,8 @@ fn sse64_group15() {
         return;
     }
     match m_reg & 7 {
+        0 => { fxsave64(); },
+        1 => { fxrstor64(); },
         2 => { mxcsr = (rd(m_ea, 32) & 0xFFFF) as! u32; },
         3 => { wr(m_ea, 32, mxcsr); },
         7 => {},
@@ -141,9 +195,21 @@ fn pick4(x0: u64, x1: u64, y0: u64, y1: u64, imm: u32) -> u64, u64 {
     return lo, hi;
 }
 
+// Is the 0F AE instruction at hand one with a register operand (a fence)? Looked at before
+// the ModRM byte is taken.
+fn m_ae_fence() -> bool { return code_rd(ip, 8) >> 6 == 3; }
+
 fn sse64_op(op: u8) {
     // Which prefix chose the instruction: 0 none, 1 66, 2 F3, 3 F2.
     let p: u8 = if rep == 0xF3 { 2 } else if rep == 0xF2 { 3 } else if p66 { 1 } else { 0 };
+    if machine {
+        // In a machine these are there once the operating system says it keeps their state
+        // (CR4.OSFXSR) and has not asked for the x87 to be emulated (CR0.EM): else the opcode
+        // is undefined. With CR0.TS set they trap, for the state to be brought in first.
+        // (FXSAVE, FXRSTOR and the fences of 0F AE are not held to the first.)
+        if op != 0xAE && (cr4 & 0x200 == 0 || cr0 & 4 != 0) { fault(6, false, 0); }
+        if cr0 & 8 != 0 && !(op == 0xAE && m_ae_fence()) { fault(7, false, 0); }
+    }
     if op == 0xAE { sse64_group15(); return; }
     if op == 0x77 { sse64_unknown(op); }
     let has_imm = op == 0x70 || op == 0x71 || op == 0x72 || op == 0x73 || (op >= 0xC2 && op <= 0xC6 && op != 0xC3);
