@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the disk, the network, the screen, and speed |
+| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the network, the screen, and speed |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -272,8 +272,18 @@ Started from a terminal with no script, the terminal is the kernel's console, an
 
 The boot takes most of a minute. At the prompt the machine sleeps with the guest and keeps
 to the clock (`sleep 3` takes three seconds); while the guest computes, its clock runs
-behind the wall's. There is no disk, no network and no frame buffer behind this CPU yet,
-and no JIT: it runs some 30 million instructions a second.
+behind the wall's.
+
+With a disk (`ARCH=64 MODLOOP=images/modloop64-lts tools/images/make-disk.sh` makes the image
+and an initramfs with the driver, from Alpine's x86_64 `modloop-lts`), the root is an ext2
+file system on `/dev/sda`; `--keep` and `off` in the guest are as on the 32-bit machine:
+
+```bash
+./build/x64 --disk images/disk64.img --initrd images/initramfs64-disk images/vmlinuz64-lts
+```
+
+There is no network and no frame buffer behind this CPU yet, and no JIT: it runs some 30
+million instructions a second.
 
 ## Tests
 

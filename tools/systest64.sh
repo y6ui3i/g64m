@@ -93,6 +93,28 @@ if [ $# -eq 0 ]; then
     else
         echo "skip  linux64 shell (images/vmlinuz64-lts and images/initramfs64-mini are not there)"
     fi
+    # From the disk (E101): the initramfs loads the driver, finds an ext2 root on /dev/sda and
+    # moves there. A file is written and the machine stopped with `off`; a second boot, of the
+    # same image, reads it. The image is a copy, kept with --keep, so images/disk64.img stays
+    # as it was made.
+    if [ -f images/disk64.img ] && [ -f images/initramfs64-disk ]; then
+        cp images/disk64.img build/s64/disk64.img
+        build/x64 --disk build/s64/disk64.img --keep --initrd images/initramfs64-disk --wait "root on /dev/sda" --wait "~ # " \
+            --type 'echo kept-$((6*7)) > /f; mount | grep -c "sda on / type ext2"; off\n' --wait "System halted" \
+            images/vmlinuz64-lts > build/s64/disk1.out 2>build/s64/disk1.err
+        out=$(build/x64 --disk build/s64/disk64.img --initrd images/initramfs64-disk --wait "root on /dev/sda" --wait "~ # " \
+            --type 'cat /f; echo end-$?\n' --wait "end-0" images/vmlinuz64-lts 2>build/s64/disk2.err | tr -d '\r' | sed -n '/^kept-42$/,$p' | tr '\n' ' ')
+        if [ "$out" = "kept-42 end-0 " ] || [ "$out" = "kept-42 end-0" ]; then
+            echo "ok    linux64 disk: an ext2 root on /dev/sda; a file written before \`off\` is there at the next boot"
+        else
+            fail=1
+            echo "FAIL  linux64 disk: the second boot printed \"$out\""
+            tail -2 build/s64/disk1.err | sed 's/^/  /'
+            tail -2 build/s64/disk2.err | sed 's/^/  /'
+        fi
+    else
+        echo "skip  linux64 disk (images/disk64.img and images/initramfs64-disk are not there; tools/images/make-disk.sh makes them)"
+    fi
     # The same kernel with a pseudo-terminal as its console (E100): a command typed, `sleep 3`
     # timed against the clock, Ctrl-] to leave.
     python3 -I tools/console_test.py build/x64 images 64 2>/dev/null || fail=1

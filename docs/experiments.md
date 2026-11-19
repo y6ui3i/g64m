@@ -7352,3 +7352,39 @@ machines agree on.
 
 **Nothing was wrong in the disk itself** (`src/dev.goose`, E075): QEMU's model and this
 one give a driver the same.
+
+### Result (the second half)
+
+2026-11-19. **Kept: with the driver's modules in its initramfs the 64-bit Linux finds the
+disk, mounts an ext2 file system from it and moves its root there, the first time it was
+tried; and a file written before `off` is there at the next boot of the same image.** The
+owner allowed the download (Alpine 3.23's x86_64 `modloop-lts`, 296 MB, kept outside the
+repository as `images/modloop64-lts`).
+
+```
+scsi host0: pata_legacy
+ata1: PATA max PIO4 cmd 0x1f0 ctl 0x3f6 irq 14 lpm-pol 0
+ata1.00: ATA-6: g86m disk, 1, max PIO4
+ata1.00: 65536 sectors, multi 1: LBA48
+sd 0:0:0:0: [sda] 65536 512-byte logical blocks: (33.6 MB/32.0 MiB)
+  g86m - busybox shell, root on /dev/sda
+/dev/sda on / type ext2 (rw,relatime,errors=continue,user_xattr,acl)
+```
+
+1,907 million instructions to the shell on the disk (1,532 without one): the modules
+loaded, the driver's probe, the mount and the move.
+
+**What was built.** `tools/images/make-disk.sh` takes `ARCH=64`: the same seven modules
+by the same names from the x86_64 modloop, busybox and musl from `images/initramfs64-mini`,
+and makes `images/initramfs64-disk` and `images/disk64.img`. The `init` is the 32-bit
+machine's file unchanged (`tools/images/init`), driver options and all.
+
+**In the suite.** `tools/systest64.sh`, when the images are there: a boot from a copy of
+the disk with `--keep`, a file written, `off`; a second boot that reads it.
+
+**Rejected on the way.** The script's new variable had the name of one it already used
+for a count, and the first images were called `disk7.img`. And a script's `--wait` for
+"done-1" was met by the typed command's own echo, so the run ended before the answer: an
+end marker has to be something the typed line does not contain (`done-$((1+1))`).
+
+**Next.** The network behind this CPU.
