@@ -141,6 +141,15 @@ by a jump on a kind kept in the cache's entry, without the save of the registers
 them changes a register before the last point it can fault at. There is one
 implementation of each: the rest of the CPU has no arms for them.
 
+**Where the cycles go (E111).** The boot takes 289 host instructions and 50.3 cycles for a
+guest instruction, 5.7 instructions a cycle. Stopped 6,000 times and its program counter
+read, the time lies where the instructions are (`exec64` 48%, `main` 11%, `modrm` 9%),
+with one exception: loading the decode cache's entry and testing its tag and kind takes
+18% of the boot's time for a handful of instructions. A loop of five instructions that
+never leaves the nearest cache takes 45.5 cycles for each: nine tenths of the cycles are
+there when nothing waits, and fewer host instructions is still what makes the machine
+faster. The jump on the instruction's kind is under a tenth.
+
 1 to 3 change no structure and can each be measured alone; 4 is a structure; 5 is a
 project. What the survey does not say is how much of 3 and 4 overlap: a decode cache makes
 most of `exec64`'s beginning unnecessary, so 3 may be worth doing only in part before 4.
