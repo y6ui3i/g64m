@@ -7514,3 +7514,89 @@ The mouse's script step moves the controller's mouse and nothing here reads it: 
 kernel's mouse driver is a module, for when X is.
 
 **Next.** Speed.
+
+## E104: where the 64-bit machine's time goes: a survey before any change (2026-11-19)
+
+The owner asked for a wide look before any work on speed, so that the work is not a
+guess. Nothing is made faster in this entry.
+
+- **Hypothesis**: The 64-bit CPU interprets, decoding every instruction every time into
+  globals, at some 30 million instructions a second (E096: the loop; E099: 1.53 billion
+  in 51 seconds). The guess to be tested, and it is only a guess: **more than half of the
+  host's time is spent before an instruction's own work begins (fetching its bytes
+  through the page tables one call at a time, the prefix loop, ModRM), and the code that
+  runs is concentrated enough that remembering what was decoded would pay: fewer than
+  100,000 distinct instruction addresses make up 99% of what a boot executes.** Both are
+  what was true of the 32-bit machine (E010 on), and 64-bit code may differ: arguments in
+  registers, REX on most instructions, a kernel that spends its boot unpacking and
+  copying.
+- **What changed since last time**: no measurement of the 64-bit machine exists beyond
+  two wall-clock numbers. This counts, with a copy of the sources that has counters in
+  it (nothing counted is in the real sources), on two stretches: the boot to the prompt,
+  and a stretch of user programs after it (hashing, sorting, a loop in awk); and samples
+  the host's stack on each.
+- **What is counted**: host instructions and cycles for each guest instruction; the
+  host's time by function; the guest's instructions by first byte, by length, by prefix,
+  by kind of operand; memory reads, writes and fetches for each instruction, and how many
+  miss the TLB; how the work divides between privilege levels; how concentrated the
+  executed addresses are; how long a run of instructions is between two taken jumps, and
+  what ends it; how often a fault, an interrupt, a system call, a write of CR3 comes.
+- **Next move for each result**:
+  - The fetch and decode are over half, and the addresses are concentrated → a decode
+    cache first, as on the 32-bit machine, with the survey's numbers as its card's
+    prediction
+  - The time is elsewhere (the walk after CR3 writes, the save of the registers, the
+    look between instructions, memory access itself) → that, first; the survey says how
+    much it can give at most
+  - The addresses are not concentrated (a boot that runs everything once) → the boot is
+    the wrong thing to make fast; the stretch of user programs decides, and a decode
+    cache is judged on it
+  - Nothing stands out (a dozen things at 5% each) → no single change is worth a step of
+    its own before a JIT; the survey becomes the list a JIT's design is checked against
+- **Cut-off**: counting and sampling only. One sitting for the times. The counters' own
+  cost is not in any time quoted: times come from the real build.
+
+### Result
+
+2026-11-19. **Both halves of the guess hold, the first by more than was guessed. Nine
+tenths of the host's time goes before a guest instruction's own work begins or on finding
+its operands (the guess was "more than half"); and 34,872 addresses make up 99% of the
+boot's instructions, 7,668 of the user programs' (the guess was "fewer than 100,000").**
+So the card's first branch: the work on speed begins with what is done before the
+instruction, and a decode cache is right. The whole of it is in
+[perf64.md](perf64.md); the figures that decide:
+
+- **654 host instructions and 103 host cycles for one guest instruction**, on the boot;
+  633 and 103 on user programs. The 32-bit interpreter takes 17.5 cycles (E090). The
+  64-bit CPU is six times slower, instruction for instruction.
+- Of the 654: the run loop in `main` 85, every time; `exec64` before it reaches the
+  opcode's own code 165 to 208; fetching the bytes about 190 (a call through the page
+  tables for each byte or constant, 3.2 an instruction); ModRM where used about 100; the
+  instruction's own work 20 to 150.
+- The TLB misses on 0.007% of fetches and 0.17% of data reads; an interrupt, a system
+  call or a switch of address space comes once in 30,000 instructions.
+- A 64-bit program reads or writes memory once in three instructions, runs 8 instructions
+  between two taken jumps, and has REX on half of them.
+
+**How it was counted.** Times and the host's counters from the real build
+(`/usr/bin/time -l`). The host's time by function from `sample`, eight seconds on each
+stretch. The 654 by part from a debugger stepping the host one instruction at a time
+through eight guest instructions (`build/step.py`). The guest's side from a copy of the
+sources with counters (`build/mkcount.py`: a table of every address executed, the first
+bytes, lengths, prefixes, operands, TLB lookups and misses, events), run on the boot and
+on the boot followed by the user programs, the second less the first
+(`build/svreport.py`).
+
+**Two things the first numbers were not.** The sample's hottest place, a third of all
+samples at one store in `exec64`, is not where the time is: it is where the host comes
+back to after the prefix loop's last jump, and stepping showed nothing costly there. And
+the counting run's second stretch ran to its limit of 60 billion the first time: the
+command had been passed through a file and lost its Enter.
+
+**What was not measured**: how the parts overlap (a decode cache makes most of `exec64`'s
+beginning unnecessary); anything under X, which this machine has not run; the cost of the
+flags, which every arithmetic instruction computes whether or not they are read
+(`alu` is 62 host instructions, 3% of the time).
+
+**Next move**, by the card: the fetch (1 in the list of perf64.md), with the survey's
+190 of 654 as its card's prediction.
