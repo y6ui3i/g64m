@@ -31,7 +31,7 @@ import sse64;
 import sys64;
 import fpu;
 
-let MEM_SIZE = 67108864;        // 64 MB
+let MEM_SIZE = 268435456;       // 256 MB
 
 let RAX = 0; let RCX = 1; let RDX = 2; let RBX = 3;
 let RSP = 4; let RBP = 5; let RSI = 6; let RDI = 7;
@@ -70,6 +70,12 @@ var exit_code: i64 = 0;
 
 var mem: u8[MEM_SIZE];
 
+// A 64-bit number as sixteen hex digits (format_int would write an address in the upper half
+// as a negative number).
+fn hex64(out: u8[>..]&, v: u64) {
+    for i in 16 { out.push("0123456789abcdef"[v >> (((15 - i) * 4) as! u64) & 15]); }
+}
+
 // ---- Stopping ----
 
 // Ends the run where an instruction cannot be done: not written yet, or a fault that
@@ -79,7 +85,7 @@ fn stop64(what: const u8[:], v: u64) {
     format(msg, "x64: ", what, " ");
     format_int(msg, v as! i64, 16, 2, '0');
     format(msg, " at ");
-    format_int(msg, rip as! i64, 16, 8, '0');
+    hex64(msg, rip);
     format(msg, "  bytes:");
     for i in 12 {
         let a = rip + (i as! u64);

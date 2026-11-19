@@ -160,6 +160,35 @@ test:
     PRINT rax
     push 2
     popfq
+    PUTS "VERR and VERW: could this selector's segment be read, or written, from here"
+%macro VER 1
+    mov eax, %1
+    push 2
+    popfq
+    verr ax
+    pushfq
+    pop rbx
+    push 2
+    popfq
+    verw ax
+    pushfq
+    pop rcx
+    shl rbx, 16
+    or rbx, rcx
+    PRINT rbx
+%endmacro
+    VER 0x08
+    VER 0x10
+    VER 0x18
+    VER 0x1B
+    VER 0x20
+    VER 0x28
+    VER 0x00
+    VER 0x100
+    VER 0x13
+    VER 0x30
+    ; (A selector that names the LDT is not asked about: there is none, and the real CPU
+    ; then reads whatever lies where one was last.)
     PUTS "the tables' registers"
     sgdt [scratch]
     PRINT [scratch]

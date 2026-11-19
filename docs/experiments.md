@@ -7139,3 +7139,90 @@ functions through the host's library (FSIN and the rest), FBLD and FBSTP (they s
 run), FXSAVE's record of the last instruction.
 
 **Next.** The kernel (E099).
+
+## E099: a 64-bit Linux kernel, entered at its 64-bit entry point (2026-11-19)
+
+M10's own aim ([roadmap.md](roadmap.md)): "A 64-bit Linux kernel boots to a shell".
+
+- **Hypothesis**: Alpine 3.23's x86_64 kernel (`vmlinuz-lts`, 6.18.60; its boot header
+  says it may be entered in 64-bit mode, 200h past where it is loaded) and an initramfs of
+  Alpine's own busybox with a three-line `init` come up on the 64-bit machine as E091 to
+  E098 left it, given a loader that does what the boot protocol asks of one (the kernel at
+  16 MB, the first 4 GB mapped to themselves, a flat GDT, the zero page with a memory map,
+  RSI pointing at it): **the kernel prints its messages on the serial port and busybox's
+  shell prints its prompt.** What is missing shows as a stop that names an instruction or
+  an MSR, since nothing unwritten passes silently; each is one thing to write.
+- **What changed since last time**: everything so far was tests: at most a few thousand
+  instructions each, every one compared with a real CPU. A kernel is some billions of
+  instructions that nothing checks one by one. The 32-bit machine went the same way at M4.
+- **Next move for each result**:
+  - A stop that names something → write it, with a test against the real CPU where the
+    thing is the CPU's (an instruction, a fault's shape) and without where it is a
+    register that is only kept; go on
+  - The kernel says what it lacks (a CPUID feature, a device) → give it, or tell it by
+    the command line not to want it, whichever is true of this machine
+  - Silence, or a panic with no stop → the count of instructions and the last address
+    say where; a trace of the last thousand instructions before it; and if that does not
+    say, the same kernel under QEMU with the same command line, to see what should have
+    been printed next
+  - Wrong and not stopped (a computation that differs) → the hardest kind: narrow by the
+    kernel's own messages, then a test of the suspected instruction against the real CPU
+- **Cut-off**: one CPU, 256 MB, the serial console; no ACPI, no local APIC (the kernel is
+  told by CPUID that there is none), no disk and no network in this entry. A shell prompt
+  and a few commands typed at it by a script are the end of it.
+
+### Result
+
+2026-11-19. **Kept: the kernel prints its messages on the serial port and busybox's shell
+prints its prompt, 1,531 million instructions after the kernel is entered (51 seconds of
+host time). `uname -a` typed at it says `Linux (none) 6.18.60-0-lts #1-Alpine SMP
+PREEMPT_DYNAMIC ... x86_64 Linux`. M10's aim is met.**
+
+It took three runs, and three things that E091 to E098 had not given:
+
+| Run | How far | What stopped it | What was done |
+|---|---|---|---|
+| 1 | 666 million instructions: the kernel unpacked itself and began | a triple fault at RDMSR, before the kernel has a handler for anything | IA32_MISC_ENABLE (1A0h) is there and reads as 1; `--faults` was added to see which MSR |
+| 2 | 1,506 million: every message of the boot, "Run /init as init process", `init`'s own line printed by busybox | VERW, "an instruction not written yet" (the kernel clears CPU buffers with it on the way back to a program) | VERR and VERW written; then `init` itself failed, for a busybox applet Alpine's does not have (`cttyhack`): one line of the initramfs's `init` |
+| 3 | the prompt, and four commands | nothing | |
+
+So the card's first branch three times, and none of the others: nothing was silent, and
+nothing computed wrongly that showed. The whole of long mode's system side, the devices
+and the x87 ran a kernel the first time they were asked to; what they had been asked
+before was 37,558 instructions under ptrace and some hundreds of lines under KVM.
+
+**What was built.**
+- `src/linux64.goose`: the loader. The kernel at the address its header prefers (16 MB),
+  the initramfs near the top of memory, the zero page with four lines of memory map, a
+  GDT, six pages of tables mapping the first 4 GB to themselves, RSI, and RIP 200h into
+  the kernel.
+- `src/x64.goose`: a kernel is known by its header; `--initrd`, `--append`, `--wait`,
+  `--type`, `--faults`; the serial port's output is printed as it comes. Memory is 256 MB
+  (64 before: the kernel alone asks for 44 MB to unpack into).
+- `tools/images/make-mini64.py`: takes busybox and musl out of Alpine's netboot
+  initramfs and writes a cpio archive with them, an `init`, and two device nodes. 909 KB.
+- In `src/sys64.goose`: VERR and VERW; three MSRs that an Intel CPU has and the kernel
+  reads without asking (IA32_MISC_ENABLE, the platform's id, the microcode's revision:
+  the last two answered with zero after the kernel's "unchecked MSR access" in run 2's
+  messages). A 64-bit address is printed as sixteen digits, where `format_int` wrote the
+  kernel's as negative numbers.
+
+**Tested against the real CPU.** VERR and VERW in `y_fault`, on eight selectors (code,
+data, level 3's, the TSS, null, past the table, one whose requested level is too low, a
+system descriptor); five wrong builds, all caught, two after a selector each was added.
+A ninth selector, one that names the LDT, was taken out: there is no LDT, and the real
+CPU then reads whatever lies where one last was. The MSRs are registers that are only
+kept and have no test.
+
+**In the suite.** `tools/systest64.sh` boots the kernel when the two images are there,
+types four commands and compares what they print (`x86_64`, `42` through a file in
+/tmp, the count of processors, a status of 0); skipped when they are not.
+
+**What the kernel says of this machine**, none of it wrong: no MTRRs, no PAT, no ACPI
+tables, "APIC disabled by BIOS", SMP disabled, one processor at 76 MHz (64 instructions
+to a tick of the timer), 210 MB of memory.
+
+**Not done.** Everything in the roadmap's last paragraph on M10: the terminal as a
+console, the disk, the network and the frame buffer behind this CPU, speed. And the name:
+the roadmap says g86m becomes g64m when this stage is done, in one step, which is the
+owner's to start.
