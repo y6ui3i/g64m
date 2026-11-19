@@ -4,6 +4,7 @@
 #   tools/difftest.sh                 compare with tests/expected/*.trace.gz
 #   ORACLE=/path/to/trace32 tools/difftest.sh
 #                                     regenerate the expected traces with rustx86's trace32 first
+#                                     (all but three, which are a real CPU's: see below)
 #
 # To build trace32, put tools/oracle/trace32.rs in rustx86's core/examples/ and run
 #   cargo build --release -p rustx86-core --example trace32
@@ -40,7 +41,10 @@ for bin in build/t_*.bin build/u_*.bin build/v_*.bin build/hello.bin build/inter
     # Tests named v_ use instructions newer than the 386: they run on the i686.
     case "$name" in v_*) cpu="--cpu i686" ;; *) cpu="" ;; esac
     exp="tests/expected/$name.trace.gz"
-    if [ -n "${ORACLE:-}" ]; then
+    # Three traces are not rustx86's (E098): where it and a real CPU part, the real CPU's
+    # answer is kept, and these are left alone when the rest are taken again.
+    case "$name" in v_fpu1|v_fpu3|v_sse07) real_cpu=1 ;; *) real_cpu=0 ;; esac
+    if [ -n "${ORACLE:-}" ] && [ $real_cpu -eq 0 ]; then
         "$ORACLE" "$bin" 2>/dev/null | gzip -9n > "$exp"
     fi
     build/g86m-debug $cpu --trace --max 2000000 "$bin" > "build/$name.trace" 2> "build/$name.err"

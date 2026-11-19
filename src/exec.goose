@@ -1137,6 +1137,26 @@ inline fn raw8(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFF) as! u32
 inline fn raw32(raw: u64, k: u32) -> u32 { return (raw >> (k * 8) & 0xFFFFFFFF) as! u32; }
 inline fn sext8(v: u32) -> u32 { return ((v as! u8) as! i8) as! u32; }
 
+// ---- What the x87 and SSE files need of this CPU (see fpu.goose's head) ----
+
+fn ea(k: u32) -> u32 {
+    let o = ea_off + k;
+    if ins.asz32 { return o; }
+    return o & 0xFFFF;
+}
+
+fn frd(k: u32, w: u8) -> u32 { return seg_read(ea_seg, ea(k), w); }
+fn fwr(k: u32, w: u8, v: u32) { seg_write(ea_seg, ea(k), w, v); }
+fn fp_env32() -> bool { return ins.osz == 32; }
+fn fp_set_ax(v: u16) { set_r16(AX, v); }
+// OF, SF and AF are cleared with it (E098: the real CPU).
+fn fp_set_zpc(bits: u32) { cpu.flags = cpu.flags & 0xFFFFF72A | bits; }
+
+fn fp_stop(code: i64) {
+    cpu.ip = saved.ip;
+    stop("unimplemented x87 opcode, with its ModRM byte", code);
+}
+
 // How many bytes the operand that begins with the ModRM byte at raw's byte i takes, with
 // 32-bit addressing: that byte, a SIB byte, a displacement.
 fn modrm_len(raw: u64, i: u32) -> u32 {
@@ -2499,7 +2519,15 @@ fn exec_general() -> bool {
                 0xD6 => { set_r8(0, if flag(CF) { 0xFF } else { 0 }); },
                 0xD7 => { let index: u32 = r8(0); set_r8(0, seg_read(seg_of(DS), (addr_reg(BX) + index) & (if ins.asz32 { 0xFFFFFFFF } else { 0xFFFF }), 8) as! u8); },
                 // The i686 has an FPU. The 386 has none and lets the escape opcodes pass.
-                0xD8..0xE0 => { decode_modrm(); if i686 { fpu_escape(op); } },
+                0xD8..0xE0 => {
+                    decode_modrm();
+                    if i686 {
+                        // With EM or TS set in CR0 the unit is not available: the operating
+                        // system wants the trap.
+                        if cr[0] & 0x0C != 0 { raise(7, false, 0); }
+                        fpu_escape(op);
+                    }
+                },
                 _ => { cpu.ip = saved.ip; stop("unimplemented opcode", op); },
             }
         },

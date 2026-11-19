@@ -1,4 +1,4 @@
-// The x87 floating-point unit of the i686 machine.
+// The x87 floating-point unit, of the i686 machine and of the 64-bit CPU (E098).
 //
 // A register holds a value in two forms: an f64, and, when the value has one, its exact 80-bit
 // original (64 bits of mantissa, where an f64 has 53).
@@ -18,11 +18,21 @@
 // zero. What a masked exception would produce (a NaN, an infinity, a zero) is what f64 arithmetic
 // gives anyway. An escape opcode that is not implemented stops the machine and says which: letting
 // one pass silently is how rustx86 once turned `sleep 3` into a 20 ms sleep.
+//
+// The file belongs to no CPU. What it needs of the one it serves, that CPU's files give
+// under these names (exec.goose for the i686, cpu64.goose for the 64-bit CPU):
+//   frd(k, w), fwr(k, w, v)   read and write w bits at the memory operand's address plus k
+//   fp_env32()                the environment is in its 32-bit layout (28 bytes, not 14)
+//   fp_set_ax(v)              FNSTSW AX
+//   fp_set_zpc(bits)          ZF, PF and CF from a comparison (FCOMI and its kin)
+//   flag(CF) ...              the flags, for FCMOVcc
+//   fp_stop(code)             an escape opcode that is not written: stop and say which
+// and m_mod, m_reg, m_rm: the ModRM byte's three fields, 0 to 7 each. The CPU checks that
+// the unit is available (CR0's EM and TS) before it calls fpu_escape.
 
 import std;
 import math;
-import state;
-import exec;
+import lanes;
 
 extern fn ldexp(x: f64, e: i32) -> f64 = "ldexp";
 extern fn logb(x: f64) -> f64 = "logb";
@@ -55,7 +65,13 @@ fn fpu_reset() {
 
 fn bit8(p: u8) -> u8 { let one: u8 = 1; return one << p; }
 fn phys(i: u8) -> u8 { return (fp_top + i) & 7; }
-fn st(i: u8) -> f64 { return fp[phys(i)]; }
+// ST(i) as an instruction reads it. An empty register reads as the indefinite NaN, which is
+// what the chip gives with the stack fault masked (E098); the fault itself is not recorded.
+fn st(i: u8) -> f64 {
+    let p = phys(i);
+    if fp_empty & bit8(p) != 0 { return f64_of_bits(0xFFF8000000000000); }
+    return fp[p];
+}
 
 fn set_st(i: u8, v: f64) {
     let p = phys(i);
@@ -144,7 +160,11 @@ fn f64_to_f80(v: f64) -> u64, u16 {
         let lz = clz(frac);
         return frac << lz, sign | (16383 + 63 - 1074 - lz) as! u16;
     }
-    if exp == 0x7FF { return TOP_BIT | frac << 11, sign | 0x7FFF; }
+    if exp == 0x7FF {
+        // A NaN that is loaded is made quiet (E098).
+        if frac != 0 { return TOP_BIT | 0x4000000000000000 | frac << 11, sign | 0x7FFF; }
+        return TOP_BIT, sign | 0x7FFF;
+    }
     return TOP_BIT | frac << 11, sign | (exp - 1023 + 16383) as! u16;
 }
 
@@ -186,20 +206,121 @@ fn f80_to_f64(mant: u64, se: u16) -> f64 {
 
 fn st80(i: u8) -> u64, u16 {
     let p = phys(i);
+    if fp_empty & bit8(p) != 0 { return 0xC000000000000000, 0xFFFF; }
     if fp_raw[p] { return fp_mant[p], fp_se[p]; }
     return f64_to_f80(fp[p]);
 }
 
-// ---- The memory operand ----
-
-fn ea(k: u32) -> u32 {
-    let o = ea_off + k;
-    if ins.asz32 { return o; }
-    return o & 0xFFFF;
+// What is in ST(i), empty or not: for the instructions that save the whole unit.
+fn raw80(i: u8) -> u64, u16 {
+    let p = phys(i);
+    if fp_raw[p] { return fp_mant[p], fp_se[p]; }
+    return f64_to_f80(fp[p]);
 }
 
-fn frd(k: u32, w: u8) -> u32 { return seg_read(ea_seg, ea(k), w); }
-fn fwr(k: u32, w: u8, v: u32) { seg_write(ea_seg, ea(k), w, v); }
+// An 80-bit value as the bits of a double (wide) or a single, rounded once, as the control
+// word says, from all 64 bits of mantissa (E098: by way of the register's f64 it was rounded
+// twice for a single, and to nearest whatever the control word said).
+fn store_float(m0: u64, se: u16, wide: bool) -> u64 {
+    let p: u64 = if wide { 53 } else { 24 };
+    let bias: i64 = if wide { 1023 } else { 127 };
+    let emax: i64 = if wide { 2047 } else { 255 };
+    let one: u64 = 1;
+    let neg = se & 0x8000 != 0;
+    let sign: u64 = if neg { one << (if wide { 63 } else { 31 }) } else { 0 };
+    let top = (emax as! u64) << (p - 1);                  // the exponent field all ones
+    let e = (se & 0x7FFF) as! i64;
+    if e == 0x7FFF {
+        if m0 << 1 == 0 { return sign | top; }
+        return sign | top | one << (p - 2) | (m0 << 1 >> (65 - p));
+    }
+    if m0 == 0 { return sign; }
+    let lz = clz(m0);
+    let m = m0 << lz;
+    var biased = (if e == 0 { 1 } else { e }) - lz - 16383 + bias;
+    let dir = rc();
+    // How far the 64 bits are moved right: to p bits for a normal number, further for one
+    // too small to be normal.
+    var shift: u64 = 64 - p;
+    if biased < 1 { shift += (1 - biased) as! u64; }
+    var frac: u64 = 0;
+    var rem = m;
+    var half = TOP_BIT;
+    var below = false;                 // every bit is beyond even the half place
+    if shift > 64 { below = true; }
+    else if shift < 64 {
+        frac = m >> shift;
+        rem = m & ((one << shift) - 1);
+        half = one << (shift - 1);
+    }
+    var up = false;
+    if dir == 0 { up = !below && (rem > half || (rem == half && frac & 1 != 0)); }
+    else if dir == 1 { up = neg && rem != 0; }
+    else if dir == 2 { up = !neg && rem != 0; }
+    if up { frac += 1; }
+    if biased < 1 { return sign | frac; }          // a denormal, or the smallest normal by the carry
+    if frac >> p != 0 { frac = frac >> 1; biased += 1; }
+    if biased >= emax {
+        // Too large: infinity, or the largest number when the rounding is away from it.
+        let largest = sign | top - 1;
+        if dir == 3 || (dir == 1 && !neg) || (dir == 2 && neg) { return largest; }
+        return sign | top;
+    }
+    return sign | (biased as! u64) << (p - 1) | frac & ((one << (p - 1)) - 1);
+}
+
+// ---- Arithmetic on 128 bits, for the square root ----
+
+// The square root of an ordinary positive 80-bit number, in integers: all 64 bits of the
+// mantissa, with what is left over deciding the rounding. False if the result is out of
+// range (it never is, for an ordinary operand).
+fn sqrt80(m: u64, se: u16) -> u64, u16, bool {
+    let e = (se & 0x7FFF) as! i64 - 16383;
+    // The root's 64 bits r are such that r * r is m * 2^63 for an even exponent and
+    // m * 2^64 for an odd one: n is that number, as a high and a low half.
+    let odd = e & 1 != 0;
+    var nh: u64 = if odd { m } else { m >> 1 };
+    var nl: u64 = if odd { 0 } else { m << 63 };
+    var root: u64 = 0;
+    var rh: u64 = 0;                   // the remainder, which needs 66 bits
+    var rl: u64 = 0;
+    for i in 64 {
+        // Two more bits of n come down.
+        rh = rh << 2 | rl >> 62;
+        rl = rl << 2 | nh >> 62;
+        nh = nh << 2 | nl >> 62;
+        nl = nl << 2;
+        // The trial: four times the root so far, and one.
+        let th = root >> 62;
+        let tl = root << 2 | 1;
+        if rh > th || (rh == th && rl >= tl) {
+            if rl < tl { rh -= 1; }
+            rl -= tl;
+            rh -= th;
+            root = root << 1 | 1;
+        } else {
+            root = root << 1;
+        }
+    }
+    // More than half a unit is left when the remainder exceeds the root.
+    var lo: u64 = if rh != 0 || rl != 0 { 1 } else { 0 };
+    if rh != 0 || rl > root { lo |= TOP_BIT; }
+    let half_e = if odd { (e - 1) / 2 } else { e / 2 };
+    let rm, rse, ok = round_pack(0, 16383 + half_e, root, lo);
+    return rm, rse, ok;
+}
+
+// The constants the unit holds, to 64 bits: `down` is the mantissa cut off, and `more` says
+// the part cut off is over a half. So to nearest it is one more when `more`; upward one
+// more always; downward and toward zero as cut.
+fn push_const(down: u64, se: u16, more: bool) {
+    let dir = rc();
+    let m = if dir == 2 || (dir == 0 && more) { down + 1 } else { down };
+    fpush(0.0);
+    set_st80(0, m, se);
+}
+
+// ---- The memory operand ----
 
 fn frd64(k: u32) -> u64 {
     let lo: u64 = frd(k, 32);
@@ -298,14 +419,19 @@ fn f_sqrt(a: f64) -> f64 {
 
 // The six arithmetic operations of the D8 row, by the reg field: a is ST(0), b the other operand.
 fn arith(r: u8, a: f64, b: f64) -> f64 {
+    var v = 0.0;
     match r {
-        0 => { return f_add(a, b); },
-        1 => { return f_mul(a, b); },
-        4 => { return f_add(a, -b); },
-        5 => { return f_add(b, -a); },
-        6 => { return f_div(a, b); },
-        _ => { return f_div(b, a); },
+        0 => { v = f_add(a, b); },
+        1 => { v = f_mul(a, b); },
+        4 => { v = f_add(a, -b); },
+        5 => { v = f_add(b, -a); },
+        6 => { v = f_div(a, b); },
+        _ => { v = f_div(b, a); },
     }
+    // A result that is not a number, of operands that were (infinity less infinity, zero
+    // by zero), is the one "indefinite": quiet, with the sign set (E098).
+    if is_nan(v) && !is_nan(a) && !is_nan(b) { return f64_of_bits(0xFFF8000000000000); }
+    return v;
 }
 
 // An integer of the given width, as its two's complement bits. Out of range, or a NaN, gives the
@@ -559,7 +685,7 @@ fn cmp_st(i: u8) -> i64 {
 }
 
 fn set_cond(rel: i64) {
-    fp_cond &= 0xFFFF ^ (C0 | C2 | C3);
+    fp_cond &= 0xFFFF ^ (C0 | C1 | C2 | C3);     // C1 is cleared too (E098: the real CPU)
     if rel == 2 { fp_cond |= C0 | C2 | C3; }
     else if rel < 0 { fp_cond |= C0; }
     else if rel == 0 { fp_cond |= C3; }
@@ -567,11 +693,11 @@ fn set_cond(rel: i64) {
 
 // FCOMI and its relatives: the result goes to ZF, PF and CF.
 fn set_cmp_flags(rel: i64) {
-    var f = cpu.flags & 0xFFFFFFBA;
+    var f: u32 = 0;
     if rel == 2 { f |= ZF | PF | CF; }
     else if rel < 0 { f |= CF; }
     else if rel == 0 { f |= ZF; }
-    cpu.flags = f;
+    fp_set_zpc(f);
 }
 
 // ---- The environment: control, status and tag words, and the pointers nobody reads ----
@@ -579,10 +705,12 @@ fn set_cmp_flags(rel: i64) {
 // Writes the environment at the operand and returns its size: 28 bytes with a 32-bit operand size,
 // 14 with a 16-bit one. The instruction and operand pointers are written as zero.
 fn store_env() -> u32 {
-    if ins.osz == 32 {
-        fwr(0, 32, fp_cw);
-        fwr(4, 32, status());
-        fwr(8, 32, tag_word());
+    if fp_env32() {
+        // The upper half of each of the three words' places is written as ones (E098).
+        let ones: u32 = 0xFFFF0000;
+        fwr(0, 32, ones | fp_cw);
+        fwr(4, 32, ones | status());
+        fwr(8, 32, ones | tag_word());
         for i in 4 { fwr((12 + i * 4) as! u32, 32, 0); }
         return 28;
     }
@@ -594,7 +722,7 @@ fn store_env() -> u32 {
 }
 
 fn load_env() -> u32 {
-    let step: u32 = if ins.osz == 32 { 4 } else { 2 };
+    let step: u32 = if fp_env32() { 4 } else { 2 };
     let cw = frd(0, 16) as! u16;
     let sw = frd(step, 16) as! u16;
     let tags = frd(step * 2, 16) as! u16;
@@ -608,9 +736,8 @@ fn load_env() -> u32 {
 // ---- Execution ----
 
 fn fpu_unknown() {
-    cpu.ip = saved.ip;
     let modrm: i64 = m_mod << 6 | m_reg << 3 | m_rm;
-    stop("unimplemented x87 opcode, with its ModRM byte", (cpu_op as i64) << 8 | modrm);
+    fp_stop((cpu_op as i64) << 8 | modrm);
 }
 
 var cpu_op: u8 = 0;
@@ -644,7 +771,7 @@ fn fpu_mem(row: u8, r: u8) {
     match row << 3 | r {
         // D9
         0x08 => { fpush(f32_of_bits(frd(0, 32))); },
-        0x0A, 0x0B => { fwr(0, 32, bits_of_f32(st(0) as f32)); if r == 3 { fpop(); } },
+        0x0A, 0x0B => { let mant, se = st80(0); fwr(0, 32, store_float(mant, se, false) as! u32); if r == 3 { fpop(); } },
         0x0C => { load_env(); },
         0x0D => { fp_cw = frd(0, 16) as! u16; },
         0x0E => { store_env(); fp_cw |= 0x3F; },         // FNSTENV then masks every exception
@@ -670,7 +797,7 @@ fn fpu_mem(row: u8, r: u8) {
         // DD
         0x28 => { fpush(f64_of_bits(frd64(0))); },
         0x29 => { fwr64(0, st_int(64, 3)); fpop(); },
-        0x2A, 0x2B => { fwr64(0, bits_of_f64(st(0))); if r == 3 { fpop(); } },
+        0x2A, 0x2B => { let mant, se = st80(0); fwr64(0, store_float(mant, se, true)); if r == 3 { fpop(); } },
         0x2C => {                                        // FRSTOR
             let n = load_env();
             for i in 8 {
@@ -688,7 +815,7 @@ fn fpu_mem(row: u8, r: u8) {
             let n = store_env();
             for i in 8 {
                 let at = n + (i * 10) as! u32;
-                let mant, se = st80(i as! u8);
+                let mant, se = raw80(i as! u8);
                 fwr64(at, mant);
                 fwr(at + 8, 16, se);
             }
@@ -717,6 +844,67 @@ fn quotient_bits(q: f64) {
     if qi & 1 != 0 { fp_cond |= C1; }
     if qi & 2 != 0 { fp_cond |= C3; }
     if qi & 4 != 0 { fp_cond |= C0; }
+}
+
+// FPREM and FPREM1 of ordinary numbers, in integers (E098): the remainder of a by b by long
+// division of the mantissas, a bit of the quotient at a time. When the exponents are 64 or more apart the chip does part of it and says so (C2),
+// leaving a smaller number to go on from: 32 bits of the quotient and what the difference
+// leaves over 32. Else the remainder is whole, and the quotient's low three bits go to C0,
+// C3 and C1. FPREM cuts the quotient off; FPREM1 (nearest) takes the nearest, a tie to the
+// even one.
+fn rem80(am: u64, ase: u16, bm: u64, bse: u16, nearest: bool) -> u64, u16 {
+    fp_cond &= 0xFFFF ^ (C0 | C1 | C2 | C3);
+    let ea = exp80(ase);
+    let eb = exp80(bse);
+    let d = ea - eb;
+    if d < 0 {
+        // a is the smaller: it is its own remainder, with a quotient of zero; unless, for
+        // FPREM1, it is over half of b (which needs the exponents one apart and a's
+        // mantissa the larger): then b is taken once and the sign changes.
+        if nearest && d == -1 && am > bm {
+            let r = bm + bm - am;                 // b less a, at a's exponent
+            fp_cond |= C1;
+            let lz = clz(r);
+            if ea - lz <= 0 { return 0, ase ^ 0x8000; }
+            return r << lz, (ase ^ 0x8000) & 0x8000 | ((ea - lz) as! u16);
+        }
+        return am, ase;
+    }
+    let part = d >= 64;
+    let steps = if part { 32 + d % 32 + 1 } else { d + 1 };
+    var r = am;
+    var carry = false;
+    var q: u64 = 0;
+    for it in steps {
+        let ge = carry || r >= bm;
+        q = q << 1 | (if ge { 1 } else { 0 });
+        if ge { r -= bm; }
+        if it != steps - 1 { carry = r >> 63 != 0; r = r << 1; }
+    }
+    var sign = ase & 0x8000;
+    var e = if part { ea - (steps - 1) } else { eb };      // where r stands now
+    if part { fp_cond |= C2; }
+    else {
+        if nearest {
+            // Over half of b left, or exactly half with an odd quotient: one more of b is
+            // taken, and the remainder changes sign.
+            let over = r >> 63 != 0 || r << 1 > bm;
+            let tie = r >> 63 == 0 && r << 1 == bm;
+            if over || (tie && q & 1 != 0) {
+                r = bm - r;
+                sign ^= 0x8000;
+                q += 1;
+            }
+        }
+        if q & 1 != 0 { fp_cond |= C1; }
+        if q & 2 != 0 { fp_cond |= C3; }
+        if q & 4 != 0 { fp_cond |= C0; }
+    }
+    if r == 0 { return 0, sign; }
+    let lz = clz(r);
+    e -= lz;
+    if e <= 0 { return 0, sign; }
+    return r << lz, sign | (e as! u16);
 }
 
 fn fpu_reg(row: u8, r: u8, i: u8) {
@@ -757,11 +945,11 @@ fn fpu_reg(row: u8, r: u8, i: u8) {
         0x0D => {
             match i {
                 0 => { fpush(1.0); },
-                1 => { fpush(3.321928094887362); },                     // log2(10)
-                2 => { fpush(1.4426950408889634); },                    // log2(e)
-                3 => { fpush(PI); },
-                4 => { fpush(0.30102999566398120); },                   // log10(2)
-                5 => { fpush(0.6931471805599453); },                    // ln(2)
+                1 => { push_const(0xD49A784BCD1B8AFE, 0x4000, false); },    // log2(10)
+                2 => { push_const(0xB8AA3B295C17F0BB, 0x3FFF, true); },     // log2(e)
+                3 => { push_const(0xC90FDAA22168C234, 0x4000, true); },     // pi
+                4 => { push_const(0x9A209A84FBCFF798, 0x3FFD, true); },     // log10(2)
+                5 => { push_const(0xB17217F7D1CF79AB, 0x3FFE, true); },     // ln(2)
                 6 => { fpush(0.0); },
                 _ => { fpu_unknown(); },
             }
@@ -774,13 +962,27 @@ fn fpu_reg(row: u8, r: u8, i: u8) {
                 3 => { set_st(1, atan2(s1, a)); fpop(); },               // FPATAN
                 4 => {                                                  // FXTRACT
                     if a == 0.0 || !is_finite(a) { set_st(0, if a == 0.0 { -INF } else { abs(a) }); fpush(a); }
+                    else if normal80(am, ase) {
+                        // In integers: the exponent as a number, and the mantissa with an
+                        // exponent of zero, all 64 bits of it (E098).
+                        let em, ese = i64_to_f80(exp80(ase) - 16383);
+                        set_st80(0, em, ese);
+                        fpush(0.0);
+                        set_st80(0, am, ase & 0x8000 | 0x3FFF);
+                    }
                     else {
                         let e = logb(a);
                         set_st(0, e);
                         fpush(ldexp(a, -(e as! i32)));
                     }
                 },
-                5 => { set_st(0, remainder(a, s1)); quotient_bits(rint(a / s1)); },       // FPREM1
+                5 => {                                                  // FPREM1
+                    let dm, dse = st80(1);
+                    if normal80(am, ase) && normal80(dm, dse) {
+                        let m, se = rem80(am, ase, dm, dse, true);
+                        set_st80(0, m, se);
+                    } else { set_st(0, remainder(a, s1)); quotient_bits(rint(a / s1)); }
+                },
                 6 => { fp_top = (fp_top + 7) & 7; },                    // FDECSTP
                 _ => { fp_top = (fp_top + 1) & 7; },                    // FINCSTP
             }
@@ -788,9 +990,23 @@ fn fpu_reg(row: u8, r: u8, i: u8) {
         0x0F => {
             match i {
                 // FPREM. The remainder is fmod, which is exact; ST(0) - q * ST(1) is not.
-                0 => { set_st(0, a % s1); quotient_bits(trunc(a / s1)); },
+                0 => {
+                    let dm, dse = st80(1);
+                    if normal80(am, ase) && normal80(dm, dse) {
+                        let m, se = rem80(am, ase, dm, dse, false);
+                        set_st80(0, m, se);
+                    } else { set_st(0, a % s1); quotient_bits(trunc(a / s1)); }
+                },
                 1 => { set_st(1, s1 * (log1p(a) / 0.6931471805599453)); fpop(); },       // FYL2XP1
-                2 => { set_st(0, f_sqrt(a)); },
+                2 => {
+                    // FSQRT: in integers for an ordinary positive number (E098).
+                    var done = false;
+                    if normal80(am, ase) && ase & 0x8000 == 0 {
+                        let m, se, ok = sqrt80(am, ase);
+                        if ok { set_st80(0, m, se); done = true; }
+                    }
+                    if !done { set_st(0, f_sqrt(a)); }
+                },
                 3 => { set_st(0, sin(a)); fpush(cos(a)); fp_cond &= 0xFFFF ^ C2; },     // FSINCOS
                 4 => {                                                  // FRNDINT
                     var done = false;
@@ -852,7 +1068,7 @@ fn fpu_reg(row: u8, r: u8, i: u8) {
         0x33 => { if i != 1 { fpu_unknown(); } set_cond(cmp_st(1)); fpop(); fpop(); },
         // DF
         0x38 => { fp_empty |= bit8(phys(i)); fpop(); },                 // FFREEP
-        0x3C => { if i != 0 { fpu_unknown(); } set_r16(AX, status()); },        // FNSTSW AX
+        0x3C => { if i != 0 { fpu_unknown(); } fp_set_ax(status()); },        // FNSTSW AX
         0x3D, 0x3E => { set_cmp_flags(cmp_st(i)); fpop(); },
         _ => { fpu_unknown(); },
     }
@@ -860,8 +1076,6 @@ fn fpu_reg(row: u8, r: u8, i: u8) {
 
 // An escape opcode, D8 to DF, after its ModRM byte has been decoded.
 fn fpu_escape(op: u8) {
-    // With EM or TS set in CR0 the unit is not available: the operating system wants the trap.
-    if cr[0] & 0x0C != 0 { raise(7, false, 0); }
     cpu_op = op;
     if m_mod == 3 { fpu_reg(op & 7, m_reg, m_rm); }
     else { fpu_mem(op & 7, m_reg); }

@@ -295,7 +295,7 @@ again.
 | [src/alu.goose](src/alu.goose) | Arithmetic and flags, shifts and rotates |
 | [src/prot.goose](src/prot.goose) | Descriptors, segment loading, far transfers, interrupt and fault delivery, virtual-8086 mode |
 | [src/exec.goose](src/exec.goose) | Instruction decode and execution; the cache of decoded instructions |
-| [src/fpu.goose](src/fpu.goose) | The x87 FPU of the i686 machine |
+| [src/fpu.goose](src/fpu.goose) | The x87 FPU, of the i686 machine and of the 64-bit CPU |
 | [src/sse.goose](src/sse.goose) | MMX and SSE2 of the i686 machine |
 | [src/lanes.goose](src/lanes.goose) | What MMX and SSE2 compute, apart from any CPU: shared by the i686 machine and the 64-bit CPU |
 | [src/bios.goose](src/bios.goose) | Power-on setup and the BIOS services the emulator performs: screen, disk, keyboard, time |

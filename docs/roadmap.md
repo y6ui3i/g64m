@@ -133,8 +133,9 @@ devices on a CPU that is still moving.
     the rest).
   - E097: the 32-bit machine's devices (`src/dev.goose`, with one import taken out) behind
     the 64-bit CPU; interrupts from outside, the STI shadow, a HLT that waits.
-- Left, in order: the x87 and FXSAVE the kernel wants; then the kernel, entered at its
-  64-bit entry point.
+  - E098: the x87 (`src/fpu.goose`, now of both CPUs) and FXSAVE. Its first comparison
+    with a real CPU found ten things wrong, on the 32-bit machine as well; fixed for both.
+- Left: the kernel, entered at its 64-bit entry point.
 
 ### M11: a backend for Docker
 

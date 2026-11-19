@@ -1019,7 +1019,392 @@ def gen_xfloat():
     t.write()
 
 
+# ---- The x87 (E098) ----
+#
+# Nothing of the x87 is in the trace, so every result is stored and loaded into general
+# registers: an 80-bit value as its 64 bits of mantissa (RAX) and its sign and exponent (RDX).
+
+CWS = [0x037F, 0x077F, 0x0B7F, 0x0F7F, 0x027F, 0x067F, 0x007F, 0x0C7F]     # precision 64, 53, 24; four roundings
+
+
+class FTest(XTest):
+    def __init__(self, name, what, seed):
+        super().__init__(name, what, seed)
+        self.tens = []
+
+    def ten(self, mant, se):
+        self.tens.append((mant, se))
+        return f"t{len(self.tens) - 1}"
+
+    def rand80(self, special=0.0):
+        r = self.rng
+        k = r.random()
+        if k < special:
+            return r.choice([(0, 0), (0, 0x8000), (1 << 63, 0x7FFF), (1 << 63, 0xFFFF)])
+        sign = r.choice([0, 0x8000])
+        if k < 0.35:
+            # A number with few bits: an integer, or one over a power of two.
+            v = r.choice([1, 2, 3, 5, 7, 10, 255, 1000, 65537, 0x7FFFFFFF, 0x80000001])
+            e = v.bit_length() - 1
+            return v << (63 - e), sign | (0x3FFF + e + r.choice([0, 0, -1, -3, 5]))
+        return 1 << 63 | r.getrandbits(63), sign | (0x3FFF + r.randrange(-40, 40))
+
+    def fld(self, v=None, special=0.0):
+        v = v or self.rand80(special)
+        self.e(f"fld tword [{self.ten(*v)}]")
+
+    def show(self):
+        """Pops ST(0) into RAX (the mantissa) and RDX (the sign and exponent)."""
+        self.e("fstp tword [buf + 64]")
+        self.e("mov rax, [buf + 64]")
+        self.e("movzx edx, word [buf + 72]")
+
+    def cw(self, w):
+        self.e(f"mov word [buf + 80], 0x{w:X}")
+        self.e("fldcw [buf + 80]")
+
+    def write(self):
+        self.lines += ["    EXIT", "    align 16"]
+        for i, (lo, hi) in enumerate(self.consts):
+            self.lines.append(f"c{i}: dq 0x{lo:X}, 0x{hi:X}")
+        for i, (m, se) in enumerate(self.tens):
+            self.lines.append(f"t{i}: dq 0x{m:X}")
+            self.lines.append(f"    dw 0x{se:X}, 0, 0, 0")
+        self.lines += ["buf: times 64 dq 0x0123456789ABCDEF", "area: times 80 dq 0x1111111111111111", "file_end:"]
+        path = os.path.join(os.path.dirname(__file__), "..", "tests", "asm64", self.name + ".asm")
+        with open(path, "w") as f:
+            f.write("\n".join(self.lines) + "\n")
+
+
+def gen_x87():
+    t = FTest("f_x87", "The x87: loads and stores at every width, the four operations at each precision and rounding, comparisons, conversions to integers, and the small instructions.", 9801)
+    r = t.rng
+    t.e("fninit")
+    # Loads.
+    for _ in range(8):
+        lo, hi = t.singles()
+        t.e(f"fld dword [{t.const(lo, hi)}]")
+        t.show()
+        lo, hi = t.doubles()
+        t.e(f"fld qword [{t.const(lo, hi)}]")
+        t.show()
+        v = t.value()
+        c = t.const(v, 0)
+        t.e(f"fild word [{c}]")
+        t.show()
+        t.e(f"fild dword [{c}]")
+        t.show()
+        t.e(f"fild qword [{c}]")
+        t.show()
+    for op in ["fld1", "fldz", "fldpi", "fldl2e", "fldl2t", "fldlg2", "fldln2"]:
+        for w in [0x037F, 0x0B7F, 0x027F]:
+            t.cw(w)
+            t.e(op)
+            t.show()
+    # Stores: an 80-bit value to a single and a double, and to integers, under each rounding.
+    for w in CWS[:4]:
+        t.cw(w)
+        for _ in range(8):
+            t.fld()
+            t.e("fst dword [buf]")
+            t.e("mov eax, [buf]")
+            t.e("fst qword [buf + 8]")
+            t.e("mov rdx, [buf + 8]")
+            t.e("fstp st0")
+        for _ in range(8):
+            v = r.choice([1, 3, 5, 7, 2 ** 31 - 1, 2 ** 31 + 1, 2 ** 15 + 1, 2 ** 63 - 1, r.getrandbits(40)]) * 2 + 1
+            e = v.bit_length() - 1
+            t.fld((v << (63 - e), r.choice([0, 0x8000]) | (0x3FFF + e - 1)))
+            t.e("fist word [buf]")
+            t.e("movzx eax, word [buf]")
+            t.e("fist dword [buf + 8]")
+            t.e("mov edx, [buf + 8]")
+            t.e("fld st0")
+            t.e("fistp qword [buf + 16]")
+            t.e("mov rsi, [buf + 16]")
+            t.e("fstp st0")
+    t.cw(0x037F)
+    # The four operations, between registers, under each precision and rounding.
+    for w in CWS:
+        t.cw(w)
+        for op in ["fadd", "fsub", "fsubr", "fmul", "fdiv", "fdivr"]:
+            for _ in range(5):
+                t.fld()
+                t.fld()
+                t.e(f"{op}p st1, st0")
+                t.show()
+    t.cw(0x037F)
+    for op in ["fadd", "fsub", "fsubr", "fmul", "fdiv", "fdivr"]:
+        for _ in range(4):
+            lo, hi = t.doubles()
+            t.fld()
+            t.e(f"{op} qword [{t.const(lo, hi)}]")
+            t.show()
+            lo, hi = t.singles()
+            t.fld()
+            t.e(f"{op} dword [{t.const(lo, hi)}]")
+            t.show()
+            c = t.const(t.value(), 0)
+            t.fld()
+            t.e(f"{op[:1]}i{op[1:]} dword [{c}]")
+            t.show()
+            t.fld()
+            t.e(f"{op[:1]}i{op[1:]} word [{c}]")
+            t.show()
+            t.fld()
+            t.fld()
+            t.e(f"{op} st0, st1")
+            t.show()
+            t.e("fstp st0")
+            t.fld()
+            t.fld()
+            t.e(f"{op} st1, st0")
+            t.e("fxch")
+            t.show()
+            t.e("fstp st0")
+    # With zeros and infinities among the operands.
+    for op in ["fadd", "fsub", "fmul", "fdiv"]:
+        for _ in range(8):
+            t.fld(special=0.5)
+            t.fld(special=0.5)
+            t.e(f"{op}p st1, st0")
+            t.show()
+    # Comparisons. The status word is read after its exception bits are cleared.
+    for _ in range(24):
+        a = t.rand80(0.2)
+        b = a if r.random() < 0.3 else t.rand80(0.2)
+        t.fld(a)
+        t.fld(b)
+        t.e("fnclex")
+        t.e("fucom st1")
+        t.e("fnstsw ax")
+        t.flags(True)
+        t.e("fucomi st0, st1")
+        t.flags(True)
+        t.e("fcomi st0, st1")
+        t.e("ftst")
+        t.e("fnstsw ax")
+        t.e("fxam")
+        t.e("fnstsw ax")
+        t.e("fcompp")
+        t.e("fnstsw ax")
+    # FCMOVcc.
+    for cc in ["b", "e", "be", "u", "nb", "ne", "nbe", "nu"]:
+        for f in [0x000, 0x001, 0x040, 0x004, 0x045]:
+            t.fld()
+            t.fld()
+            t.e(f"FLAGS 0x{f | 0x202:X}")
+            t.e(f"fcmov{cc} st0, st1")
+            t.show()
+            t.e("fstp st0")
+    # The small ones.
+    for op in ["fchs", "fabs", "frndint", "fsqrt", "fxtract"]:
+        for w in [0x037F, 0x0F7F, 0x027F]:
+            t.cw(w)
+            for _ in range(4):
+                v = t.rand80()
+                if op == "fsqrt":
+                    v = (v[0], v[1] & 0x7FFF)
+                t.fld(v)
+                t.e(op)
+                t.show()
+                if op == "fxtract":
+                    t.show()
+    t.cw(0x037F)
+    for _ in range(8):
+        t.fld((r.choice([4, 5, 6, 7]) << 61, r.choice([0, 0x8000]) | 0x4002))
+        t.fld()
+        t.e("fscale")
+        t.show()
+        t.e("fstp st0")
+        t.fld()
+        t.fld()
+        t.e("fprem")
+        t.e("fnclex")
+        t.e("fnstsw ax")
+        t.show()
+        t.e("fstp st0")
+        t.fld()
+        t.fld()
+        t.e("fprem1")
+        t.show()
+        t.e("fstp st0")
+    # The stack: exchange, copies, the pointer.
+    for i in range(6):
+        t.fld()
+    t.e("fxch st3")
+    t.e("fld st2")
+    t.e("fst st5")
+    t.e("fincstp")
+    t.e("fdecstp")
+    t.e("ffree st6")
+    t.e("fnclex")
+    t.e("fnstsw ax")
+    t.e("fnstsw [buf]")
+    t.e("movzx edx, word [buf]")
+    for i in range(7):
+        t.show()
+    # The control word and the environment (of which only the three words are read: the
+    # last instruction's address is the chip's to know).
+    t.e("fnstcw [buf]")
+    t.e("movzx eax, word [buf]")
+    t.fld()
+    t.fld((0, 0))
+    t.fld((1 << 63, 0x7FFF))
+    t.e("fnclex")
+    t.e("fnstenv [area]")
+    t.e("mov eax, [area]")
+    t.e("mov edx, [area + 4]")
+    t.e("mov esi, [area + 8]")
+    t.e("fnstcw [buf]")
+    t.e("movzx eax, word [buf]")
+    t.e("fldenv [area]")
+    t.e("fnsave [area]")
+    t.e("mov eax, [area]")
+    t.e("mov edx, [area + 4]")
+    t.e("mov esi, [area + 8]")
+    t.e("mov rax, [area + 28]")
+    t.e("mov rdx, [area + 36]")
+    t.e("mov rsi, [area + 44]")
+    t.e("fnstsw ax")
+    t.e("frstor [area]")
+    t.show()
+    t.show()
+    t.show()
+    t.e("fninit")
+    t.e("fnstsw ax")
+    t.e("fnstcw [buf]")
+    t.e("movzx eax, word [buf]")
+    t.e("wait")
+    # Cases the random ones did not reach (each is a wrong build that passed without it).
+    # Stores that fall exactly between two singles or two doubles, that carry out of the
+    # mantissa, that are too large or too small, and that are not numbers.
+    top = 1 << 63
+    odd_s, even_s = top | 1 << 40 | 1 << 39, top | 1 << 39
+    odd_d, even_d = top | 1 << 11 | 1 << 10, top | 1 << 10
+    stores = [(odd_s, 0x3FFF), (even_s, 0xBFFF), (odd_d, 0x4005), (even_d, 0xC005), (0xFFFFFFFFFFFFFFFF, 0x3FFF),
+              (0xFFFFFFFFFFFFFFFF, 0xC07E), (top | 1, 0x7000), (top | 1, 0xF000), (top | 12345, 0x3FFF - 1040),
+              (top | 12345, 0xBFFF - 140), (top, 0x3FFF - 1075), (top, 0x0100), (top | 1, 0x8100),
+              (0xA000000000000000, 0x7FFF), (0xC000000012345000, 0xFFFF), (top | 3 << 61, 0x407E), (top | 3 << 61, 0x43FE)]
+    for w in CWS[:4]:
+        t.cw(w)
+        for v in stores:
+            t.fld(v)
+            t.e("fst dword [buf]")
+            t.e("mov eax, [buf]")
+            t.e("fstp qword [buf + 8]")
+            t.e("mov rdx, [buf + 8]")
+    t.cw(0x037F)
+    # Remainders: exponents 64 and more apart (done in parts, C2 saying so), ties, and a
+    # dividend between a half of the divisor and the whole.
+    def num(n, e=0):
+        k = n.bit_length() - 1
+        return n << (63 - k), 0x3FFF + k + e
+    for a, b in [(num(0xDEADBEEF12345, 70), num(7)), (num(0x123456789ABCDEF, 100), num(0xFFFF)), (num(3, 64), num(5))]:
+        t.fld(b)
+        t.fld(a)
+        for _ in range(4):
+            t.e("fprem")
+            t.e("fnclex")
+            t.e("fnstsw ax")
+        t.show()
+        t.e("fstp st0")
+        t.fld(b)
+        t.fld(a)
+        for _ in range(4):
+            t.e("fprem1")
+            t.e("fnclex")
+            t.e("fnstsw ax")
+        t.show()
+        t.e("fstp st0")
+    for a, b in [(5, 2), (7, 2), (3, 4), (5, 8), (1, 2), (3, 2), (1, 4), (9, 4), (11, 4)]:
+        for sign in [0, 0x8000]:
+            t.fld(num(b))
+            m, se = num(a)
+            t.fld((m, se | sign))
+            t.e("fprem1")
+            t.e("fnclex")
+            t.e("fnstsw ax")
+            t.show()
+            t.e("fstp st0")
+    # A REX prefix names no other register stack.
+    t.fld()
+    t.fld()
+    t.e("db 0x41, 0xD8, 0xC1             ; fadd st0, st1, with REX.B")
+    t.show()
+    t.e("fstp st0")
+    # FNSAVE writes what is in a register that has been freed, not what reading it gives.
+    t.fld((0xABCDEF0123456789, 0x4001))
+    t.fld()
+    t.e("ffree st1")
+    t.e("fnclex")
+    t.e("fnsave [area]")
+    t.e("mov rax, [area + 38]")
+    t.e("movzx edx, word [area + 46]")
+    t.e("mov esi, [area + 8]")
+    t.write()
+
+
+def gen_fxsave():
+    t = FTest("x_fxsave", "FXSAVE and FXRSTOR: what is written, field by field, and that it comes back.", 9802)
+    t.e("fninit")
+    for i in range(16):
+        t.xload(i, *t.ints())
+    for i in range(5):
+        t.fld(special=0.3)
+    t.e("mov dword [buf], 0x5F80")
+    t.e("ldmxcsr [buf]")
+    t.e("mov word [buf + 80], 0x0A7F")
+    t.e("fldcw [buf + 80]")
+    t.e("fnclex")
+    t.e("fxsave [area]")
+    t.e("movzx eax, word [area]")
+    t.e("movzx edx, word [area + 2]")
+    t.e("movzx esi, word [area + 4]")
+    t.e("mov eax, [area + 24]")
+    t.e("mov edx, [area + 28]")
+    for i in range(8):
+        t.e(f"mov rax, [area + {32 + i * 16}]")
+        t.e(f"mov rdx, [area + {40 + i * 16}]")
+    for i in range(16):
+        t.e(f"mov rax, [area + {160 + i * 16}]")
+        t.e(f"mov rdx, [area + {168 + i * 16}]")
+    # What lies after the registers is left as it was.
+    t.e("mov rax, [area + 416]")
+    t.e("mov rdx, [area + 504]")
+    # Everything is changed, and then brought back.
+    t.e("fninit")
+    for i in range(16):
+        t.e(f"pxor xmm{i}, xmm{i}")
+    t.e("mov dword [buf], 0x1F80")
+    t.e("ldmxcsr [buf]")
+    t.e("fxrstor [area]")
+    t.e("stmxcsr [buf]")
+    t.e("mov eax, [buf]")
+    t.e("fnstcw [buf]")
+    t.e("movzx eax, word [buf]")
+    t.e("fnstsw ax")
+    for i in range(5):
+        t.show()
+    t.e("fnstsw ax")
+    # A register changed in the saved copy comes back changed.
+    t.e("fxsave [area]")
+    t.e("mov rax, 0xC000000000000000")
+    t.e("mov [area + 32], rax")
+    t.e("mov word [area + 40], 0x4000")
+    t.e("or word [area + 4], 0x80")
+    t.e("and word [area + 2], 0xC7FF")
+    t.e("or word [area + 2], 0x3800")
+    t.e("mov qword [area + 160 + 9 * 16], 0x55")
+    t.e("fxrstor [area]")
+    t.show()
+    t.e("movq rax, xmm9")
+    t.write()
+
+
 def main():
+    gen_x87()
+    gen_fxsave()
     gen_xmove()
     gen_xint()
     gen_xfloat()

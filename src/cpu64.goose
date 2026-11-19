@@ -13,7 +13,8 @@
 //   90-9F SETcc; A2 CPUID; A3 AB B3 BB BA the bit tests; A4 A5 AC AD SHLD SHRD; AF IMUL;
 //   B0 B1 CMPXCHG; B6 B7 BE BF MOVZX MOVSX; B8 POPCNT; BC BD BSF BSR; C0 C1 XADD; C7
 //   CMPXCHG8B and 16B; C8-CF BSWAP.
-// SSE and SSE2 are in sse64.goose (0F 10-17, 28-2F, 50-7F, AE, C2-C6, D0-FF).
+// SSE and SSE2 are in sse64.goose (0F 10-17, 28-2F, 50-7F, AE, C2-C6, D0-FF), and the x87
+// (D8-DF) in fpu.goose, which the i686 machine uses too.
 // Not yet: x87, segment registers, anything privileged, and faults: an instruction
 // that would fault stops the run with a message.
 //
@@ -28,6 +29,7 @@ import os;
 import x64;
 import sse64;
 import sys64;
+import fpu;
 
 let MEM_SIZE = 67108864;        // 64 MB
 
@@ -166,6 +168,15 @@ fn wr(a: u64, w: u8, v: u64) {
     if a >= MEM_SIZE - 8 { stop64("a write outside memory, at", a); }
     mem_wr(a, w, v);
 }
+
+// ---- What the x87 file needs of this CPU (see fpu.goose's head) ----
+
+fn frd(k: u32, w: u8) -> u32 { return rd(m_ea + k, w) as! u32; }
+fn fwr(k: u32, w: u8, v: u32) { wr(m_ea + k, w, v); }
+fn fp_env32() -> bool { return !p66; }
+fn fp_set_ax(v: u16) { sr(RAX, 16, v); }
+fn fp_set_zpc(bits: u32) { rflags = rflags & ~ARITH | bits; }
+fn fp_stop(code: i64) { stop64("an x87 instruction not written yet, opcode and ModRM", code as! u64); }
 
 // ---- Fetching ----
 
@@ -439,18 +450,7 @@ fn shift_double(left: bool, dst0: u64, src0: u64, count: u64, w: u8) -> u64 {
     return dst;
 }
 
-// The 128-bit product of two 64-bit numbers: the upper half, then the lower.
-fn mul64(a: u64, b: u64) -> u64, u64 {
-    let al = a & 0xFFFFFFFF;
-    let ah = a >> 32;
-    let bl = b & 0xFFFFFFFF;
-    let bh = b >> 32;
-    let ll = al * bl;
-    let lh = al * bh;
-    let hl = ah * bl;
-    let mid = (ll >> 32) + (lh & 0xFFFFFFFF) + (hl & 0xFFFFFFFF);
-    return ah * bh + (lh >> 32) + (hl >> 32) + (mid >> 32), (mid << 32) | (ll & 0xFFFFFFFF);
-}
+// (mul64, the 128-bit product of two 64-bit numbers, upper half then lower, is fpu.goose's.)
 
 // The same for signed numbers.
 fn imul64(a: u64, b: u64) -> u64, u64 {
@@ -678,7 +678,7 @@ fn cpuid() {
     var c: u64 = 0;
     var d: u64 = 0;
     if leaf == 0 { a = 1; b = 0x756E6547; d = 0x49656E69; c = 0x6C65746E; }      // "GenuineIntel"
-    else if leaf == 1 { a = 0x000306A9; d = 0x06008111; c = 0x00800000; }        // FPU TSC CX8 CMOV SSE SSE2; POPCNT
+    else if leaf == 1 { a = 0x000306A9; d = 0x07008111; c = 0x00800000; }        // FPU TSC CX8 CMOV FXSR SSE SSE2; POPCNT
     else if leaf == 0x80000000 { a = 0x80000001; }
     else if leaf == 0x80000001 { d = 0x20000800; c = 1; }                        // long mode, SYSCALL; LAHF
     reg[RAX] = a; reg[RBX] = b; reg[RCX] = c; reg[RDX] = d;
@@ -999,6 +999,7 @@ fn exec64() -> bool {
                         else { reg[RAX] = sx(reg[RAX], 32); }
                     },
                     0x99 => { sr(RDX, osz, ones(reg[RAX] & msb(osz) != 0)); },
+                    0x9B => { if machine && cr0 & 0x0A == 0x0A { fault(7, false, 0); } },      // FWAIT
                     0x9C => { push(rflags & 0xFCFFFF, ssz()); },
                     0x9D => {
                         // IF and IOPL stay as they are unless the privilege level may change them.
@@ -1059,6 +1060,14 @@ fn exec64() -> bool {
                     modrm(0);
                     let n: u64 = if op < 0xD2 { 1 } else { reg[RCX] & 0xFF };
                     rm_set(w, shift(m_reg & 7, rm_get(w), n, w, false));
+                } else if op >= 0xD8 {
+                    // The x87 (fpu.goose). REX names no other register stack: the fields are
+                    // 0 to 7. With EM or TS set in CR0 the unit is not available.
+                    modrm(0);
+                    m_reg &= 7;
+                    if m_mod == 3 { m_rm &= 7; }
+                    if machine && cr0 & 0x0C != 0 { fault(7, false, 0); }
+                    fpu_escape(op);
                 } else { stop64("an instruction not written yet,", op); }
             },
             0xE => {

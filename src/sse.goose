@@ -124,7 +124,7 @@ fn fxsave() {
     fwr(24, 32, mxcsr);
     fwr(28, 32, 0xFFBF);
     for i: u8 in 8 {
-        let m, se = st80(i);
+        let m, se = raw80(i);
         let at: u32 = 32 + (i as u32) * 16;
         fwr64(at, m);
         fwr(at + 8, 32, se);
