@@ -222,6 +222,96 @@ test:
     PRINT [rbx]
     PRINT [r13]
 
+    PUTS "the page under the running code changed, and CR3 written by that code"
+    ; Two copies of a routine that points its own page at the other copy, invalidates, and
+    ; says which copy it then is. What follows the invalidation is fetched from the new page.
+%macro OWN_PAGE 3               ; template, its length, where the constant is in it
+    lea rsi, [%1]
+    mov rdi, P + 0x10000
+    mov ecx, %2
+    rep movsb
+    lea rsi, [%1]
+    mov rdi, P + 0x11000
+    mov ecx, %2
+    rep movsb
+    mov dword [abs P + 0x11000 + %3], 0x22222222
+    MAP V + 0x20000, P + 0x10000, 3
+    mov rbx, V + 0x20000
+    invlpg [rbx]
+    mov rdi, V + 0x20000
+    mov ecx, 12
+    call entry
+    mov rdi, rax
+    mov rsi, P + 0x11000 + 3
+    xor eax, eax
+    call rbx
+    PRINT rax
+%endmacro
+    OWN_PAGE own_cr3, own_cr3_len, own_cr3_len - 5
+    PUTS "and invalidated by that code"
+    OWN_PAGE own_inv, own_inv_len, own_inv_len - 5
+
+    PUTS "level 3 running on from where level 0 was, on a page that is level 0's"
+    ; IRETQ, at level 0, to the instruction after it, at level 3: the same page, which level
+    ; 3 may not execute.
+    MAP V + 0x30000, P + 0x12000, 3
+    mov rbx, V + 0x30000
+    mov word [rbx], 0xCF48
+    ; What follows the IRETQ, which level 3 must not get to run: INC R12, then UD2.
+    mov dword [rbx + 2], 0x0FC4FF49
+    mov byte [rbx + 6], 0x0B
+    xor r12d, r12d
+    lea rax, [.l3back]
+    mov [k_cont], rax
+    mov [k_rsp], rsp
+    lea rax, [.l3fault]
+    mov [f_resume], rax
+    push 0x1B
+    push USER_STACK
+    push 2
+    push 0x23
+    lea rax, [rbx + 2]
+    push rax
+    jmp rbx
+.l3fault:
+    LEAVE_USER
+.l3back:
+    PRINT r12
+    PRINT [f_cr2]
+
+    PUTS "an instruction that lies across two pages that are not neighbours in memory"
+    MAP V + 0x40000, P + 0x20000, 3
+    MAP V + 0x41000, P + 0x22000, 3
+    mov rdi, P + 0x21000
+    mov ecx, 512
+    mov rax, 0xAAAAAAAAAAAAAAAA
+    rep stosq
+    ; MOV EAX, a constant of four bytes, one of them on the first page.
+    mov rbx, V + 0x40FFE
+    mov rax, 0x0000C311223344B8
+    mov [rbx], rax
+    xor eax, eax
+    call rbx
+    PRINT rax
+    ; MOV AX, a constant of two bytes, one on each page.
+    mov rbx, V + 0x40FFD
+    mov rax, 0x00000000C37788B8
+    shl rax, 8
+    mov al, 0x66
+    mov [rbx], rax
+    xor eax, eax
+    call rbx
+    PRINT rax
+    ; MOV RAX, a constant of eight bytes, two of them on the first page.
+    mov rbx, V + 0x40FFC
+    mov word [rbx], 0xB848
+    mov rax, 0x8877665544332211
+    mov [rbx + 2], rax
+    mov byte [rbx + 10], 0xC3
+    xor eax, eax
+    call rbx
+    PRINT rax
+
     PUTS "a page of 2 MB invalidated by any address in it"
     mov rdi, V + 0x400000
     mov ecx, 21
@@ -243,4 +333,19 @@ test:
     PRINT [f_count]
     EXIT
 
+; The two routines of "the page under the running code changed". RDI points at the entry of
+; the page they run on and RSI is what to put there; RBX is that page's address.
+own_cr3:
+    mov [rdi], rsi
+    mov rax, cr3
+    mov cr3, rax
+    mov eax, 0x11111111
+    ret
+own_cr3_len equ $ - own_cr3
+own_inv:
+    mov [rdi], rsi
+    invlpg [rbx]
+    mov eax, 0x11111111
+    ret
+own_inv_len equ $ - own_inv
 file_end:

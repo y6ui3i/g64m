@@ -195,10 +195,64 @@ fn code_rd(a: u64, w: u8) -> u64 {
     return mem_rd(a, w);
 }
 
-fn fb() -> u64 { let v = code_rd(ip, 8); ip += 1; return v; }
-fn fw() -> u64 { let v = code_rd(ip, 16); ip += 2; return v; }
-fn fd() -> u64 { let v = code_rd(ip, 32); ip += 4; return v; }
-fn fq() -> u64 { let v = code_rd(ip, 64); ip += 8; return v; }
+// The code page (E105): the page the instruction at hand starts on, translated once, so that
+// its bytes are read from memory and not fetched through the tables one call each (which was
+// 190 of the 654 host instructions a guest instruction cost, E104). It is taken, with the
+// check that it may be executed, when RIP is on another page or the privilege level has
+// changed, and forgotten when the TLB is emptied or a page of it forgotten. A byte that is
+// not on it (an instruction that runs across the page's end) goes the long way.
+var code_page: u64 = 0xFFFFFFFFFFFFFFFF;     // its page number; all ones for none
+var code_end: u64 = 0;                       // the address just past it; 0 for none
+var code_delta: u64 = 0;                     // what to take from an address on it to index memory
+var code_cpl: u8 = 0;                        // the privilege level it was taken at
+
+fn code_fill() {
+    code_page = 0xFFFFFFFFFFFFFFFF;
+    code_end = 0;
+    let start = rip & 0xFFFFFFFFFFFFF000;
+    var p = start;
+    if machine { p = xlate(rip, ACC_EXEC) & 0xFFFFFFFFFFFFF000; }
+    // A page that is not in memory is fetched the long way, which knows what such reads give.
+    if p >= MEM_SIZE - 0x2000 { return; }
+    code_page = rip >> 12;
+    code_cpl = cpl;
+    code_end = start + 0x1000;
+    code_delta = start - p;
+}
+
+inline fn fb() -> u64 {
+    if ip < code_end { let v: u64 = mem[(ip - code_delta) as! i64]; ip += 1; return v; }
+    let v = code_rd(ip, 8);
+    ip += 1;
+    return v;
+}
+
+inline fn fw() -> u64 {
+    if ip + 1 < code_end { let v = mem_rd(ip - code_delta, 16); ip += 2; return v; }
+    let v = code_rd(ip, 16);
+    ip += 2;
+    return v;
+}
+
+inline fn fd() -> u64 {
+    if ip + 3 < code_end { let v = mem_rd(ip - code_delta, 32); ip += 4; return v; }
+    let v = code_rd(ip, 32);
+    ip += 4;
+    return v;
+}
+
+fn fq() -> u64 {
+    if ip + 7 < code_end { let v = mem_rd(ip - code_delta, 64); ip += 8; return v; }
+    let v = code_rd(ip, 64);
+    ip += 8;
+    return v;
+}
+
+// The next byte, without taking it.
+inline fn peek8() -> u64 {
+    if ip < code_end { return mem[(ip - code_delta) as! i64]; }
+    return code_rd(ip, 8);
+}
 fn fs8() -> u64 { return sx(fb(), 8); }
 fn fs32() -> u64 { return sx(fd(), 32); }
 
@@ -730,6 +784,7 @@ fn exec64() -> bool {
         if pending >= 0 { deliver_pending(); return true; }
         save_start();
     }
+    if rip >> 12 != code_page || cpl != code_cpl { code_fill(); }
     ip = rip;
     rex = 0;
     rep = 0;
@@ -1154,7 +1209,7 @@ fn exec64() -> bool {
                     0xFD => { rflags |= DF; },
                     0xF6, 0xF7 => {
                         // Peek at the field: TEST has a constant behind the operand.
-                        let field = (code_rd(ip, 8) as! u8) >> 3 & 7;
+                        let field = (peek8() as! u8) >> 3 & 7;
                         modrm(if field < 2 { imm_len(w) } else { 0 });
                         match field {
                             0, 1 => { let b = fimm(w); alu(4, rm_get(w), b, w); },

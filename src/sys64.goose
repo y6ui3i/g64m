@@ -169,6 +169,8 @@ var tlb_phys: u64[6 * TLB_SIZE] = [0; 6 * TLB_SIZE];
 var tlb_has_1g = false;
 
 fn tlb_flush() {
+    code_page = TLB_EMPTY;       // the code page is a translation too (E105)
+    code_end = 0;
     for i in 6 * TLB_SIZE { tlb_tag[i] = TLB_EMPTY; }
     tlb_has_1g = false;
 }
@@ -177,6 +179,8 @@ fn tlb_flush() {
 // dropped (512 places in each table), since entries of a 2 MB page may be anywhere in it;
 // with entries of 1 GB pages about, everything. More than asked for is always allowed.
 fn tlb_forget(a: u64) {
+    code_page = TLB_EMPTY;
+    code_end = 0;
     if tlb_has_1g { tlb_flush(); return; }
     let first = a >> 12 & 0xFFFFFFFFFFFFFE00;
     for k in 512 {

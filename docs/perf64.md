@@ -111,6 +111,13 @@ The numbers give each a ceiling. None has been tried.
 | 4 | **A decode cache**, by physical address as on the 32-bit machine: the prefix loop, ModRM and the constants done once for an address | 99.98% of instructions are at addresses run 8 times or more; with 1 to 3 it is what took the 32-bit interpreter to 17.5 cycles | with 1 to 3: toward 6 times as fast |
 | 5 | **A JIT** for the 64-bit CPU, on the 32-bit machine's design | runs of 8 instructions between jumps, 1 memory access in 3 instructions; the list above is what its design is checked against | the 32-bit machine's went 10 times beyond its interpreter |
 
+**Done so far.**
+
+| # | Entry | Host instructions for a guest instruction | Boot to the prompt |
+|---|---|---:|---:|
+| | the survey (E104) | 654 | 50.4 s |
+| 1 | E105: the code page | 471 | 35.8 s |
+
 1 to 3 change no structure and can each be measured alone; 4 is a structure; 5 is a
 project. What the survey does not say is how much of 3 and 4 overlap: a decode cache makes
 most of `exec64`'s beginning unnecessary, so 3 may be worth doing only in part before 4.
