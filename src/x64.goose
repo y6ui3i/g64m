@@ -31,6 +31,10 @@
 //   --disk FILE    the image of an IDE disk. What the guest writes is kept in memory for this
 //                  run only, and the image is never changed, unless:
 //   --keep         with --disk: the guest's writes go to the image, in place
+//   --rtc WHEN     what the guest's clock starts at: host, or seconds since 1970. Without it,
+//                  the host's time in a terminal and 2026-01-01 in a scripted or headless run
+//   --net          a network card (an NE2000 on PCI) behind which the host answers as a gateway,
+//                  a DHCP server and a name server, and connects for the guest (libslirp)
 
 import std;
 import os;
@@ -238,17 +242,9 @@ fn insns_per_second() -> i64 { return 1193182 * tick_insns; }
 var pace_t0 = 0;                 // the clock, and
 var pace_v0 = 0;                 // virtual time, when the two were last set level
 
-// Called every hundredth of a second of guest time: what was typed goes to the serial
-// port, what it sent is written, and if guest time is ahead of the clock (it is whenever
-// the guest sleeps) the difference is slept. False when Ctrl-] was typed.
-fn terminal_step() -> bool {
-    loop {
-        let b = con_read();
-        if b < 0 { break; }
-        if b == 0x1D { return false; }
-        com_receive(b as! u8);
-    }
-    com_flush();
+// Holds guest time to the clock: if it is ahead (it is whenever the guest sleeps) the
+// difference is slept, 50 ms at most at once.
+fn pace() {
     let guest_ns = (vtime - pace_v0) * 1000000000 / insns_per_second();
     let ahead = guest_ns - (clock_ns() - pace_t0);
     if ahead > 0 {
@@ -260,8 +256,24 @@ fn terminal_step() -> bool {
         pace_t0 = clock_ns();
         pace_v0 = vtime;
     }
+}
+
+// Called every hundredth of a second of guest time: what was typed goes to the serial
+// port, what it sent is written, and the machine is held to the clock. False when Ctrl-]
+// was typed.
+fn terminal_step() -> bool {
+    loop {
+        let b = con_read();
+        if b < 0 { break; }
+        if b == 0x1D { return false; }
+        com_receive(b as! u8);
+    }
+    com_flush();
+    pace();
     return true;
 }
+
+let NET_EVERY = 40000;           // instructions between looks at the network: half a millisecond of guest time
 
 // ---- The script (for a kernel) ----
 
@@ -307,6 +319,7 @@ fn main() {
     var max_given = false;
     var headless = false;
     var disk_arg = 0;
+    var rtc_given = false;
     var disk_scratch: i32 = 1;   // the disk's writes are not kept, unless --keep says so
     var max: u64 = 2000000000;
     var path: const u8[:] = "";
@@ -325,6 +338,22 @@ fn main() {
         else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }
         else if a[i] == "--keep" { disk_scratch = 0; }
+        else if a[i] == "--rtc" && i + 1 < a.len {
+            i++;
+            if a[i] == "host" { rtc_base = con_time(); rtc_given = true; }
+            else {
+                let n, ok = parse_int(a[i]);
+                guard ok else { write_stderr("x64: --rtc takes host or a number of seconds\n"); exit(2); }
+                rtc_base = n;
+                rtc_given = true;
+            }
+        }
+        else if a[i] == "--net" {
+            if net_open() != 0 { write_stderr("x64: --net needs libslirp, which was not found (brew install libslirp)\n"); exit(2); }
+            net_on = true;
+            pci_setup();
+            ne_setup();
+        }
         else if a[i] == "--initrd" && i + 1 < a.len { i++; initrd_arg = i; }
         else if a[i] == "--append" && i + 1 < a.len { i++; append_arg = i; }
         else if (a[i] == "--wait" || a[i] == "--type") && i + 1 < a.len {
@@ -372,7 +401,7 @@ fn main() {
     }
     if terminal {
         com_live = true;
-        rtc_base = con_time();
+        if !rtc_given { rtc_base = con_time(); }
         if !max_given { max = 4000000000000000000; }
         pace_t0 = clock_ns();
     }
@@ -381,6 +410,8 @@ fn main() {
     let slice: u64 = if terminal { (insns_per_second() / 100) as! u64 } else { 16384 };
     var next_look = slice;
     var quit = false;
+    var net_next: u64 = 0;
+    if net_on { pace_t0 = clock_ns(); }
     while !stopped && steps < max {
         // The devices' time is the instruction count. Only when the timer is due, the
         // machine is asleep or a request is waiting is there anything to do between two
@@ -389,7 +420,16 @@ fn main() {
         if kernel && steps >= next_look {
             next_look = steps + slice;
             if terminal { if !terminal_step() { quit = true; break; } }
-            else if script_step(a) { scripted = true; break; }
+            else {
+                if script_step(a) { scripted = true; break; }
+                // The network is the host's and runs on the host's time: with a script and
+                // no terminal, the guest is held to the clock for it.
+                if net_on { pace(); }
+            }
+        }
+        if net_on && steps >= net_next {
+            net_tick();
+            net_next = steps + NET_EVERY;
         }
         if machine && ((timer_on && vtime >= timer_at) || halted || irq_line) {
             if !between() { asleep = true; break; }

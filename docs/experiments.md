@@ -7388,3 +7388,64 @@ for a count, and the first images were called `disk7.img`. And a script's `--wai
 end marker has to be something the typed line does not contain (`done-$((1+1))`).
 
 **Next.** The network behind this CPU.
+
+## E102: the network behind the 64-bit CPU (2026-11-19)
+
+- **Hypothesis**: The card (an NE2000 on PCI) and the gateway behind it (libslirp on the
+  host) are `src/dev.goose`'s and `src/net.c`'s (E076), shared since E097, and what the
+  64-bit kernel said at every boot so far, "PCI: Fatal: No config space access function
+  found", was only that the PCI ports answer when there is a card. **With `--net` given
+  to `x64` (the card set up, the network looked at every 40,000 instructions, and guest
+  time held to the clock while the guest waits, which a reply from outside needs), and an
+  initramfs with the card's driver, the 64-bit Linux finds the card on PCI, gets its
+  address by DHCP, pings the gateway, and fetches a page over HTTPS with the TLS that
+  Alpine's own initramfs carries.**
+- **What changed since last time**: nothing of the devices; `x64` has had no option for
+  the network and no look at it in its loop. The driver's modules (8390, ne2k-pci,
+  af_packet) are in Alpine's netboot initramfs itself, so no more downloads.
+- **Next move for each result**:
+  - An address, the ping and the page → kept; next is the frame buffer
+  - The kernel does not see the card → its PCI messages against what the 32-bit kernel
+    prints with the same card; the 64-bit kernel may probe configuration space another
+    way (it has more of them)
+  - DHCP times out → the pacing: the guest's seconds must not go by faster than the
+    host's while it waits (E076 met this)
+  - TLS fails where plain HTTP works → an instruction of the 64-bit OpenSSL that no test
+    has reached (it is compiled for SSE2 at least, and asks CPUID what else there is):
+    the stop names it, or a test against the real CPU finds it
+- **Cut-off**: one card; what the host's libslirp gives (no ping beyond the gateway).
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch, at the first try of each part: the 64-bit
+Linux finds the card on PCI, gets 10.0.2.15 by DHCP, pings the gateway three times of
+three, and fetches `https://example.com/`.**
+
+```
+pci 0000:00:03.0: [10ec:8029] type 00 class 0x020000 conventional PCI endpoint
+ne2k-pci 0000:00:03.0 eth0: RealTek RTL-8029(AS) found at 0xc000, IRQ 3, 52:54:00:12:34:56.
+~ # wget -q -O - https://example.com/ | grep -o '<title>.*</title>'
+<title>Example Domain</title>
+```
+
+With a card the kernel says "PCI: Using configuration type 1 for base access" where it
+had said "Fatal: No config space access function found": as the hypothesis had it. The
+64-bit OpenSSL ran with what E093 gave (SSE2 and no more: CPUID offers nothing later).
+
+**What was built.** In `src/x64.goose`: `--net` (libslirp opened, the PCI bridge and the
+card set up), a look at the network every 40,000 instructions, and `pace` taken out of
+`terminal_step` so that a scripted run with a network is held to the clock too; `--rtc`
+(host, or seconds since 1970), since a certificate is checked against the guest's date.
+`tools/images/make-mini64.py` also makes `images/initramfs64-net`: the card's driver and
+af_packet (which Alpine's netboot initramfs has, so the 296 MB of E101 were not needed
+for this), busybox's DHCP script, `ssl_client`, OpenSSL's two libraries and the
+certificates; its `init` is the 32-bit machine's shared one.
+
+**In the suite.** `tools/systest64.sh`: the address and the ping, when libslirp and the
+image are there; as on the 32-bit machine, nothing in the suite leaves the host. The
+fetch over HTTPS was done by hand, once, with `--rtc host`.
+
+**Not tested by a wrong build**: this entry wrote no device and no instruction; what it
+wrote is the option and the loop's look, without which the suite's test has no card.
+
+**Next.** The frame buffer behind this CPU; then speed.
