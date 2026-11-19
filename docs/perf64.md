@@ -117,6 +117,7 @@ The numbers give each a ceiling. None has been tried.
 |---|---|---:|---:|
 | | the survey (E104) | 654 | 50.4 s |
 | 1 | E105: the code page | 471 | 35.8 s |
+| 2 | E106: one test between two instructions | 416 | 31.8 s |
 
 1 to 3 change no structure and can each be measured alone; 4 is a structure; 5 is a
 project. What the survey does not say is how much of 3 and 4 overlap: a decode cache makes

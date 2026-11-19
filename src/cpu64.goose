@@ -64,6 +64,9 @@ var p66 = false;
 var asz32 = false;
 
 var halted = false;
+// Set by the few instructions after which the run loop must look up before the next one
+// (E106): a halt, a stop, STI's shadow, SYSCALL and SYSRET (for the single step).
+var attn = false;
 var sti_shadow = false;      // the instruction at hand follows an STI that set IF
 var stopped = false;
 var faulted = false;
@@ -96,6 +99,7 @@ fn stop64(what: const u8[:], v: u64) {
     write_stderr(msg);
     stopped = true;
     faulted = true;
+    attn = true;
     return false from exec64;
 }
 
@@ -1193,13 +1197,14 @@ fn exec64() -> bool {
                         io_level();
                         need_level0();
                         halted = true;
+                        attn = true;
                     },
                     0xFA => { io_level(); rflags &= ~IF; },
                     0xFB => {
                         // STI: an interrupt is not taken until the instruction after this one
                         // is done, if IF was clear.
                         io_level();
-                        if rflags & IF == 0 { sti_shadow = true; }
+                        if rflags & IF == 0 { sti_shadow = true; attn = true; }
                         rflags |= IF;
                     },
                     0xF5 => { rflags ^= CF; },
