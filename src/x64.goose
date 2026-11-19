@@ -24,6 +24,10 @@
 //   --wait TEXT    script step: run until TEXT has been printed on the serial port
 //   --type TEXT    script step: send TEXT to the serial port (\n is Enter)
 // Script steps run in the order given, and the run ends when the last one is done.
+// Started from a terminal with a kernel, no script and no trace, the terminal is the serial
+// port: what is typed goes to the guest, and Ctrl-] leaves. The machine then keeps to the
+// clock: it sleeps while the guest is idle.
+//   --headless     never take the terminal
 
 import std;
 import os;
@@ -136,9 +140,11 @@ fn between() -> bool {
     if timer_on && vtime >= timer_at { timer_fire(); }
     if halted {
         if !irq_line || rflags & IF == 0 {
-            // Asleep. Time passes to the timer's next tick, if there is one to wait for.
-            if rflags & IF == 0 || !timer_on { return false; }
-            steps = timer_at as! u64;
+            // Asleep. With interrupts off nothing can wake it. Else time passes: to the
+            // timer's next tick, or, with the timer stopped (a kernel with nothing to wait
+            // for stops it), a hundredth of a second, for a key to come in.
+            if rflags & IF == 0 { return false; }
+            if timer_on { steps = timer_at as! u64; } else { steps += (insns_per_second() / 100) as! u64; }
             return true;
         }
         halted = false;
@@ -212,6 +218,47 @@ fn load_test_image(img: u8[:]) -> const u8[:] {
     return "";
 }
 
+// ---- The terminal as the serial port (E100) ----
+
+extern fn con_is_tty() -> i32;
+extern fn con_raw() -> i32;
+extern fn con_close();
+extern fn con_read() -> i32;
+extern fn con_sleep_us(us: i32);
+extern fn con_time() -> i64;
+
+// The guest counts this many instructions to one of its seconds: the timer's 1,193,182
+// ticks, tick_insns instructions each.
+fn insns_per_second() -> i64 { return 1193182 * tick_insns; }
+
+var pace_t0 = 0;                 // the clock, and
+var pace_v0 = 0;                 // virtual time, when the two were last set level
+
+// Called every hundredth of a second of guest time: what was typed goes to the serial
+// port, what it sent is written, and if guest time is ahead of the clock (it is whenever
+// the guest sleeps) the difference is slept. False when Ctrl-] was typed.
+fn terminal_step() -> bool {
+    loop {
+        let b = con_read();
+        if b < 0 { break; }
+        if b == 0x1D { return false; }
+        com_receive(b as! u8);
+    }
+    com_flush();
+    let guest_ns = (vtime - pace_v0) * 1000000000 / insns_per_second();
+    let ahead = guest_ns - (clock_ns() - pace_t0);
+    if ahead > 0 {
+        let nap = if ahead > 50000000 { 50000000 } else { ahead };
+        con_sleep_us((nap / 1000) as! i32);
+    } else if ahead < -200000000 {
+        // Far behind, as while the guest computes: the two are set level again, so that
+        // what was lost is not made up later by running ahead.
+        pace_t0 = clock_ns();
+        pace_v0 = vtime;
+    }
+    return true;
+}
+
 // ---- The script (for a kernel) ----
 
 var step_wait: bool[>..];        // each step: true to wait for its text, false to type it
@@ -254,6 +301,7 @@ fn main() {
     var initrd_arg = 0;
     var append_arg = 0;
     var max_given = false;
+    var headless = false;
     var max: u64 = 2000000000;
     var path: const u8[:] = "";
     var i = 1;
@@ -268,6 +316,7 @@ fn main() {
             max_given = true;
         }
         else if a[i] == "--faults" { show_faults = true; }
+        else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--initrd" && i + 1 < a.len { i++; initrd_arg = i; }
         else if a[i] == "--append" && i + 1 < a.len { i++; append_arg = i; }
         else if (a[i] == "--wait" || a[i] == "--type") && i + 1 < a.len {
@@ -302,11 +351,34 @@ fn main() {
     timer_on = false;
     var asleep = false;
     var scripted = false;
+    // A kernel started from a terminal, with no script and no trace: the terminal is its
+    // serial port, the guest's clock starts at the host's, and nothing limits the run.
+    var terminal = kernel && !trace && step_wait.len == 0 && !headless && con_is_tty() != 0;
+    if terminal {
+        write_stdout("x64: Ctrl-] to quit\r\n");
+        terminal = con_raw() != 0;
+    }
+    if terminal {
+        com_live = true;
+        rtc_base = con_time();
+        if !max_given { max = 4000000000000000000; }
+        pace_t0 = clock_ns();
+    }
+    // How often the terminal, or the script, is looked at: a hundredth of a second of guest
+    // time for the terminal, 16,384 instructions for a script.
+    let slice: u64 = if terminal { (insns_per_second() / 100) as! u64 } else { 16384 };
+    var next_look = slice;
+    var quit = false;
     while !stopped && steps < max {
         // The devices' time is the instruction count. Only when the timer is due, the
         // machine is asleep or a request is waiting is there anything to do between two
         // instructions.
         vtime = steps as! i64;
+        if kernel && steps >= next_look {
+            next_look = steps + slice;
+            if terminal { if !terminal_step() { quit = true; break; } }
+            else if script_step(a) { scripted = true; break; }
+        }
         if machine && ((timer_on && vtime >= timer_at) || halted || irq_line) {
             if !between() { asleep = true; break; }
             if halted { continue; }
@@ -317,11 +389,14 @@ fn main() {
         if shadow { sti_shadow = false; }
         steps += 1;
         if trace && !stopped { trace_line(); }
-        // A kernel's console is printed as it comes, and its script looked at, every 16,384
-        // instructions.
-        if kernel && steps & 0x3FFF == 0 && script_step(a) { scripted = true; break; }
     }
-    if trace { write_stdout(trace_buf); } else { write_stdout(out); write_stdout(com_out[shown..]); }
+    if terminal {
+        com_flush();
+        con_close();
+        write_stdout("\n");
+        if quit { exit(0); }
+    }
+    if trace { write_stdout(trace_buf); } else if !terminal { write_stdout(out); write_stdout(com_out[shown..]); }
     if kernel {
         var msg: u8[>..] = [];
         format(msg, "\nx64: ", steps as! i64, " instructions, at ");

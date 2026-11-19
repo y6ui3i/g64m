@@ -144,10 +144,11 @@ devices on a CPU that is still moving.
   messages). That step is the owner's to start. Until the two programs are one, `build/x64`
   is the 64-bit machine and `build/g86m` the 32-bit one.
 - What the 64-bit machine does not have yet, each of which the 32-bit one has and which
-  M11 or a desktop would want: the terminal as its console (input is by script only), the
+  M11 or a desktop would want: the
   disk, the network and the frame buffer behind this CPU (the devices are there, E097;
   their options and tests are not), and speed: it interprets, decoding every instruction
   every time, at some 30 million a second.
+  - Done since: the terminal as its console (E100).
 
 ### M11: a backend for Docker
 
