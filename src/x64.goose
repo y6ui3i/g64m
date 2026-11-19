@@ -2,8 +2,9 @@
 //
 //   x64 [options] program
 //
-// program is a static x86_64 ELF for Linux. It is loaded where its headers say and run from
-// its entry point, in user mode, with three system calls answered here: write (to standard
+// program is a static x86_64 ELF for Linux, or a system test's image (tests/sys64), which is
+// run as a machine in long mode at privilege level 0: see sys64.goose.
+// An ELF is loaded where its headers say and run from its entry point, in user mode, with three system calls answered here: write (to standard
 // output and standard error), exit and exit_group. This is the stage before there is a
 // machine around the CPU: its instructions are compared one at a time with a real CPU's
 // (tools/oracle/step64.c, tools/difftest64.sh).
@@ -18,6 +19,7 @@ import std;
 import os;
 import cpu64;
 import sse64;
+import sys64;
 
 var out: u8[>..];
 var trace_buf: u8[>..];
@@ -88,6 +90,21 @@ fn syscall64() {
     }
 }
 
+// ---- Ports (a machine's; E094 has two) ----
+//
+// 3F8h: the serial port's data, which goes to standard output; 3FDh: its status, always
+// ready. F4h: a write stops the machine, as QEMU's isa-debug-exit device does.
+
+fn port_in(port: u64, w: u8) -> u64 {
+    if port == 0x3FD { return 0x60; }
+    return mask(w);
+}
+
+fn port_out(port: u64, w: u8, v: u64) {
+    if port == 0x3F8 { out.push(v as! u8); }
+    else if port == 0xF4 { stopped = true; }
+}
+
 fn le(img: u8[:], at: i64, n: i64) -> u64 {
     var v: u64 = 0;
     for i in n { let b: u64 = img[at + i]; v |= b << ((i * 8) as! u64); }
@@ -120,6 +137,34 @@ fn load_elf(img: u8[:]) -> const u8[:] {
     return "";
 }
 
+// A system test's image (tests/sys64/sys.inc): a multiboot header for QEMU, then "G64T" and
+// where the 64-bit code, the top page table and the GDT's pointer are.
+fn is_test_image(img: u8[:]) -> bool {
+    return img.len > 64 && le(img, 0, 4) == 0x1BADB002 && img[32] == 'G' && img[33] == '6' && img[34] == '4' && img[35] == 'T';
+}
+
+// Puts the image at 1 MB and sets the CPU as the image's own 32-bit beginning would leave
+// it: long mode on, paging through the image's tables, privilege level 0.
+fn load_test_image(img: u8[:]) -> const u8[:] {
+    let base = 0x100000;
+    if base + img.len > MEM_SIZE { return "the image does not fit in memory"; }
+    for b, i in img { mem[base + i] = b; }
+    machine = true;
+    cpl = 0;
+    cr0 = 0x80000011;
+    cr4 = 0x20;
+    efer = 0x500;
+    cr3 = le(img, 48, 8);
+    let gp = (le(img, 56, 8) as! i64) - base;
+    if gp < 0 || gp + 10 > img.len { return "the image's GDT pointer is outside it"; }
+    gdt_limit = le(img, gp, 2);
+    gdt_base = le(img, gp + 2, 8);
+    seg = [0x10, 0x08, 0x10, 0x10, 0x10, 0x10];
+    rflags = 2;
+    rip = le(img, 40, 8);
+    return "";
+}
+
 fn main() {
     let a = args();
     var trace = false;
@@ -141,7 +186,7 @@ fn main() {
     guard path.len > 0 else { write_stderr("usage: x64 [--trace] [--max N] program\n"); exit(2); }
     var img: u8[>..] = [];
     guard read_file(path, img) else { write_stderr("x64: cannot read the program\n"); exit(2); }
-    let problem = load_elf(img);
+    let problem = if is_test_image(img) { load_test_image(img) } else { load_elf(img) };
     guard problem.len == 0 else { write_stderr(str("x64: ", problem, "\n")); exit(2); }
 
     while !stopped && steps < max {
@@ -151,6 +196,7 @@ fn main() {
     }
     if trace { write_stdout(trace_buf); } else { write_stdout(out); }
     if !stopped { write_stderr("x64: stopped at the limit of --max\n"); exit(1); }
+    if halted { write_stderr("x64: halted, with nothing to wake it\n"); exit(3); }
     if faulted { exit(1); }
     exit(exit_code as! i32);
 }
