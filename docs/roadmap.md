@@ -104,3 +104,11 @@ devices on a CPU that is still moving.
     instruction at a time.
 - Steps: 64-bit user-mode instructions and SSE2 first, run as a user-mode emulator of static ELF
   binaries against the ptrace oracle; then long mode and paging against QEMU; then the kernel.
+- **The 64-bit CPU is new code in files of its own** (`src/cpu64.goose`, with `src/x64.goose`
+  as a second root file beside `src/g86m.goose`), not long mode added to the 32-bit CPU: a
+  64-bit kernel can be entered at its 64-bit entry point with paging already on, as the 32-bit
+  one is entered at its 32-bit entry point now, so nothing below long mode has to run in it.
+  The devices are what the two will share.
+- Done so far:
+  - E091: the integer instructions in user mode, and the ptrace oracle
+    (`tools/oracle/step64.c`, `tools/difftest64.sh`).

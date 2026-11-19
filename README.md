@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | planned |
+| M10 | x86_64 | begun (E091): a 64-bit CPU of its own, `src/x64.goose`, runs integer user-mode programs and matches a real CPU instruction for instruction; no SSE, no machine around it yet |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
 
@@ -261,6 +261,20 @@ the trace with the expected one in `tests/expected/`. The expected traces come f
 ([tools/oracle/trace32.rs](tools/oracle/trace32.rs)), a small example added to rustx86.
 To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 
+The 64-bit CPU of M10 has a suite of its own:
+
+```bash
+tools/difftest64.sh
+```
+
+Its tests are static ELF programs (`tests/asm64/`, most of them written by
+[tools/gen64_tests.py](tools/gen64_tests.py), and `tests/c64/`), and the expected traces in
+`tests/expected64/` come from a real CPU: [tools/oracle/step64.c](tools/oracle/step64.c) runs a
+program one instruction at a time under `ptrace` on an x86_64 Linux host and prints the
+registers after each. `ORACLE_HOST=name tools/difftest64.sh` takes them again over ssh. The
+flags the manual leaves undefined are in the traces as that CPU (an Intel Core i7-3770K) left
+them, and the emulator gives the same.
+
 ## Layout
 
 | File | Contents |
@@ -278,6 +292,7 @@ To regenerate them, run `ORACLE=/path/to/trace32 tools/difftest.sh`.
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |
 | [src/g86m.goose](src/g86m.goose) | The run loop, interrupt delivery, pacing, the serial console, the session script, the command line |
+| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, and a loader of static ELF programs with three system calls |
 | [src/big.goose](src/big.goose) | The large arrays (RAM and three others), in a file of their own so they come last in memory |
 
 The boot sectors in `testdata/` are copied from rustx86's `asm/` as they are, including the Japanese
