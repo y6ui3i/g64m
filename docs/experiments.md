@@ -7449,3 +7449,68 @@ fetch over HTTPS was done by hand, once, with `--rtc host`.
 wrote is the option and the loop's look, without which the suite's test has no card.
 
 **Next.** The frame buffer behind this CPU; then speed.
+
+## E103: a frame buffer behind the 64-bit CPU (2026-11-19)
+
+The owner chose the screen before speed.
+
+- **Hypothesis**: The 32-bit machine's screen (E078) is three things, none of them the
+  CPU's: the loader tells the kernel of a frame buffer at the top of memory (the boot
+  parameters' `screen_info`, as a boot loader that had asked the firmware would), the
+  kernel's own driver draws on it, and `src/screen.c` shows that memory in a window and
+  gives back keys and mouse moves, which go to the keyboard controller of `src/dev.goose`.
+  **With the same lines in the 64-bit loader, `--fb` and `--shot` in `x64`, and the window
+  opened when a terminal is there, the 64-bit kernel's console appears on the frame
+  buffer: `/sys/class/graphics/fb0/virtual_size` says 1024,768, a saved frame has the
+  console's text on it, and a line typed at the keyboard (scancodes through the 8042, not
+  the serial port) reaches a program reading the console.**
+- **What changed since last time**: nothing of the devices. What is not known is whether
+  Alpine's x86_64 kernel has a driver for such a frame buffer built in, as its 32-bit
+  kernel has efifb: E101 found that it has no disk driver built in.
+- **Next move for each result**:
+  - fb0 is there, the frame has text, the typed line arrives → kept; next is speed
+  - No fb0 → what the kernel says of the frame buffer; if the driver is a module, it
+    goes into the initramfs from the modloop of E101, loaded by `init`; if the kernel
+    wants the frame buffer described another way (a different `screen_info` type), that
+  - fb0 but a black frame → the pixel layout the kernel was told against what it draws
+- **Cut-off**: the kernel's text console on the frame buffer, the window, the keyboard.
+  X is not in this entry: it needs an x86_64 disk of X's packages (a download of its
+  own) and, to be usable, the speed that comes next.
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: the 64-bit kernel has efifb built in, takes
+the frame buffer the loader tells it of, and puts its console there, at the first try.
+`virtual_size` says 1024,768; the saved frame shows the boot messages, a line a command
+wrote to the console, and a line typed at the keyboard.**
+
+```
+efifb: framebuffer at 0xfd00000, using 3072k, total 3072k
+efifb: mode is 1024x768x32, linelength=4096, pages=1
+efifb: Truecolor: size=8:8:8:8, shift=0:8:16:24
+fb0: EFI VGA frame buffer device
+```
+
+**What was built.** `src/linux64.goose`: the frame buffer taken off the top of memory,
+its line in the memory map, and `screen_info`, the same fields as the 32-bit loader's.
+`src/x64.goose`: `--fb WxH`, `--shot FILE`; the window (`src/screen.c`, now built into
+`x64`) opened when a kernel with `--fb` is started from a terminal, looked at with the
+terminal a hundred times a guest second, its keys and mouse moves going to the keyboard
+controller; and two script steps, `--keys` (typed at the keyboard as scancodes) and
+`--mouse`. The table of scancodes is a second copy of `src/console.goose`'s twenty lines,
+which is the 32-bit machine's own file.
+
+**The test's first version lost three characters**: "got-ed at the keyboard" for "typed
+at the keyboard". The keys were sent before the program that reads the console had it
+open, and a console nobody has open keeps nothing. The test now waits for a line that a
+background `sleep 2` prints after the reader has started. The keyboard was right.
+
+**In the suite.** `tools/systest64.sh`: the size, the typed line read back, and a saved
+frame of the right length with more than 20,000 bytes that are not black.
+
+**Not tested: the window.** It opens only from a terminal, on the host's screen, and no
+script looks at it; the owner is to try it by hand, as with the 32-bit machine's (M8).
+The mouse's script step moves the controller's mouse and nothing here reads it: the
+kernel's mouse driver is a module, for when X is.
+
+**Next.** Speed.

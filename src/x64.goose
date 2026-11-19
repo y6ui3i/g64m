@@ -33,6 +33,12 @@
 //   --keep         with --disk: the guest's writes go to the image, in place
 //   --rtc WHEN     what the guest's clock starts at: host, or seconds since 1970. Without it,
 //                  the host's time in a terminal and 2026-01-01 in a scripted or headless run
+//   --fb WxH       a frame buffer of W by H pixels for the kernel to draw on (1024x768 is
+//                  usual); from a terminal, a window shows it and takes keyboard and mouse (SDL2)
+//   --shot FILE    write the frame buffer to FILE as a PPM image when the run ends
+//   --keys TEXT    script step: type TEXT at the keyboard (what a console on the frame
+//                  buffer reads), as --type types at the serial port
+//   --mouse X,Y,B  script step: the mouse moves X to the right and Y up, with buttons B held
 //   --net          a network card (an NE2000 on PCI) behind which the host answers as a gateway,
 //                  a DHCP server and a name server, and connects for the guest (libslirp)
 
@@ -269,15 +275,105 @@ fn terminal_step() -> bool {
         com_receive(b as! u8);
     }
     com_flush();
+    if screen_on && !screen_tick() { return false; }
     pace();
     return true;
 }
 
 let NET_EVERY = 40000;           // instructions between looks at the network: half a millisecond of guest time
 
+// ---- The frame buffer's window, and the keyboard (E103) ----
+//
+// As on the 32-bit machine (g86m.goose): screen.c shows the frame buffer's memory in a
+// window and gives back what happens there, which goes to the keyboard controller.
+
+extern fn screen_open(w: i32, h: i32) -> i32;
+extern fn screen_show(pixels: const u8[:]);
+extern fn screen_poll(out: u32[:]) -> i32;
+extern fn screen_close();
+var screen_on = false;
+var screen_n = 0;
+var screen_buttons: u8 = 0;
+var keys_next = 0;               // the virtual time before which the script types no further key
+
+fn screen_tick() -> bool {
+    var ev: u32[64] = [0; 64];
+    let n = screen_poll(ev[..]);
+    var dx = 0;
+    var dy = 0;
+    var moved = false;
+    var open = true;
+    for k in n {
+        let e = ev[k];
+        let kind = e >> 24;
+        if kind == 1 {
+            if e & 0x100 != 0 { kbd_push(0xE0); }
+            kbd_push((e & 0x7F | (if e & 0x200 != 0 { 0x80 } else { 0 })) as! u8);
+        } else if kind == 2 {
+            let x: i64 = e & 0xFFF;
+            let y: i64 = e >> 12 & 0xFFF;
+            dx += if x >= 2048 { x - 4096 } else { x };
+            dy -= if y >= 2048 { y - 4096 } else { y };      // the mouse's "up" is the window's "down"
+            moved = true;
+        } else if kind == 3 {
+            screen_buttons = (e & 7) as! u8;
+            moved = true;
+        } else if kind == 4 {
+            open = false;
+        }
+    }
+    if moved { mouse_move(dx, dy, screen_buttons); }
+    screen_n += 1;
+    if screen_n % 3 == 0 {
+        let from = fb_base as! i64;
+        let size = (fb_w * fb_h * 4) as! i64;
+        screen_show(mem[from..from + size]);
+    }
+    return open;
+}
+
+// The frame buffer as a PPM image: a header, then red, green and blue for each pixel.
+fn shot_write(path: const u8[:]) -> bool {
+    var img: u8[>..] = [];
+    format(img, "P6\n", fb_w as! i64, " ", fb_h as! i64, "\n255\n");
+    let from = fb_base as! i64;
+    let n = (fb_w * fb_h) as! i64;
+    for k in n {
+        let at = from + k * 4;
+        img.push(mem[at + 1]);
+        img.push(mem[at + 2]);
+        img.push(mem[at + 3]);
+    }
+    return write_file(path, img);
+}
+
+// The scancodes (set 1) of the US keyboard's rows, unshifted and shifted, from the key "1"
+// on; as console.goose has them for the 32-bit machine.
+let ROW_PLAIN = "1234567890-=\0\0qwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./";
+let ROW_SHIFT = "!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?";
+
+// Queues the scancodes that produce the character c. Unknown characters are ignored.
+fn type_char(c: u8) {
+    var scan: u8 = 0;
+    var shift = false;
+    if c == '\n' || c == '\r' { scan = 0x1C; }
+    else if c == ' ' { scan = 0x39; }
+    else if c == '\t' { scan = 0x0F; }
+    else {
+        for p, i in ROW_PLAIN { if p == c && p != 0 { scan = (i + 2) as! u8; } }
+        for p, i in ROW_SHIFT { if p == c && p != 0 { scan = (i + 2) as! u8; shift = true; } }
+    }
+    if scan == 0 { return; }
+    if shift { kbd_push(0x2A); }
+    kbd_push(scan);
+    kbd_push(scan | 0x80);
+    if shift { kbd_push(0xAA); }
+}
+
 // ---- The script (for a kernel) ----
 
-var step_wait: bool[>..];        // each step: true to wait for its text, false to type it
+var step_kind: i64[>..];         // each step: 1 wait for its text, 2 type it at the serial port,
+                                 // 3 type it at the keyboard, 4 move the mouse
 var step_arg: i64[>..];          // where its text is in args()
 var step_at = 0;                 // the step being done
 var searched = 0;                // how much of the serial output earlier waits have used up
@@ -288,9 +384,38 @@ var shown = 0;                   // how much of the serial output has been print
 // script's last step is done.
 fn script_step(a: u8[:][>..]&) -> bool {
     if com_out.len > shown { write_stdout(com_out[shown..]); shown = com_out.len; }
-    while step_at < step_wait.len {
+    while step_at < step_kind.len {
         let text = a[step_arg[step_at]];
-        if step_wait[step_at] {
+        let kind = step_kind[step_at];
+        if kind == 3 {
+            // One character at a time, once the guest has taken the last one, and no more
+            // than fifty a second of the guest's time.
+            if typed < text.len {
+                if kbd_queued() > 0 || kbd_full || vtime < keys_next { return false; }
+                keys_next = vtime + insns_per_second() / 50;
+                var c = text[typed];
+                typed += 1;
+                if c == 0x5C && typed < text.len && text[typed] == 'n' { c = '\n'; typed += 1; }
+                type_char(c);
+                return false;
+            }
+            if kbd_queued() > 0 || kbd_full { return false; }
+            typed = 0;
+        } else if kind == 4 {
+            // "DX,DY,BUTTONS".
+            var v: i64[3] = [0; 3];
+            var k = 0;
+            var from = 0;
+            for j in text.len + 1 {
+                if j == text.len || text[j] == ',' {
+                    let n, ok = parse_int(text[from..j]);
+                    if ok && k < 3 { v[k] = n; }
+                    k += 1;
+                    from = j + 1;
+                }
+            }
+            mouse_move(v[0], v[1], v[2] as! u8);
+        } else if kind == 1 {
             let at = find(com_out[searched..], text);
             if at < 0 { return false; }
             searched += at + text.len;
@@ -308,7 +433,7 @@ fn script_step(a: u8[:][>..]&) -> bool {
         }
         step_at += 1;
     }
-    return step_wait.len > 0;
+    return step_kind.len > 0;
 }
 
 fn main() {
@@ -319,6 +444,7 @@ fn main() {
     var max_given = false;
     var headless = false;
     var disk_arg = 0;
+    var shot_arg = 0;
     var rtc_given = false;
     var disk_scratch: i32 = 1;   // the disk's writes are not kept, unless --keep says so
     var max: u64 = 2000000000;
@@ -356,11 +482,24 @@ fn main() {
         }
         else if a[i] == "--initrd" && i + 1 < a.len { i++; initrd_arg = i; }
         else if a[i] == "--append" && i + 1 < a.len { i++; append_arg = i; }
-        else if (a[i] == "--wait" || a[i] == "--type") && i + 1 < a.len {
-            step_wait.push(a[i] == "--wait");
+        else if (a[i] == "--wait" || a[i] == "--type" || a[i] == "--keys" || a[i] == "--mouse") && i + 1 < a.len {
+            step_kind.push(if a[i] == "--wait" { 1 } else if a[i] == "--type" { 2 } else if a[i] == "--keys" { 3 } else { 4 });
             i++;
             step_arg.push(i);
         }
+        else if a[i] == "--fb" && i + 1 < a.len {
+            i++;
+            let t = a[i];
+            var x = -1;
+            for k in t.len { if t[k] == 'x' { x = k; } }
+            if x > 0 {
+                let w, okw = parse_int(t[..x]);
+                let h, okh = parse_int(t[x + 1..]);
+                if okw && okh && w >= 320 && w <= 1920 && h >= 200 && h <= 1200 { fb_w = w as! u64; fb_h = h as! u64; }
+            }
+            if fb_w == 0 { write_stderr("x64: --fb wants a size, as in 1024x768\n"); exit(2); }
+        }
+        else if a[i] == "--shot" && i + 1 < a.len { i++; shot_arg = i; }
         else { path = a[i]; }
         i++;
     }
@@ -394,7 +533,7 @@ fn main() {
     var scripted = false;
     // A kernel started from a terminal, with no script and no trace: the terminal is its
     // serial port, the guest's clock starts at the host's, and nothing limits the run.
-    var terminal = kernel && !trace && step_wait.len == 0 && !headless && con_is_tty() != 0;
+    var terminal = kernel && !trace && step_kind.len == 0 && !headless && con_is_tty() != 0;
     if terminal {
         write_stdout("x64: Ctrl-] to quit\r\n");
         terminal = con_raw() != 0;
@@ -404,6 +543,7 @@ fn main() {
         if !rtc_given { rtc_base = con_time(); }
         if !max_given { max = 4000000000000000000; }
         pace_t0 = clock_ns();
+        if fb_w != 0 && screen_open(fb_w as! i32, fb_h as! i32) == 0 { screen_on = true; }
     }
     // How often the terminal, or the script, is looked at: a hundredth of a second of guest
     // time for the terminal, 16,384 instructions for a script.
@@ -441,6 +581,10 @@ fn main() {
         if shadow { sti_shadow = false; }
         steps += 1;
         if trace && !stopped { trace_line(); }
+    }
+    if screen_on { screen_close(); }
+    if shot_arg > 0 && fb_w != 0 {
+        if !shot_write(a[shot_arg]) { write_stderr("x64: cannot write the image\n"); }
     }
     if terminal {
         com_flush();

@@ -132,6 +132,24 @@ if [ $# -eq 0 ]; then
     else
         echo "skip  linux64 on a network (libslirp or images/initramfs64-net is not there)"
     fi
+    # On a frame buffer (E103): the loader tells the kernel of one, the kernel's efifb takes it
+    # and puts its console there; a line typed at the keyboard (through the 8042, not the
+    # serial port) is read from that console; the run's last frame is saved and has to have
+    # the console's text on it. No window is opened: this run is scripted.
+    rm -f build/s64/fb.ppm
+    out=$(build/x64 --headless --fb 1024x768 --shot build/s64/fb.ppm --append "console=tty0 console=ttyS0 tsc=reliable" \
+        --initrd images/initramfs64-mini --wait "~ # " \
+        --type 'cat /sys/class/graphics/fb0/virtual_size; (sleep 2; echo ready-$((1+1))) & read x < /dev/tty0; echo got-$x\n' \
+        --wait "ready-2" --keys 'Typed at the keyboard, 100%!\n' --wait "got-Typed" --wait "~ # " \
+        images/vmlinuz64-lts 2>build/s64/fb.err | tr -d '\r')
+    lit=$(tail -c +16 build/s64/fb.ppm 2>/dev/null | tr -d '\000' | wc -c | tr -d ' ')
+    if echo "$out" | grep -q "^1024,768$" && echo "$out" | grep -q "^got-Typed at the keyboard, 100%!$" && [ "$(wc -c < build/s64/fb.ppm | tr -d ' ')" = 2359312 ] && [ "$lit" -gt 20000 ]; then
+        echo "ok    linux64 on a frame buffer: efifb at 1024x768, the console drawn ($lit bytes of the frame are not black), a line typed at the keyboard"
+    else
+        fail=1
+        echo "FAIL  linux64 on a frame buffer: no fb0, nothing drawn ($lit bytes not black), or the typed line did not arrive"
+        echo "$out" | tail -5 | sed 's/^/    |/'
+    fi
     # The same kernel with a pseudo-terminal as its console (E100): a command typed, `sleep 3`
     # timed against the clock, Ctrl-] to leave.
     python3 -I tools/console_test.py build/x64 images 64 2>/dev/null || fail=1

@@ -19,6 +19,15 @@ let CMDLINE_AT = 0x20000;
 let GDT_AT = 0x1000;
 let TABLES_AT = 0x30000;         // six pages: one PML4, one PDPT, four page directories
 
+// The frame buffer the kernel is told of (E103, as E078 on the 32-bit machine): fb_w by fb_h
+// pixels of four bytes (nothing, red, green, blue) at fb_base, which is the top of memory,
+// kept out of the memory map. There is no device behind it: the boot parameters say it is
+// there, as a boot loader that had asked the firmware would, and the kernel's driver draws
+// on it. 0 by 0 for none.
+var fb_w: u64 = 0;
+var fb_h: u64 = 0;
+var fb_base: u64 = 0;
+
 // True if img is a Linux bzImage that may be entered in 64-bit mode.
 fn is_kernel64(img: u8[:]) -> bool {
     return img.len > 0x268 && img[0x202] == 'H' && img[0x203] == 'd' && img[0x204] == 'r' && img[0x205] == 'S'
@@ -48,7 +57,12 @@ fn linux64_boot(img: u8[:], initrd: u8[:], cmdline: const u8[:]) -> const u8[:] 
     for i in 8 { let b: u64 = img[0x258 + i]; load |= b << ((i * 8) as! u64); }       // where it would like to be
     var init_size: u64 = 0;
     for i in 4 { let b: u64 = img[0x260 + i]; init_size |= b << ((i * 8) as! u64); }  // what it needs there
-    let top: u64 = MEM_SIZE;
+    // The frame buffer takes whole megabytes off the top of memory.
+    var top: u64 = MEM_SIZE;
+    if fb_w != 0 {
+        top -= (fb_w * fb_h * 4 + 0xFFFFF) & 0xFFFFFFFFFFF00000;
+        fb_base = top;
+    }
     if load < 0x100000 || load + init_size + 0x200000 > top { return "the kernel does not fit in memory"; }
     put(load, img[body..]);
     put(CMDLINE_AT, cmdline);
@@ -79,6 +93,20 @@ fn linux64_boot(img: u8[:], initrd: u8[:], cmdline: const u8[:]) -> const u8[:] 
     map_line(2, 0x000F0000, 0x00010000, 2);
     map_line(3, 0x00100000, top - 0x100000, 1);
     mem_wr(ZERO_PAGE + 0x1E8, 8, 4);
+    if fb_w != 0 {
+        map_line(4, top, MEM_SIZE - top, 2);
+        mem_wr(ZERO_PAGE + 0x1E8, 8, 5);
+        // screen_info: a linear frame buffer of the kind a UEFI boot loader reports (70h).
+        // Red at bit 8, green at 16, blue at 24: an order the kernel's table of "simple"
+        // frame buffers does not list, so that the EFI driver gets it (rustx86's finding).
+        mem_wr(ZERO_PAGE + 0x0F, 8, 0x70);
+        mem_wr(ZERO_PAGE + 0x12, 32, fb_w | fb_h << 16);                     // width and height, 16 bits each
+        mem_wr(ZERO_PAGE + 0x16, 32, 32 | (fb_base & 0xFFFF) << 16);         // bits to a pixel; the base's low half
+        mem_wr(ZERO_PAGE + 0x1A, 32, fb_base >> 16 | ((fb_w * fb_h * 4 + 0xFFFF) >> 16 & 0xFFFF) << 16);   // its high half; the size in 64 KB
+        mem_wr(ZERO_PAGE + 0x24, 32, fb_w * 4 | 8 << 16 | 8 << 24);          // bytes to a line; red: 8 bits at 8
+        mem_wr(ZERO_PAGE + 0x28, 32, 8 | 16 << 8 | 8 << 16 | 24 << 24);      // green: 8 at 16; blue: 8 at 24
+        mem_wr(ZERO_PAGE + 0x2C, 32, 8);                                     // nothing: 8 at 0
+    }
 
     mem_wr(GDT_AT + 16, 64, 0x00AF9A000000FFFF); // 10h: 64-bit code
     mem_wr(GDT_AT + 24, 64, 0x00CF92000000FFFF); // 18h: data
