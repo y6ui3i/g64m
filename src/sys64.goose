@@ -575,6 +575,7 @@ fn iret() {
 fn syscall_enter(ret: u64) {
     if efer & 1 == 0 { fault(6, false, 0); }
     by_syscall = true;
+    attn = true;
     reg[RCX] = ret;
     reg[11] = rflags;
     rflags &= ~msr_fmask;
@@ -593,6 +594,7 @@ fn sysret() {
     let top = reg[RCX] >> 47;
     if top != 0 && top != 0x1FFFF { fault(13, true, 0); }
     by_syscall = true;
+    attn = true;
     rflags = reg[11] & 0x3C7FD7 | 2;
     seg[SEG_CS] = ((msr_star >> 48) + 16 | 3) as! u16;
     seg[SEG_SS] = ((msr_star >> 48) + 8 | 3) as! u16;

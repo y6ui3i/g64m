@@ -7668,3 +7668,80 @@ used). A kernel's boot would have caught most, a minute at a time and without sa
 where.
 
 **Next**, by the card: the run loop.
+
+## E106: one test between two instructions (2026-11-19)
+
+The second of [perf64.md](perf64.md)'s list.
+
+- **Hypothesis**: The run loop in `x64.goose` asks, before and after every instruction,
+  whether the time has come for the timer, a look at the script or the terminal, a look
+  at the network; whether the machine is halted or an interrupt is waiting; whether the
+  instruction began with TF or followed an STI; whether a trace is wanted: 85 host
+  instructions every time (E104), of the 471 a guest instruction now costs (E105), for
+  things that happen once in 30,000 instructions. **If the loop works out once how many
+  instructions it may run before the first of the timed things is due, and then runs
+  them with one test after each ("has anything asked for attention": a flag the rare
+  instructions set, a request from the interrupt controller with IF set, TF, the timer
+  moved), a guest instruction costs under 420 host instructions and the boot takes 32
+  seconds or under (35.8 now), with the same count of instructions at the same end.**
+- **What changed since last time**: E105 took the fetch. This is the 32-bit machine's
+  `run_until` (E024, E053): a moment worked out beforehand, and `replan` in
+  `src/dev.goose`, which a write to the timer already sets for it.
+- **Next move for each result**:
+  - Under 420 and 32 seconds, all tests as they were → kept; next is `exec64`'s
+    beginning, or the decode cache, whichever the new numbers favour
+  - The count of instructions to the prompt changes → something timed is now seen at
+    another instruction than before: find which, since a boot that depends on it would
+    be hard to compare from here on
+  - A system test differs (`y_irq` and `y_user` are the ones that watch the order of
+    such things) → that event is not in the test after each instruction: it is added,
+    with a wrong build
+- **Cut-off**: a machine only, and not while tracing: a user-mode program's loop is as
+  it was (its turn comes with M11).
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: a guest instruction costs 416 host
+instructions (471) and 65 host cycles (73), and the boot to the prompt takes 31.8 seconds
+(35.8; 11% less). The boot runs the same 1,523,597,312 instructions and ends at the same
+address.**
+
+| | E105 | Now |
+|---|---:|---:|
+| Boot to the prompt, three runs | 35.8 s | 31.85, 31.83, 31.64 s |
+| Host instructions for a guest instruction | 471 | 416 |
+| Host cycles for a guest instruction | 73 | 65 |
+| Guest instructions a second | 42.6 million | 47.9 million |
+
+The loop was 85 by E104's stepping and 55 went; what is left is the count, its store, and
+the test.
+
+**What was built.** In `src/x64.goose`: after the one instruction done with every
+question asked (the loop as it was), a run: the count at which the first timed thing is
+due (the script's or the terminal's look, the network's, the timer's tick), then
+instructions with one test after each. `attn` in `src/cpu64.goose` is set by a halt, a
+stop, an STI that sets IF, SYSCALL and SYSRET. The devices' time is set when a port is
+used, where it was set before every instruction.
+
+**Tests added** (against the real CPU, in `y_user` and `y_irq`): TF set by POPF straight
+after STI, and straight after a SYSRET that did not set it (the first single step is
+after the instruction that follows the POPF, whatever came just before); STI straight
+after the timer is written to (still not before the instruction that follows).
+
+**Wrong builds.** 15 (`build/mut106.py`). 8 caught, three of them after the cases above.
+**Seven are not, and for one reason: what they change is when, not what.** A halt that
+does not look up spins where it should sleep; a request seen with IF clear, or no heed of
+a write to the timer, or the devices' time not set at a port, or STI's shadow carried
+into the run when no request is waiting, move an event by some instructions; and running
+on after the stop runs a few instructions that print nothing. No test that prints the
+same on a real CPU twice can tell, since a real CPU's timing is its own. They are kept
+right by reading, and the boot's count of instructions (unchanged here) is the one
+number that would move with some of them.
+
+**Rejected on the way.** A case that the write which stops the machine stops it at once:
+under KVM two more characters were printed after it, since QEMU's device ends the guest
+when it gets round to it. That is QEMU's, not a CPU's, and the case was taken out.
+
+**Next.** `exec64`'s beginning is now the largest part (165 to 208 of 416), and a decode
+cache would take most of it and of ModRM: the decode cache, with what of the beginning
+it does not cover.

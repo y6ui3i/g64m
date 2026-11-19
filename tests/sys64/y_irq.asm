@@ -147,6 +147,23 @@ test:
     sub rax, r12
     PRINT rax
 
+    PUTS "STI straight after the timer is set again: still not before the instruction that follows"
+    ; (The write to the timer is itself something the machine looks up after.)
+    mov r12, [ticks]
+    call wait_request
+    mov qword [marker], 0
+    mov al, 0x34
+    out 0x43, al
+    mov al, 0x9C
+    out 0x40, al
+    mov al, 0x2E
+    out 0x40, al
+    sti
+    mov qword [marker], 1
+    mov qword [marker], 2
+    cli
+    PRINT [seen_marker]
+
     PUTS "held while IF is clear, and taken after the instruction that follows STI"
     mov r12, [ticks]
     call wait_request

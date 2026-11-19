@@ -131,6 +131,7 @@ var vtime = 0;                               // virtual time, in instructions: w
 var unknown_ports: u8[65536] = [0; 65536];   // how often each port that nothing answers was used
 
 fn io_in(port: u64, w: u8) -> u64 {
+    vtime = steps as! i64;                   // the devices' time is now
     let p = port as! u16;
     if w == 8 { return port_in8(p); }
     let lo: u64 = port_in(p);
@@ -141,7 +142,8 @@ fn io_in(port: u64, w: u8) -> u64 {
 }
 
 fn io_out(port: u64, w: u8, v: u64) {
-    if port == 0xF4 { stopped = true; return; }
+    vtime = steps as! i64;
+    if port == 0xF4 { stopped = true; attn = true; return; }
     let p = port as! u16;
     if w == 8 { port_out8(p, v as! u8); return; }
     port_out(p, v as! u16);
@@ -581,6 +583,32 @@ fn main() {
         if shadow { sti_shadow = false; }
         steps += 1;
         if trace && !stopped { trace_line(); }
+
+        // The run (E106). What is above does one instruction with every question asked. Most
+        // instructions need none of them: how many may go by before the first timed thing
+        // is due is worked out here, and they are run with one test after each: has anything
+        // asked for attention (a halt, a stop, STI, SYSCALL and SYSRET set `attn`; a write to
+        // the timer sets `replan`), is TF set, is a request waiting with IF set.
+        if machine && !trace && !stopped {
+            var stop_at = max;
+            if kernel && next_look < stop_at { stop_at = next_look; }
+            if net_on && net_next < stop_at { stop_at = net_next; }
+            if timer_on && (timer_at as! u64) < stop_at { stop_at = timer_at as! u64; }
+            replan = false;
+            if !(attn || halted || sti_shadow || rflags & 0x100 != 0 || (irq_line && rflags & IF != 0)) {
+                while steps < stop_at {
+                    exec64();
+                    steps += 1;
+                    let f = rflags;
+                    if attn || replan || f & 0x100 != 0 || (irq_line && f & IF != 0) {
+                        // SYSCALL and SYSRET are followed by a single step if they leave TF set.
+                        if by_syscall { single_step(false); }
+                        break;
+                    }
+                }
+            }
+            attn = false;
+        }
     }
     if screen_on { screen_close(); }
     if shot_arg > 0 && fb_w != 0 {

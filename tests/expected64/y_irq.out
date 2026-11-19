@@ -6,6 +6,8 @@ five ticks, asleep between them
 0000000000000000
 one HLT ends with one interrupt
 0000000000000001
+STI straight after the timer is set again: still not before the instruction that follows
+0000000000000001
 held while IF is clear, and taken after the instruction that follows STI
 0000000000000000
 0000000000000001

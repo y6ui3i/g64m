@@ -495,6 +495,37 @@ test:
     push 2
     popfq
 
+    PUTS "TF set by POPF straight after STI, and straight after SYSRET"
+    ; The first single step is after the instruction that follows the POPF, whatever came
+    ; just before the POPF.
+    mov qword [tf_left], 2
+    push 0x102
+    sti
+    popfq
+    nop
+    nop
+    nop
+    call print_log
+    mov qword [tf_left], 2
+    lea rax, [.k12]
+    mov [k_cont], rax
+    mov [k_rsp], rsp
+    lea rcx, [.ur]
+    mov r11, 2
+    mov rsp, USER_STACK
+    o64 sysret
+.ur:
+    push 0x102
+    popfq
+    nop
+    nop
+    nop
+    syscall
+.k12:
+    call print_log
+    push 2
+    popfq
+
     PUTS "SWAPGS, and FS and GS at level 3"
     mov ecx, 0xC0000101
     lea rax, [gs_here]
