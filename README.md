@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the screen, and speed |
+| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: speed, and X on its screen |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -291,8 +291,16 @@ checked against):
 ./build/x64 --net --initrd images/initramfs64-net images/vmlinuz64-lts
 ```
 
-There is no frame buffer behind this CPU yet, and no JIT: it runs some 30 million
-instructions a second.
+With `--fb 1024x768` the kernel is told of a frame buffer and draws its console there; from
+a terminal a window shows it and takes the keyboard (add `console=tty0` to the command line
+to have the kernel's console in it):
+
+```bash
+./build/x64 --fb 1024x768 --append "console=tty0 console=ttyS0 tsc=reliable" --initrd images/initramfs64-mini images/vmlinuz64-lts
+```
+
+There is no JIT behind this CPU yet: it runs some 30 million instructions a second, and no
+X has been tried on it.
 
 ## Tests
 
