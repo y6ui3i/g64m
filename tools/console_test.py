@@ -17,6 +17,9 @@ An image that is not there is reported as skipped. Exits 0 when nothing failed.
 
 The console only sends the cells that changed, so its output cannot be read as a stream of text.
 The test keeps its own 80x25 grid and applies the cursor moves and characters to it.
+
+With a third argument of 64 the program is build/x64, the 64-bit machine, and only the Linux
+session is run, with images/vmlinuz64-lts and images/initramfs64-mini.
 """
 import os
 import pty
@@ -287,7 +290,7 @@ def dos_session(exe, image):
     os.close(slave)
 
 
-def linux_session(exe, kernel, initramfs):
+def linux_session(exe, kernel, initramfs, name="linux"):
     """Linux through the serial console: the terminal is the guest's serial port, as a stream."""
     pid, master, slave, before = start(exe, kernel, 30, 100, ("--initrd", initramfs))
     seen = b""
@@ -297,7 +300,7 @@ def linux_session(exe, kernel, initramfs):
             os.kill(pid, 9)
         except ProcessLookupError:
             pass
-        print("FAIL  console linux:", message)
+        print(f"FAIL  console {name}:", message)
         for line in seen.decode("utf-8", errors="replace").splitlines()[-12:]:
             print("    |" + line)
         sys.exit(1)
@@ -350,6 +353,16 @@ def linux_session(exe, kernel, initramfs):
 
 def main():
     exe, images = sys.argv[1], sys.argv[2]
+    if len(sys.argv) > 3 and sys.argv[3] == "64":
+        # The 64-bit machine (build/x64): the same session with its kernel and initramfs.
+        kernel = os.path.join(images, "vmlinuz64-lts")
+        initramfs = os.path.join(images, "initramfs64-mini")
+        if os.path.exists(kernel) and os.path.exists(initramfs):
+            boot, slept = linux_session(exe, kernel, initramfs, "linux64")
+            print(f"ok    console linux64 (serial; boot to shell {boot:.1f}s, sleep 3 took {slept:.2f}s, Ctrl-] quits)")
+        else:
+            print("skip  console linux64 (vmlinuz64-lts and initramfs64-mini are not there)")
+        return
     elks = os.path.join(images, "fd2880.img")
     freedos = os.path.join(images, "fd14boot.img")
     if os.path.exists(elks):

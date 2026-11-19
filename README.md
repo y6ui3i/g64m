@@ -66,7 +66,7 @@ What comes after is in [docs/roadmap.md](docs/roadmap.md).
 | M7 | A network: NE2000, and libslirp on the host | planned |
 | M8 | A screen: Bochs VBE, SDL2, a PS/2 mouse; X comes up | planned |
 | M9 | Browsing with NetSurf or Dillo | planned |
-| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the terminal as its console, the disk, the network, the screen, and speed |
+| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: the disk, the network, the screen, and speed |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -264,9 +264,16 @@ billion and a half instructions later:
 ./build/x64 --initrd images/initramfs64-mini --wait "~ # " --type 'uname -a\n' --wait "x86_64 Linux" images/vmlinuz64-lts
 ```
 
-The serial port is the console and is printed as it comes; input is by script only
-(`--wait TEXT`, `--type TEXT`). There is no terminal console, no disk, no network and no
-frame buffer behind this CPU yet, and no JIT: it runs some 30 million instructions a second.
+Started from a terminal with no script, the terminal is the kernel's console, and Ctrl-] leaves:
+
+```bash
+./build/x64 --initrd images/initramfs64-mini images/vmlinuz64-lts
+```
+
+The boot takes most of a minute. At the prompt the machine sleeps with the guest and keeps
+to the clock (`sleep 3` takes three seconds); while the guest computes, its clock runs
+behind the wall's. There is no disk, no network and no frame buffer behind this CPU yet,
+and no JIT: it runs some 30 million instructions a second.
 
 ## Tests
 

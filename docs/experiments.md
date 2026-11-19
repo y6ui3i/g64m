@@ -7226,3 +7226,70 @@ to a tick of the timer), 210 MB of memory.
 console, the disk, the network and the frame buffer behind this CPU, speed. And the name:
 the roadmap says g86m becomes g64m when this stage is done, in one step, which is the
 owner's to start.
+
+## E100: the terminal as the 64-bit machine's console (2026-11-19)
+
+After E099 the 64-bit Linux can be spoken to by script only. This is the first of what
+the roadmap lists as missing on the 64-bit machine, chosen first so that the owner can use
+it by hand.
+
+- **Hypothesis**: The 32-bit machine's way (`run_serial` in `src/g86m.goose`, and
+  `src/console.c` for the terminal's raw mode) carries over as it is: the machine runs a
+  hundredth of a second of guest time, takes what was typed and gives it to the serial
+  port, writes what the port sent, and sleeps when guest time is ahead of the clock, which
+  it is whenever the guest is halted. **Started from a terminal with a kernel and no
+  script, `x64` gives a shell that answers a typed command, takes three seconds of real
+  time over `sleep 3`, uses almost no host CPU at the prompt, and leaves by Ctrl-] with
+  the terminal's modes put back; `tools/console_test.py`'s Linux session, pointed at
+  `x64`, passes unchanged but for the names.**
+- **What changed since last time**: E099's serial output was printed every 16,384
+  instructions and its input came from `--type`. The devices (and so the serial port's
+  queue and its live output) are shared since E097; `console.c` has not been built into
+  `x64` before.
+- **Next move for each result**:
+  - The session passes → kept; next is the disk behind this CPU
+  - `sleep 3` takes much more than three seconds → the machine is not catching up with
+    the clock while idle: look at how a halt moves virtual time (E097's `between`)
+  - Much less → virtual time ran ahead and nothing slept: the pacing
+  - Typed characters are lost or doubled → the port's queue against the kernel's
+    interrupt handler; a wrong build of the interrupt path is the first thing to try
+- **Cut-off**: the serial console only (no text screen, which a 64-bit kernel on this
+  machine has no use for); the guest's CPU stays at 64 instructions to a timer tick, so
+  that while it computes its clock runs behind the wall's (the host does some 30 million
+  instructions a second and the guest counts 76 million to its second).
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: `tools/console_test.py`'s Linux session
+passes on `build/x64` the first time it was run. Boot to the shell 49.8 seconds; a typed
+`echo` answered; `sleep 3` took 3.00 seconds of real time; Ctrl-] left, with the
+terminal's modes as they were.** At the prompt the machine used 0.40 seconds of host CPU
+in 8 of real time (5%).
+
+**What was built.** In `src/x64.goose`: `terminal_step`, called every hundredth of a
+second of guest time: keys to the serial port's queue, the port's output written, and a
+sleep of what guest time is ahead of the clock by (at most 50 ms at once); when the guest
+is more than a fifth of a second behind, as while it computes, the two are set level
+again. The terminal is taken when a kernel is started from one with no script and no
+trace (`--headless` says never); the guest's clock then starts at the host's. The look at
+the terminal or the script is now at the top of the loop, by a count of instructions that
+a halt's jump in time cannot step over (E099's was "every 16,384th", which a jump could
+miss). `src/console.c` is built into `x64`.
+
+**A halt with the timer stopped** no longer ends the run when interrupts are on: time
+passes a hundredth of a second at a time, so that a key can come in. A kernel with
+nothing to wait for stops its timer. **This path did not run in the session**: the wrong
+build that ends the run there passed. It is kept, and is not tested.
+
+**Wrong builds**, through the same session: no sleep when ahead of the clock, and never
+setting the two level, both make `sleep 3` take 0.11 seconds and are caught. (The second
+is not obvious: without it the time lost during the boot is "owed", and the machine runs
+ahead until it has made it up.)
+
+**As the card's cut-off said**: the guest's clock was 32 seconds behind the host's after
+a boot of 50 seconds, which the guest counted as 19.
+
+**In the suite.** `tools/systest64.sh` runs the session after the scripted boot, when
+the images are there.
+
+**Next.** The disk behind this CPU.

@@ -83,5 +83,8 @@ if [ $# -eq 0 ]; then
     else
         echo "skip  linux64 shell (images/vmlinuz64-lts and images/initramfs64-mini are not there)"
     fi
+    # The same kernel with a pseudo-terminal as its console (E100): a command typed, `sleep 3`
+    # timed against the clock, Ctrl-] to leave.
+    python3 -I tools/console_test.py build/x64 images 64 2>/dev/null || fail=1
 fi
 exit $fail
