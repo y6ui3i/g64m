@@ -7994,3 +7994,98 @@ to 27.8 seconds (29.4 to 30.3): the card's first branch. Kept.**
 restores (16), with `save_start` (18) the largest things every instruction still pays
 before its own work. A short front for the commonest opcodes that needs few registers,
 the rest as now.
+
+## E110: a short front for the commonest instructions (2026-11-20)
+
+What every instruction still pays in `exec64` before its own work (E109's stepping, 166
+host instructions in `exec64` for each guest instruction): twelve registers saved and
+restored (16), the start saved in case of a fault (`save_start`, 18: sixteen registers,
+the flags, the level), the code page's test, the lookup and copy, and the way to the
+opcode's arm through `op`'s tests.
+
+- **Hypothesis**: **an instruction found in the decode cache whose kind is one of a dozen
+  (ALU with ModRM, MOV, the group 80h/81h/83h, TEST, LEA, MOVZX, PUSH, POP, CALL, RET, Jcc
+  and JMP) can be run at the top of `exec64`, by a jump on a kind kept in its entry,
+  without saving the registers: none of these changes a register before the last point it
+  can fault at. The rest of `exec64` becomes a function of its own that the front calls
+  for everything else. The boot takes under 315 host instructions for a guest instruction
+  (333 now).**
+- **What changed since last time**: E109 changed how the decoded instruction is held;
+  this is the first change to the order of work in `exec64`, and the first time the
+  start of an instruction is not saved in full. The fault path must know which it was.
+- **Next move for each result**:
+  - Under 315 → kept; step again and see what the front still pays (the code page's test
+    and the checks for a machine come next), and which kinds are missing by count
+  - 315 to 333 → kept if the tests hold; read the front's compiled code: if it still
+    saves twelve registers the split did not take, and the front is to be made smaller
+  - No change or worse → the front's instructions were not the common ones here, or the
+    second call costs what the save did: count kinds before anything else
+  - A test differs → a kind changes a register before a fault after all, or the fault
+    path restores what was not saved: the case into `y_fault`
+- **Cut-off**: the kinds named above, in `exec64` and the fault path. No change to
+  `modrm`, `alu`, the memory functions or the run loop.
+
+**Result: 289 host instructions for a guest instruction (333 before), and the boot in 24.4
+to 24.7 seconds (27.5 to 27.8): the card's first branch. Kept.**
+
+| Boot to the prompt (1,523,597,312 instructions) | Host instructions | Cycles | Time |
+|---|---:|---:|---:|
+| E109 | 507 thousand million (333 each) | 85.5 to 85.6 | 27.5 to 27.8 s |
+| this entry | 440 (289) | 76.6 to 76.8 | 24.4 to 24.7 s |
+| this entry, `--no-decode-cache` | 667 (438; 419 at E109) | | 37.5 s |
+
+It came in four steps, each measured:
+
+| Step | Host instructions for each |
+|---|---:|
+| E109 | 333 |
+| The front as the card had it: run on a hit, the rest called for all else | 328 |
+| The globals every instruction uses declared together, in front of the memory | 315 |
+| Two tests taken out of the lookup (is the cache on, is there a code page) | 308 |
+| The front run for its kinds the first time too, and the two-byte opcodes given their kinds | 289 |
+
+- **The first measurement was the card's second branch (328), and the compiled front said
+  why.** It saved ten registers where `exec64` had saved twelve, and a third of the
+  instructions paid for both functions. What it showed besides: every use of a global on
+  the far side of the 256 MB of memory took two host instructions more to build its
+  address. The globals lie in the order they are declared; the dozen that every
+  instruction reads are now declared together in front of the memory. 13 host
+  instructions, and no cycles: the count went down and the time did not.
+- **The wrong builds found that the front was hardly tested, and that part of it had never
+  run.** 16 of 28 passed at first. The front ran an instruction only when it was found in
+  the cache, the second time it is met, and most test programs run each instruction once;
+  the first time, the same opcodes went through arms of their own in the rest. And
+  `kind_of` tested "below 40h" before "is 0Fh", so MOVZX and the near Jcc never had a
+  kind: the front's arms for them were dead, and nothing said so because the rest ran
+  them correctly. Both are one mistake: two implementations of one instruction, of which
+  the tests saw one.
+- **So there is one implementation now.** An instruction of a kind is run by the front
+  whether it was in the cache or has just been decoded (`decode` is a function of its
+  own, `exec64_miss` calls it), and the rest has no arms for those opcodes. With the
+  two-byte opcodes in, 66% of the boot's instructions go through the front; that step was
+  the largest (308 to 289).
+- **The start of an instruction is saved in full only by the rest.** The front saves the
+  flags and clears `start_saved`; a fault puts back the registers and the level only if
+  they were saved. A fault or interrupt that is waiting is delivered after a full save.
+- **Held to the real CPU.** 19 programs and 8 system tests pass and the kernel boots its
+  four ways. New, with expected text from KVM: in `y_fault`, a fault's handler returns
+  with TF set, and the flags pushed for the single step after the next instruction have
+  no RF; in `y_tlb`, LEA with FS in front, and a RET to an address above 4 GB.
+- **Wrong builds: 25 of 27 caught**, 22 before the three new cases. The two that pass:
+  - *No full save before a waiting fault is delivered.* Delivery changes only the level
+    before it can fault, and what follows a fault in delivery is a double fault, which
+    shows nothing of the level it started at when it has a stack of its own, and ends the
+    run when it has none. No case that prints a difference was found.
+  - *The delta that makes the lookup find nothing where there is no code page, off by
+    one.* A code page is missing only for code outside the machine's memory, which no
+    test runs: what the real CPU reads there depends on how much memory it has.
+- **`--no-decode-cache` is slower than before** (438, 419 at E109): without the cache
+  every instruction is decoded, classified and then run, through two functions. It is a
+  switch for comparing, not a way to run.
+
+**Next.** `exec64` and the rest together are 152 of the 289 (stepped: 102 and 50), `main`
+31, `modrm` 29. The front still pays the checks for a machine and a waiting fault, the
+code page's test (and the level's), and ten registers. What the count no longer shows is
+where the cycles go: the globals' step took 13 instructions and no time. The next entry
+is to begin from cycles (the jump on the kind, the loads that follow the copy of `ins`),
+not from the instruction count.

@@ -137,6 +137,19 @@ test:
     PRINT [f_rsp]
     PRINT [f_frame]
     mov byte [abs IDT_AT + 6 * 16 + 4], 0
+    PUTS "RF from a fault's frame ends with the instruction come back to"
+    ; The fault's handler sets TF in the flags it returns with, so that the instruction it
+    ; returns to is followed by a single step: the flags pushed for that have no RF.
+    mov qword [f_resume], .rf1
+    mov qword [f_hook], rf_hook
+    mov ebx, 5
+    ud2
+.rf1:
+    mov eax, ebx
+    mov qword [f_hook], 0
+    PRINT [f_vec]
+    PRINT [f_flags]
+    PRINT rax
     PUTS "flags that privilege level 0 may change"
     push 0x3202
     popfq
@@ -207,6 +220,18 @@ test:
     PRINT [scratch]
     PRINT [f_count]
     EXIT
+
+; Called from the handler: sets TF in the flags of a fault's frame, and takes it out of a
+; single step's.
+rf_hook:
+    mov rax, [f_frame]
+    cmp qword [f_vec], 1
+    je .off
+    or qword [rax + 16], 0x100
+    ret
+.off:
+    and qword [rax + 16], ~0x100
+    ret
 
 align 16
 scratch: dq 0, 0

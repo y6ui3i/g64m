@@ -76,6 +76,9 @@ code changed by a store at another address of its page
 0000000000000064
 0000000000000063
 0000000000003003
+0000000000000808
+a return to an address above 4 GB
+0000000000000077
 a page of 2 MB invalidated by any address in it
 00000000000000C3
 0000000000000072
