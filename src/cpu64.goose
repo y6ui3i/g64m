@@ -134,21 +134,41 @@ inline fn sx(v: u64, w: u8) -> u64 {
 }
 
 // The block itself: i is inside it.
+// One test of the whole access, so that the bytes are taken by one load (E108). The callers
+// keep a under MEM_SIZE - 8; the test here is what lets the compiler see it.
+// The shape matters to the compiler: where two widths both begin with the byte at i it
+// takes that byte out in front of the test of the width, and then neither becomes one
+// load. So eight bytes are read from the top byte down, and four are in a function of
+// their own. A store of eight bytes is four and four; the upper four the compiler makes
+// vector instructions of (about fifteen), which three ways of writing it did not change.
 fn mem_rd(a: u64, w: u8) -> u64 {
+    if a >= MEM_SIZE - 8 { return 0; }
     let i = a as! i64;
+    if w == 64 {
+        let b7: u64 = mem[i + 7];
+        let b6: u64 = mem[i + 6];
+        let b5: u64 = mem[i + 5];
+        let b4: u64 = mem[i + 4];
+        let b3: u64 = mem[i + 3];
+        let b2: u64 = mem[i + 2];
+        let b1: u64 = mem[i + 1];
+        let b0: u64 = mem[i];
+        return b0 | b1 << 8 | b2 << 16 | b3 << 24 | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56;
+    }
+    if w == 32 { return ld32(i); }
+    if w == 8 { return mem[i]; }
     let b0: u64 = mem[i];
-    if w == 8 { return b0; }
     let b1: u64 = mem[i + 1];
-    if w == 16 { return b0 | b1 << 8; }
-    let b2: u64 = mem[i + 2];
-    let b3: u64 = mem[i + 3];
-    let lo = b0 | b1 << 8 | b2 << 16 | b3 << 24;
-    if w == 32 { return lo; }
-    let b4: u64 = mem[i + 4];
-    let b5: u64 = mem[i + 5];
-    let b6: u64 = mem[i + 6];
-    let b7: u64 = mem[i + 7];
-    return lo | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56;
+    return b0 | b1 << 8;
+}
+
+// Four bytes at once; i is known to be inside the block.
+fn ld32(i: i64) -> u64 {
+    let b0: u32 = mem[i];
+    let b1: u32 = mem[i + 1];
+    let b2: u32 = mem[i + 2];
+    let b3: u32 = mem[i + 3];
+    return b0 | b1 << 8 | b2 << 16 | b3 << 24;
 }
 
 // ---- The decode cache (E107) ----
@@ -185,7 +205,7 @@ var dc_on = true;                // --no-decode-cache clears it
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
 
 // A marked page was written to: its entries go.
-fn dc_drop(page: i64) {
+inline fn dc_drop(page: i64) {
     if dc_mark[page] != 1 { return; }
     let base = (page << 12) as! u64;
     for k in 4096 {
@@ -198,23 +218,37 @@ fn dc_drop(page: i64) {
 }
 
 fn mem_wr(a: u64, w: u8, v: u64) {
+    if a >= MEM_SIZE - 8 { return; }
     let i = a as! i64;
-    if dc_mark[i >> 12] | dc_mark[(i + 7) >> 12] != 0 {
-        dc_drop(i >> 12);
-        let last = (i + w / 8 - 1) >> 12;
-        if last != i >> 12 { dc_drop(last); }
+    // A store to a page that holds remembered instructions goes the long way, from an arm
+    // that returns, so that the usual store has no call in it.
+    if dc_mark[i >> 12] | dc_mark[(i + 7) >> 12] != 0 { mem_wr_marked(i, w, v); return; }
+    mem_put(i, w, v);
+}
+
+fn mem_wr_marked(i: i64, w: u8, v: u64) {
+    dc_drop(i >> 12);
+    let last = (i + w / 8 - 1) >> 12;
+    if last != i >> 12 { dc_drop(last); }
+    mem_put(i, w, v);
+}
+
+inline fn mem_put(i: i64, w: u8, v: u64) {
+    if w >= 32 {
+        st32(i, v as! u32);
+        if w == 64 { st32(i + 4, (v >> 32) as! u32); }
+        return;
     }
-    mem[i] = v as! u8;
-    if w == 8 { return; }
+    if w == 8 { mem[i] = v as! u8; return; }
     mem[i + 1] = (v >> 8) as! u8;
-    if w == 16 { return; }
+    mem[i] = v as! u8;
+}
+
+fn st32(i: i64, v: u32) {
+    mem[i] = v as! u8;
+    mem[i + 1] = (v >> 8) as! u8;
     mem[i + 2] = (v >> 16) as! u8;
     mem[i + 3] = (v >> 24) as! u8;
-    if w == 32 { return; }
-    mem[i + 4] = (v >> 32) as! u8;
-    mem[i + 5] = (v >> 40) as! u8;
-    mem[i + 6] = (v >> 48) as! u8;
-    mem[i + 7] = (v >> 56) as! u8;
 }
 
 // A program's view of memory: in a user-mode program the block itself, in a machine through

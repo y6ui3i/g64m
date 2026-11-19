@@ -312,6 +312,24 @@ test:
     call rbx
     PRINT rax
 
+    PUTS "stores and loads that reach one byte into the next page"
+    ; The two pages are not neighbours in memory: the byte that crosses must be found on the
+    ; second, and the page that follows the first in memory must stay as it was (E108).
+    mov rbx, V + 0x40FF9
+    mov rax, 0x8877665544332211
+    mov [rbx], rax
+    PRINT [rbx]
+    PRINT [abs P + 0x22000]
+    mov dword [rbx + 4], 0xAABBCCDD
+    mov eax, [rbx + 4]
+    PRINT rax
+    PRINT [abs P + 0x22000]
+    mov word [rbx + 6], 0x1234
+    movzx eax, word [rbx + 6]
+    PRINT rax
+    PRINT [abs P + 0x22000]
+    PRINT [abs P + 0x21000]
+
     PUTS "code changed by a store at another address of its page"
     ; One page at two addresses, and at its own. What runs at the first is put there, and
     ; then changed, by stores at the others, after it has run three times (E107).

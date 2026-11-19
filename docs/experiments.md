@@ -7834,3 +7834,74 @@ them a structure: `mem_rd` and `mem_wr` a word at a time (72 host instructions f
 bytes now); the instruction's state in a few locals or one small record instead of
 globals far apart; the start of the instruction saved only when something can fault.
 After those, the common forms on this table, as the card said.
+
+## E108: memory read and written a word at a time (2026-11-19)
+
+- **Hypothesis**: E107's listing of one `ret`: the eight bytes of the return address cost
+  72 host instructions in `mem_rd` (each byte's index tested against the block's size,
+  each byte loaded by itself), after 49 in `sys_rd` (twelve registers saved for a loop
+  that only an access across two pages runs) and before `pop`'s 28. The 32-bit machine
+  has had this since E061: one test of the whole access, after which the compiler makes
+  the byte loads one load (`mem32` in state.goose). **With one test for the whole access
+  in `mem_rd` and `mem_wr`, and the access across two pages moved out of `sys_rd` and
+  `sys_wr` into functions of its own, a guest instruction costs under 375 host
+  instructions (399 now) and the boot takes 30 seconds or under (31.4 to 31.9).**
+- **What changed since last time**: E107 added a structure and its listing showed that
+  plain memory access costs more than the structure saves. Nothing is added here: the same
+  functions, the same order of translation, faults and stores; fewer tests.
+- **Next move for each result**:
+  - Under 375 → kept; next is the instruction's state near at hand (E107's second item),
+    measured the same way
+  - 375 to 399 → kept if the tests hold; step one read and one store again to see what is
+    left in them (the TLB's index, the decode cache's watch) before going on
+  - No change → the compiler had merged the loads elsewhere and the listing's `ret` was
+    not typical: count accesses by width before anything else
+  - A test differs → a width or the page's end is wrong: the case into `y_paging`
+- **Cut-off**: `mem_rd`, `mem_wr`, `sys_rd`, `sys_wr` and `rd`/`wr` only. The stack
+  functions, the strings and the TLB's layout stay as they are.
+
+**Result: 378 host instructions for a guest instruction (399 before), and the boot in 29.4
+to 30.3 seconds (31.4 to 31.9): the card's second branch, by three instructions. Kept.**
+
+| Boot to the prompt (1,523,597,312 instructions) | Host instructions | Cycles | Time |
+|---|---:|---:|---:|
+| E107 | 608 thousand million (399 each) | 96.8 to 97.1 | 31.4 to 31.9 s |
+| this entry | 575 (378) | 92.4 to 93.0 | 29.4 to 30.3 s |
+
+- **Writing "one test" was not enough; the compiler had to be led.** Each step was read
+  in the compiled code before it was measured:
+  - One test of the whole access, and the bytes still loaded one by one: 393. Where two
+    widths both begin with the byte at the address, the compiler takes that load out in
+    front of the test of the width, and what is left in each arm is no longer a pattern it
+    makes one load of. Eight bytes read from the top byte down, and four in a function of
+    their own: `mem_rd` is one `ldr` for each width (25 host instructions in all, 72
+    executed before for eight bytes).
+  - The access across two pages in a function of its own: put back by the compiler, since
+    it had one caller. Goose keeps a callee out of line when it is called from an arm that
+    ends in `return` while the other path goes on (its implementation notes, "cold
+    branch"): the test turned round, and `rd` is one function of 87 host instructions
+    that saves two registers, where `sys_rd` saved twelve. 379.
+  - The store to a marked page the same way (`mem_wr_marked`): 378.
+  - A store of eight bytes: the lower four are one `str`, the upper four become about
+    fifteen vector instructions. Three other ways of writing it were tried (top byte down;
+    under a test of its own; a function of its own) and compiled the same; a fourth (the
+    upper half through a variable mask) gave four byte stores and 0.07%. Left as it is.
+- **Held to the real CPU.** 18 programs and 8 system tests pass and the kernel boots its
+  four ways. New in `y_tlb` (83 lines, from KVM): stores and loads of eight, four and two
+  bytes that reach exactly one byte into the next page, where the two pages are not
+  neighbours in memory.
+- **Wrong builds: 14 of 14 caught**, 13 at first. The one that passed (a store that
+  crosses by one byte taken as not crossing) had no test: the stores across a page in the
+  tests crossed by two bytes or more. A fifteenth was no wrong build (an access that
+  exactly fits sent the long way gives the same result).
+- **The wrong builds' script filled memory** (870 MB before the owner saw it): a wrong
+  build that never reaches its end prints its trace without end, and the script kept all
+  of it. It now reads no more than the expected text and one byte, and gives the trace
+  runs a limit of instructions.
+
+**Next.** As the card said for this branch, what is left in an access, read from the
+compiled code: `rd` is the test for a machine, the page's end, the TLB's index (which
+table, by the kind of access and the privilege level), tag and load, then `mem_rd`'s test
+of the block's end and the width: about 30 executed for a read that was 150. The larger
+part of the 378 is `exec64` itself again. Next is E107's second item, the instruction's
+state near at hand, and with it the twelve registers `exec64` saves.
