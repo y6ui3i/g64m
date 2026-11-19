@@ -150,6 +150,9 @@ devices on a CPU that is still moving.
   every time, at some 30 million a second.
   - Done since: the terminal as its console (E100); the disk (E101); the network (E102);
     the frame buffer and its window (E103).
+  - Speed: surveyed before anything is changed (E104, [perf64.md](perf64.md)): 654 host
+    instructions for a guest instruction, nine tenths of them before the instruction's
+    own work; the list of what to try is there.
 
 ### M11: a backend for Docker
 
