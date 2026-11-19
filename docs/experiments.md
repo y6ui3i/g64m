@@ -6943,3 +6943,97 @@ The test was wrong; and nothing here may read memory it has not written.
 
 **Next.** The devices (E097): the interrupt controller, the timer and the serial port of
 the 32-bit machine behind the 64-bit CPU, interrupts from outside, a HLT that wakes.
+
+## E097: the 32-bit machine's devices behind the 64-bit CPU; interrupts from outside (2026-11-19)
+
+The fourth step of M10's kernel half, and the test of what the roadmap has said since M6:
+"the devices carry over".
+
+- **Hypothesis**: `src/dev.goose` (the two interrupt controllers, the timer, the serial
+  port, the keyboard controller, the clock, the IDE disk, PCI and the network card) knows
+  the CPU it serves only by one line, `import state`, and by the virtual time it reads:
+  it reads no register and no memory. **With that line gone the file is in both programs
+  unchanged otherwise; the 32-bit machine's suite and layout check are as they were; and
+  the 64-bit CPU, given the same file, a virtual time, interrupts taken between
+  instructions when IF allows (not in the instruction after STI), and a HLT that waits
+  for one, prints the same as the real CPU under KVM in a test that counts timer
+  interrupts, takes one at privilege level 3, holds one while IF is clear, and takes the
+  serial port's and the timer's in the order of their lines.**
+- **What changed since last time**: the 64-bit machine had two ports, both in `x64.goose`,
+  and HLT ended the run. E095 left interrupts from outside for this step.
+- **Next move for each result**:
+  - The file is shared, both suites pass, the test prints the same → kept; next is the
+    x87 and FXSAVE (E098)
+  - The 32-bit suite or its layout check changes with the one line gone → the devices
+    are split from what is the 32-bit machine's own in that file, in a way that leaves
+    its globals where they are; if that cannot be done without moving them, a copy for
+    the 64-bit CPU and a note of what is doubled
+  - The test differs in something that depends on how long things take (how many
+    instructions a tick is, when the serial port's interrupt comes) → that is not the
+    CPU's and not compared: the test is changed to print only what does not depend on it
+  - The test differs in the order or the frame of an interrupt → the CPU's side is
+    wrong: fix, with a wrong build
+- **Cut-off**: the interrupt controllers, the timer and the serial port are what the test
+  uses; the rest of the file comes along untested here. No local APIC (CPUID does not
+  offer one; the kernel then uses the 8259s).
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: `src/dev.goose` is in both programs with
+one line taken out and nothing else changed; the 32-bit suite is 163 lines ok and its
+layout check passes; and `y_irq`, 27 lines, prints the same on the 64-bit CPU as on the
+real CPU under KVM, with the five earlier system tests.** "The devices carry over" was
+true to the letter: the file read no register and no memory of the CPU it served.
+
+**What was built.**
+- `src/dev.goose`: `import state;` removed. The names it uses from outside are two, the
+  virtual time and the table of ports nothing answers, and each program has its own.
+- `src/x64.goose`: `between()`, what the machine does between two instructions: the
+  timer's tick when its time has come, sleep while halted (virtual time goes straight to
+  the next tick; with IF clear or no timer running, nothing can wake it and the run ends
+  saying so), and a request from the interrupt controller taken when IF is set, no fault
+  is waiting, and the instruction just done was not an STI that set IF. It is delivered as
+  a trap: the next instruction's address, no RF. The run loop calls it only when the
+  timer is due, the machine is halted or a request is waiting. `io_in` and `io_out` go to
+  the devices' ports at 8, 16 and 32 bits; port F4h still stops the machine.
+- `src/x64.build`: the two C files the devices need (the disk, the network).
+- Tests: `y_irq`; `tests/sys64/ring3.inc`, the visit to level 3 that `y_tlb` had, shared;
+  sixteen more stubs in `idt.inc` for the controllers' vectors.
+
+**The loop of E096** takes 1.93 seconds with the devices in (1.83 before): the store of
+the virtual time and the test at each instruction, 5%.
+
+**What depended on how long things take, and was taken out of the test** (the card's third
+branch, three times):
+- With the first interrupt not yet answered, the test waited for the controller to show
+  a second request. Under KVM it waited for ever: KVM's timer does not send a tick while
+  the one before is unanswered. Here the controller keeps the second. That is the timer's
+  model, not the CPU's; the test now watches the timer's counter go round twice instead,
+  and both agree that no second interrupt arrives.
+- After the answer, a HLT waited one tick longer here than there, for the same reason;
+  the test spins there instead.
+- A count of every handler entry at the end was dropped.
+
+**Two faults of the tools, both found by reading the output and not by a failing
+comparison.**
+- **`tools/systest64.sh` took a test that never finished for its expected text.** The run
+  under KVM hung, was cut off at thirty seconds twice, and the two cut-off outputs were
+  the same. The script now also wants QEMU's status to be the one the test's own EXIT
+  gives.
+- **The wrong-build runs had a limit of three million instructions, and `y_irq` sleeps
+  past that** (a tick is 763,648 instructions here): every wrong build "was caught", by
+  not finishing. Seen because wrong builds that could not matter were caught too. The
+  limit is three hundred million.
+- And the test's last part printed that no interrupt came, on both CPUs: coming back
+  from level 3 had taken the handler's hook away. A test that agrees with the real CPU
+  can still be testing nothing.
+
+**Wrong builds.** 11 (`build/mut97.py`). Seven caught, one of them after a case was added
+(one HLT ends with one interrupt). Four are not, and are named: an STI shadow even when
+IF was already set (nothing can be made to depend on it); waking from HLT with IF clear
+(the real CPU would sleep for ever, so there is nothing to compare); and 16-bit and 32-bit
+port access, which no device this test uses needs. The last two are for the disk's and
+PCI's tests.
+
+**Not done, and next.** The devices beyond the three are untested behind this CPU. No
+local APIC. Next: the x87 and FXSAVE (E098), then the kernel.

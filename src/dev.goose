@@ -3,7 +3,6 @@
 
 import std;
 import os;
-import state;
 
 // ---- Interrupt controllers (8259 pair) ----
 

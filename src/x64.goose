@@ -20,6 +20,7 @@ import os;
 import cpu64;
 import sse64;
 import sys64;
+import dev;
 
 var out: u8[>..];
 var trace_buf: u8[>..];
@@ -90,19 +91,54 @@ fn syscall64() {
     }
 }
 
-// ---- Ports (a machine's; E094 has two) ----
+// ---- The machine around the CPU (E097) ----
 //
-// 3F8h: the serial port's data, which goes to standard output; 3FDh: its status, always
-// ready. F4h: a write stops the machine, as QEMU's isa-debug-exit device does.
+// The devices are the 32-bit machine's (dev.goose): the interrupt controllers, the timer, the
+// serial port and the rest, reached by I/O ports. They keep time by `vtime`, the count of
+// instructions. One port is this file's: a write to F4h stops the machine, as QEMU's
+// isa-debug-exit device does. What the guest sends to the serial port is printed when the
+// run ends.
 
-fn port_in(port: u64, w: u8) -> u64 {
-    if port == 0x3FD { return 0x60; }
-    return mask(w);
+var vtime = 0;                               // virtual time, in instructions: what the devices read
+var unknown_ports: u8[65536] = [0; 65536];   // how often each port that nothing answers was used
+
+fn io_in(port: u64, w: u8) -> u64 {
+    let p = port as! u16;
+    if w == 8 { return port_in8(p); }
+    let lo: u64 = port_in(p);
+    if w == 16 { return lo; }
+    let hi: u64 = port_in(p + 2);
+    return lo | hi << 16;
 }
 
-fn port_out(port: u64, w: u8, v: u64) {
-    if port == 0x3F8 { out.push(v as! u8); }
-    else if port == 0xF4 { stopped = true; }
+fn io_out(port: u64, w: u8, v: u64) {
+    if port == 0xF4 { stopped = true; return; }
+    let p = port as! u16;
+    if w == 8 { port_out8(p, v as! u8); return; }
+    port_out(p, v as! u16);
+    if w == 32 { port_out(p + 2, (v >> 16) as! u16); }
+}
+
+// What the machine does between two instructions: the timer, a halt, and an interrupt from
+// outside when IF allows one. False when nothing can ever wake a halted machine.
+fn between() -> bool {
+    if timer_on && vtime >= timer_at { timer_fire(); }
+    if halted {
+        if !irq_line || rflags & IF == 0 {
+            // Asleep. Time passes to the timer's next tick, if there is one to wait for.
+            if rflags & IF == 0 || !timer_on { return false; }
+            steps = timer_at as! u64;
+            return true;
+        }
+        halted = false;
+    }
+    if irq_line && rflags & IF != 0 && !sti_shadow && pending < 0 {
+        // Delivered like a trap: the address pushed is the next instruction's, without RF.
+        pending = pic_ack();
+        pending_has_err = false;
+        pending_trap = true;
+    }
+    return true;
 }
 
 fn le(img: u8[:], at: i64, n: i64) -> u64 {
@@ -189,15 +225,28 @@ fn main() {
     let problem = if is_test_image(img) { load_test_image(img) } else { load_elf(img) };
     guard problem.len == 0 else { write_stderr(str("x64: ", problem, "\n")); exit(2); }
 
+    tick_insns = 64;
+    timer_on = false;
+    var asleep = false;
     while !stopped && steps < max {
+        // The devices' time is the instruction count. Only when the timer is due, the
+        // machine is asleep or a request is waiting is there anything to do between two
+        // instructions.
+        vtime = steps as! i64;
+        if machine && ((timer_on && vtime >= timer_at) || halted || irq_line) {
+            if !between() { asleep = true; break; }
+            if halted { continue; }
+        }
         let tf = rflags & 0x100 != 0;
+        let shadow = sti_shadow;
         if exec64() && machine { single_step(tf); }
+        if shadow { sti_shadow = false; }
         steps += 1;
         if trace && !stopped { trace_line(); }
     }
-    if trace { write_stdout(trace_buf); } else { write_stdout(out); }
+    if trace { write_stdout(trace_buf); } else { write_stdout(out); write_stdout(com_out); }
+    if asleep { write_stderr("x64: halted, with nothing to wake it\n"); exit(3); }
     if !stopped { write_stderr("x64: stopped at the limit of --max\n"); exit(1); }
-    if halted { write_stderr("x64: halted, with nothing to wake it\n"); exit(3); }
     if faulted { exit(1); }
     exit(exit_code as! i32);
 }
