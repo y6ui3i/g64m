@@ -87,6 +87,10 @@ a stack from the TSS for one gate
 02008B3450000067
 00000000001F0000
 000000000019FFD8
+RF from a fault's frame ends with the instruction come back to
+0000000000000001
+0000000000000146
+0000000000000005
 flags that privilege level 0 may change
 0000000000003202
 IRETQ gives back IF and IOPL at privilege level 0
@@ -109,4 +113,4 @@ the tables' registers
 FFFFFFFFFFFF0010
 0000000000000010
 FFFFFFFFFFFF0008
-0000000000000010
+0000000000000012

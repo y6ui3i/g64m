@@ -364,6 +364,21 @@ test:
     mov ecx, 0x800
     xor eax, eax
     THRICE
+    ; LEA with FS in front takes nothing from FS's base.
+    db 0x64
+    lea rax, [rcx + 8]
+    PRINT rax
+    PUTS "a return to an address above 4 GB"
+    MAP V + 0x100062000, P + 0x14000, 3
+    mov rax, 0x0000C300000077B8             ; MOV EAX, 77h, and RET
+    mov [r13 + 0x100], rax
+    lea rdx, [.high_back]
+    push rdx
+    mov rdx, V + 0x100062100
+    push rdx
+    ret
+.high_back:
+    PRINT rax
 
     PUTS "a page of 2 MB invalidated by any address in it"
     mov rdi, V + 0x400000

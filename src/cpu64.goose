@@ -73,11 +73,11 @@ struct Ins {
     base: u8,            // the base register; 16 none, 17 RIP
     index: u8,           // the index register; 16 none
     scale: u8,
-    spare: u8,
+    kind: u8,            // which arm of the short front runs it (K_...); 0 none
     disp: u64,           // the displacement, sign-extended
 }
 var ins: Ins = Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
-                     mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, spare: 0, disp: 0 };
+                     mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, kind: 0, disp: 0 };
 
 // The ModRM byte's fields as the x87 reads them (fpu.goose, shared with the 32-bit machine):
 // 0 to 7 each, set for an escape opcode only.
@@ -100,6 +100,23 @@ var sti_shadow = false;      // the instruction at hand follows an STI that set 
 var stopped = false;
 var faulted = false;
 var exit_code: i64 = 0;
+
+// What every instruction reads or writes before its own work, kept together and in front
+// of the memory (E110): globals lie in the order they are declared, and one that is far
+// from the rest costs two host instructions more at each use. The code page's are
+// described at code_fill, the decode cache's at its head, the last six in sys64.goose.
+var code_page: u64 = 0xFFFFFFFFFFFFFFFF;     // its page number; all ones for none
+var code_end: u64 = 0;                       // the address just past it; 0 for none
+var code_delta: u64 = 0;                     // what to take from an address on it to index memory
+var dc_cur: i64 = -1;            // the entry of the instruction at hand; -1 if it can have none
+var saved_flags: u64 = 0;         // the flags the instruction at hand started with
+var pending: i64 = -1;            // a fault or interrupt waiting to be delivered; -1 none
+var code_cpl: u8 = 0;                        // the privilege level it was taken at
+var dc_on = true;                // --no-decode-cache clears it
+var start_saved = false;          // the registers and the level were saved; the flags always are
+var delivered = false;
+var machine = false;
+var cpl: u8 = 3;
 
 var mem: u8[MEM_SIZE];
 
@@ -222,11 +239,9 @@ struct Entry {
     ins: Ins,
 }
 var dc: Entry[DC_SIZE] = [Entry { tag: 0xFFFFFFFFFFFFFFFF, ins: Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
-                          mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, spare: 0, disp: 0 } }; DC_SIZE];
+                          mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, kind: 0, disp: 0 } }; DC_SIZE];
 var dc_mark: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];      // 1: holds entries; 2: given up
 var dc_drops: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
-var dc_cur: i64 = -1;            // the entry of the instruction at hand; -1 if it can have none
-var dc_on = true;                // --no-decode-cache clears it
 
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
 
@@ -316,14 +331,13 @@ fn code_rd(a: u64, w: u8) -> u64 {
 // check that it may be executed, when RIP is on another page or the privilege level has
 // changed, and forgotten when the TLB is emptied or a page of it forgotten. A byte that is
 // not on it (an instruction that runs across the page's end) goes the long way.
-var code_page: u64 = 0xFFFFFFFFFFFFFFFF;     // its page number; all ones for none
-var code_end: u64 = 0;                       // the address just past it; 0 for none
-var code_delta: u64 = 0;                     // what to take from an address on it to index memory
-var code_cpl: u8 = 0;                        // the privilege level it was taken at
 
 fn code_fill() {
     code_page = 0xFFFFFFFFFFFFFFFF;
     code_end = 0;
+    // With no code page the decode cache is to find nothing: RIP less this is an address
+    // that is no entry's tag, and not the tag of an empty one either.
+    code_delta = rip + 2;
     let start = rip & 0xFFFFFFFFFFFFF000;
     var p = start;
     if machine { p = xlate(rip, ACC_EXEC) & 0xFFFFFFFFFFFFF000; }
@@ -923,77 +937,92 @@ fn cpuid() {
 
 // ---- One instruction ----
 
+// The kinds of instruction the short front runs (E110). None of them changes a register
+// before the last point it can fault at, so the front does not save the registers
+// (start_saved, sys64.goose): a fault finds them as the instruction found them.
+let K_ALU = 1;          // 00h to 3Bh with a ModRM byte
+let K_GRP1 = 2;         // 80h, 81h, 83h
+let K_TEST = 3;         // 84h, 85h
+let K_MOV = 4;          // 88h to 8Bh
+let K_LEA = 5;
+let K_PUSH = 6;         // 50h to 57h
+let K_POP = 7;          // 58h to 5Fh
+let K_CALL = 8;         // E8h
+let K_RET = 9;          // C3h
+let K_JMP8 = 10;
+let K_JMP32 = 11;
+let K_MOVZX8 = 12;      // 0F B6h
+let K_MOVZX16 = 13;     // 0F B7h
+let K_JCC8 = 0x10;      // 70h to 7Fh
+let K_JCC32 = 0x20;     // 0F 80h to 8Fh: with the condition in the low four bits
+
+// The kind of the instruction whose prefixes and opcode have just been read. (F2h and F3h
+// in front of these do nothing.)
+fn kind_of(op: u8) -> u8 {
+    if op == 0x0F {
+        let op2 = peek8() as! u8;
+        if op2 & 0xF0 == 0x80 { return K_JCC32 | op2 & 15; }
+        if op2 == 0xB6 { return K_MOVZX8; }
+        if op2 == 0xB7 { return K_MOVZX16; }
+        return 0;
+    }
+    if op < 0x40 { return if op & 7 < 4 { K_ALU } else { 0 }; }
+    if op >= 0x50 && op < 0x58 { return K_PUSH; }
+    if op >= 0x58 && op < 0x60 { return K_POP; }
+    if op >= 0x70 && op < 0x80 { return K_JCC8; }
+    if op == 0x80 || op == 0x81 || op == 0x83 { return K_GRP1; }
+    if op == 0x84 || op == 0x85 { return K_TEST; }
+    if op >= 0x88 && op < 0x8C { return K_MOV; }
+    if op == 0x8D { return K_LEA; }
+    if op == 0xC3 { return K_RET; }
+    if op == 0xE8 { return K_CALL; }
+    if op == 0xE9 { return K_JMP32; }
+    if op == 0xEB { return K_JMP8; }
+    return 0;
+}
+
 // Runs the instruction at RIP. False if the run stopped in it.
+//
+// The short front: an instruction found in the decode cache with a kind is run here. All
+// else goes to exec64_rest, which is the whole CPU.
 fn exec64() -> bool {
     if machine {
         delivered = false;
-        if pending >= 0 { deliver_pending(); return true; }
-        save_start();
+        if pending >= 0 { save_start(); deliver_pending(); return true; }
+        start_saved = false;
+        saved_flags = rflags;
     }
     if rip >> 12 != code_page || cpl != code_cpl { code_fill(); }
     ip = rip;
-    var op: u8 = 0;
-    var known = false;
-    dc_cur = -1;
-    if dc_on && code_end != 0 {
-        // The decode cache: found by the instruction's physical address.
-        let ph = rip - code_delta;
-        let slot = dc_slot(ph);
-        dc_cur = slot;
-        if dc[slot].tag == ph {
-            ins = dc[slot].ins;
-            op = ins.op;
-            ip = rip + ins.plen;
-            known = true;
-        }
-    }
-    if !known {
-        ins.rex = 0;
-        ins.rep = 0;
-        ins.p66 = false;
-        ins.asz32 = false;
-        ins.sg = 0;
-        while true {
-            op = fb() as! u8;
-            if op & 0xF0 == 0x40 { ins.rex = op; continue; }
-            match op {
-                0x66 => { ins.p66 = true; },
-                0x67 => { ins.asz32 = true; },
-                0xF2, 0xF3 => { ins.rep = op; },
-                0xF0, 0x26, 0x2E, 0x36, 0x3E => {},
-                0x64 => { ins.sg = 1; },
-                0x65 => { ins.sg = 2; },
-                _ => { break; },
-            }
-            // A REX prefix counts only when it is the last prefix.
-            ins.rex = 0;
-        }
-        ins.op = op;
-        ins.osz = if ins.rex & 8 != 0 { 64 } else if ins.p66 { 16 } else { 32 };
-        ins.plen = (ip - rip) as! u8;
-        ins.mlen = 0;
-        if dc_cur >= 0 {
-            // Remembered, if the prefixes and the opcode lie on the page and the page has
-            // not been given up.
-            let ph = rip - code_delta;
-            let page = (ph >> 12) as! i64;
-            if ip <= code_end && ip - rip <= 15 && dc_mark[page] != 2 {
-                dc[dc_cur].tag = ph;
-                dc[dc_cur].ins = ins;
-                dc_mark[page] = 1;
-            } else { dc_cur = -1; }
-        }
-    }
-    let w: u8 = if op & 1 == 0 { 8 } else { ins.osz };
-    let low: u8 = op & 7 | (ins.rex & 1) << 3;         // the register in the opcode's low bits
-    var next: u64 = 0;                             // where to go, when not to the next instruction
-    var jump = false;
-    rflags &= ~RF;
+    // The decode cache: found by the instruction's physical address. Where there is no code
+    // page, code_fill has left a delta that gives an address no entry has.
+    let ph = rip - code_delta;
+    let slot = dc_slot(ph);
+    dc_cur = slot;
+    if dc[slot].tag != ph { return exec64_miss(); }
+    ins = dc[slot].ins;
+    if ins.kind == 0 { return exec64_rest(); }
+    return run_kind();
+}
 
-    if op < 0x40 && op & 7 < 6 {
-        let k = op >> 3;
-        if op & 7 < 4 {
+// An instruction that was not in the decode cache: decoded, and run as any other.
+fn exec64_miss() -> bool {
+    decode();
+    if ins.kind == 0 { return exec64_rest(); }
+    return run_kind();
+}
+
+// The short front's arms. Every instruction of these kinds is run here, met for the first
+// time or not: exec64_rest has no arms for them.
+inline fn run_kind() -> bool {
+    let op = ins.op;
+    let w: u8 = if op & 1 == 0 { 8 } else { ins.osz };
+    ip = rip + ins.plen;
+    rflags &= ~RF;
+    match ins.kind {
+        K_ALU => {
             modrm(0);
+            let k = op >> 3;
             if op & 2 == 0 {
                 let r = alu(k, rm_get(w), gr(ins.reg, w), w);
                 if k != 7 { rm_set(w, r); }
@@ -1001,10 +1030,106 @@ fn exec64() -> bool {
                 let r = alu(k, gr(ins.reg, w), rm_get(w), w);
                 if k != 7 { sr(ins.reg, w, r); }
             }
-        } else {
-            let r = alu(k, gr(RAX, w), fimm(w), w);
-            if k != 7 { sr(RAX, w, r); }
+        },
+        K_GRP1 => {
+            modrm(if op == 0x81 { imm_len(ins.osz) } else { 1 });
+            let b = if op == 0x81 { fimm(ins.osz) } else { fs8() };
+            let r = alu(ins.reg & 7, rm_get(w), b, w);
+            if ins.reg & 7 != 7 { rm_set(w, r); }
+        },
+        K_TEST => { modrm(0); alu(4, rm_get(w), gr(ins.reg, w), w); },
+        K_MOV => {
+            modrm(0);
+            if op & 2 == 0 { rm_set(w, gr(ins.reg, w)); } else { sr(ins.reg, w, rm_get(w)); }
+        },
+        K_LEA => {
+            modrm(0);
+            if ins.mod == 3 { stop64("LEA of a register,", op); }
+            sr(ins.reg, ins.osz, m_off);
+        },
+        K_PUSH => { let low: u8 = op & 7 | (ins.rex & 1) << 3; push(gr(low, ssz()), ssz()); },
+        K_POP => { let low: u8 = op & 7 | (ins.rex & 1) << 3; let v = pop(ssz()); sr(low, ssz(), v); },
+        K_CALL => { let d = fs32(); push(ip, 64); rip = ip + d; return true; },
+        K_RET => { rip = pop(64); return true; },
+        K_JMP8 => { let d = fs8(); rip = ip + d; return true; },
+        K_JMP32 => { let d = fs32(); rip = ip + d; return true; },
+        K_MOVZX8 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, rm_get(8)); },
+        K_MOVZX16 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, rm_get(16)); },
+        _ => {
+            if ins.kind & K_JCC32 != 0 {
+                ip += 1;
+                let d = fs32();
+                if cond(ins.kind & 15) { rip = ip + d; return true; }
+            } else {
+                let d = fs8();
+                if cond(op & 15) { rip = ip + d; return true; }
+            }
+        },
+    }
+    rip = ip;
+    return true;
+}
+
+// Reads the prefixes and the opcode into `ins`, with the instruction's kind, and remembers
+// them if it may.
+fn decode() {
+    var op: u8 = 0;
+    if !dc_on { dc_cur = -1; }
+    ins.rex = 0;
+    ins.rep = 0;
+    ins.p66 = false;
+    ins.asz32 = false;
+    ins.sg = 0;
+    while true {
+        op = fb() as! u8;
+        if op & 0xF0 == 0x40 { ins.rex = op; continue; }
+        match op {
+            0x66 => { ins.p66 = true; },
+            0x67 => { ins.asz32 = true; },
+            0xF2, 0xF3 => { ins.rep = op; },
+            0xF0, 0x26, 0x2E, 0x36, 0x3E => {},
+            0x64 => { ins.sg = 1; },
+            0x65 => { ins.sg = 2; },
+            _ => { break; },
         }
+        // A REX prefix counts only when it is the last prefix.
+        ins.rex = 0;
+    }
+    ins.op = op;
+    ins.osz = if ins.rex & 8 != 0 { 64 } else if ins.p66 { 16 } else { 32 };
+    ins.plen = (ip - rip) as! u8;
+    ins.mlen = 0;
+    ins.kind = kind_of(op);
+    if dc_cur >= 0 {
+        // Remembered, if the prefixes and the opcode lie on the page and the page has
+        // not been given up.
+        let ph = rip - code_delta;
+        let page = (ph >> 12) as! i64;
+        if ip <= code_end && ip - rip <= 15 && dc_mark[page] != 2 {
+            dc[dc_cur].tag = ph;
+            dc[dc_cur].ins = ins;
+            dc_mark[page] = 1;
+        } else { dc_cur = -1; }
+    }
+}
+
+// The rest of the CPU: every instruction the front has no kind for. `ins` holds its
+// prefixes and opcode.
+fn exec64_rest() -> bool {
+    if machine { save_start(); }
+    let op = ins.op;
+    ip = rip + ins.plen;
+    let w: u8 = if op & 1 == 0 { 8 } else { ins.osz };
+    let low: u8 = op & 7 | (ins.rex & 1) << 3;         // the register in the opcode's low bits
+    var next: u64 = 0;                             // where to go, when not to the next instruction
+    var jump = false;
+    rflags &= ~RF;
+
+    // (Arms that are not here are the short front's: run_kind.)
+    if op < 0x40 && op & 7 < 6 {
+        let k = op >> 3;
+        let r = alu(k, gr(RAX, w), fimm(w), w);
+        if k != 7 { sr(RAX, w, r); }
     } else if op == 0x0F {
         let op2 = fb() as! u8;
         let w2: u8 = if op2 & 1 == 0 { 8 } else { ins.osz };
@@ -1065,10 +1190,6 @@ fn exec64() -> bool {
                 // With a 32-bit operand the upper half is cleared whether it moves or not.
                 if cond(op2 & 15) { sr(ins.reg, ins.osz, v); } else if ins.osz == 32 { sr(ins.reg, 32, gr(ins.reg, 32)); }
             },
-            0x8 => {
-                let d = fs32();
-                if cond(op2 & 15) { next = ip + d; jump = true; }
-            },
             0x9 => {
                 modrm(0);
                 rm_set(8, if cond(op2 & 15) { 1 } else { 0 });
@@ -1108,7 +1229,6 @@ fn exec64() -> bool {
                     },
                     0xB3 => { modrm(0); bit_op(2, ins.osz, gr(ins.reg, ins.osz), true); },
                     0xBB => { modrm(0); bit_op(3, ins.osz, gr(ins.reg, ins.osz), true); },
-                    0xB6, 0xB7 => { modrm(0); sr(ins.reg, ins.osz, rm_get(if op2 == 0xB6 { 8 } else { 16 })); },
                     0xBE => { modrm(0); sr(ins.reg, ins.osz, sx(rm_get(8), 8)); },
                     0xBF => { modrm(0); sr(ins.reg, ins.osz, sx(rm_get(16), 16)); },
                     0xBA => {
@@ -1184,10 +1304,6 @@ fn exec64() -> bool {
         }
     } else {
         match op >> 4 {
-            0x5 => {
-                if op < 0x58 { push(gr(low, ssz()), ssz()); }
-                else { let v = pop(ssz()); sr(low, ssz(), v); }
-            },
             0x6 => {
                 match op {
                     0x63 => {
@@ -1203,32 +1319,14 @@ fn exec64() -> bool {
                     _ => { stop64("an instruction not written yet,", op); },
                 }
             },
-            0x7 => {
-                let d = fs8();
-                if cond(op & 15) { next = ip + d; jump = true; }
-            },
             0x8 => {
                 match op {
-                    0x80, 0x81, 0x83 => {
-                        modrm(if op == 0x81 { imm_len(ins.osz) } else { 1 });
-                        let b = if op == 0x81 { fimm(ins.osz) } else { fs8() };
-                        let r = alu(ins.reg & 7, rm_get(w), b, w);
-                        if ins.reg & 7 != 7 { rm_set(w, r); }
-                    },
-                    0x84, 0x85 => { modrm(0); alu(4, rm_get(w), gr(ins.reg, w), w); },
                     0x86, 0x87 => {
                         modrm(0);
                         let a = rm_get(w);
                         let b = gr(ins.reg, w);
                         rm_set(w, b);
                         sr(ins.reg, w, a);
-                    },
-                    0x88, 0x89 => { modrm(0); rm_set(w, gr(ins.reg, w)); },
-                    0x8A, 0x8B => { modrm(0); sr(ins.reg, w, rm_get(w)); },
-                    0x8D => {
-                        modrm(0);
-                        if ins.mod == 3 { stop64("LEA of a register,", op); }
-                        sr(ins.reg, ins.osz, m_off);
                     },
                     0x8C => {
                         // A segment register's selector: to a register at the operand size,
@@ -1308,7 +1406,6 @@ fn exec64() -> bool {
                         rm_set(w, shift(ins.reg & 7, rm_get(w), n, w, ins.mod == 3));
                     },
                     0xC2 => { let n = fw(); next = pop(64); reg[RSP] += n; jump = true; },
-                    0xC3 => { next = pop(64); jump = true; },
                     0xC6, 0xC7 => {
                         modrm(imm_len(w));
                         if ins.reg & 7 != 0 { stop64("an instruction not written yet, C6 or C7 field", ins.reg); }
@@ -1357,9 +1454,6 @@ fn exec64() -> bool {
                     0xE6, 0xE7 => { let port = fb(); io_level(); io_out(port, if op == 0xE6 { 8 } else if ins.p66 { 16 } else { 32 }, reg[RAX]); },
                     0xEC, 0xED => { io_level(); sr(RAX, if op == 0xEC { 8 } else if ins.p66 { 16 } else { 32 }, io_in(reg[RDX] & 0xFFFF, if op == 0xEC { 8 } else if ins.p66 { 16 } else { 32 })); },
                     0xEE, 0xEF => { io_level(); io_out(reg[RDX] & 0xFFFF, if op == 0xEE { 8 } else if ins.p66 { 16 } else { 32 }, reg[RAX]); },
-                    0xE8 => { let d = fs32(); push(ip, 64); next = ip + d; jump = true; },
-                    0xE9 => { let d = fs32(); next = ip + d; jump = true; },
-                    0xEB => { let d = fs8(); next = ip + d; jump = true; },
                     _ => { stop64("an instruction not written yet,", op); },
                 }
             },

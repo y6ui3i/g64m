@@ -46,16 +46,14 @@ var dr7: u64 = 0x400;
 
 // The state the instruction at hand started from, to go back to when it faults.
 var saved_reg: u64[16] = [0; 16];
-var saved_flags: u64 = 0;
 var saved_cpl: u8 = 0;
 
-// A fault waiting to be delivered: its vector, or -1.
-var pending: i64 = -1;
+// A fault waiting to be delivered: its vector is `pending` (cpu64.goose, with `delivered`,
+// which is true once the instruction at hand has gone to a handler: no single step after
+// that; `machine`, `cpl`, `saved_flags` and `start_saved` are there too, E110).
 var pending_err: u64 = 0;
 var pending_has_err = false;
 var pending_trap = false;    // it is a trap: nothing is put back, and RF is not set
-// True once the instruction at hand has gone to a handler: no single step after that.
-var delivered = false;
 var by_syscall = false;      // the instruction at hand was SYSCALL or SYSRET
 // The vector being delivered, or -1: a fault met while delivering one is a double fault,
 // and one met while delivering that ends the run, as it resets a machine.
@@ -64,8 +62,6 @@ var delivering: i64 = -1;
 var seg: u16[6] = [0; 6];
 var tr_sel: u16 = 0;
 var ldt_sel: u16 = 0;
-var machine = false;
-var cpl: u8 = 3;
 
 // ---- Faults ----
 
@@ -86,9 +82,13 @@ fn fault(vec: u8, has_err: bool, err: u64) {
         write_stderr(msg);
     }
     msr_asked = 0;
-    for i in 16 { reg[i] = saved_reg[i]; }
+    // The short front (E110) saves the flags only: its instructions change no register
+    // and no level before they can fault.
+    if start_saved {
+        for i in 16 { reg[i] = saved_reg[i]; }
+        cpl = saved_cpl;
+    }
     rflags = saved_flags;
-    cpl = saved_cpl;
     if delivering == 8 { delivering = -1; stop64("a triple fault, after vector", vec); }
     if delivering >= 0 {
         pending = 8;
@@ -109,6 +109,7 @@ inline fn save_start() {
     for i in 16 { saved_reg[i] = reg[i]; }
     saved_flags = rflags;
     saved_cpl = cpl;
+    start_saved = true;
 }
 
 // ---- Physical memory ----
