@@ -118,7 +118,11 @@ var read_phys: u32 = 0;
 var write_page: u32 = 0xFFFFFFFF;
 var write_phys: u32 = 0;
 
-let TLB_SIZE = 512;              // 256 for supervisor mode, then 256 for user mode
+// The TLB: TLB_HALF entries for supervisor mode, then as many for user mode, found by the
+// page number's low TLB_BITS bits. (256 each until E090, which tried 1,024, 4,096 and 16,384.)
+let TLB_BITS = 12;
+let TLB_HALF = 1 << TLB_BITS;
+let TLB_SIZE = 2 * TLB_HALF;
 var tlb_rtag: u32[TLB_SIZE] = [0xFFFFFFFF; TLB_SIZE];
 var tlb_rphys: u32[TLB_SIZE] = [0; TLB_SIZE];
 var tlb_wtag: u32[TLB_SIZE] = [0xFFFFFFFF; TLB_SIZE];
@@ -142,11 +146,11 @@ fn flush_tlb() {
 // what INVLPG asks for. The rest of the TLB stays (E045).
 fn forget_page(a: u32) {
     let page = a >> 12;
-    let i: i64 = page & 0xFF;
+    let i: i64 = page & (TLB_HALF - 1);
     if tlb_rtag[i] == page { tlb_rtag[i] = 0xFFFFFFFF; }
     if tlb_wtag[i] == page { tlb_wtag[i] = 0xFFFFFFFF; }
-    if tlb_rtag[i + 0x100] == page { tlb_rtag[i + 0x100] = 0xFFFFFFFF; }
-    if tlb_wtag[i + 0x100] == page { tlb_wtag[i + 0x100] = 0xFFFFFFFF; }
+    if tlb_rtag[i + TLB_HALF] == page { tlb_rtag[i + TLB_HALF] = 0xFFFFFFFF; }
+    if tlb_wtag[i + TLB_HALF] == page { tlb_wtag[i + TLB_HALF] = 0xFFFFFFFF; }
     if code_page == page { code_page = 0xFFFFFFFF; }
     if read_page == page { read_page = 0xFFFFFFFF; }
     if write_page == page { write_page = 0xFFFFFFFF; }
@@ -469,7 +473,7 @@ inline fn seg_check(s: i64, off: u32, w: u8, write: bool) -> u32 {
 // A page outside RAM is translated every time.
 fn tlb_fill_read(a: u32) -> u32 {
     let page = a >> 12;
-    let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+    let i = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
     let phys = translate(a, false, cpu.cpl == 3) & 0xFFFFF000;
     if phys < RAM_SIZE - 4096 && phys <= phys_mask - 0xFFF {
         tlb_rphys[i] = phys;
@@ -480,7 +484,7 @@ fn tlb_fill_read(a: u32) -> u32 {
 
 fn tlb_fill_write(a: u32) -> u32 {
     let page = a >> 12;
-    let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+    let i = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
     let phys = translate(a, true, cpu.cpl == 3) & 0xFFFFF000;
     // Not for a page the decode cache has instructions from: a store there must go the long
     // way, which looks for them (see code_written).
@@ -493,14 +497,14 @@ fn tlb_fill_write(a: u32) -> u32 {
 
 inline fn page_read(a: u32) -> u32 {
     let page = a >> 12;
-    let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+    let i = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
     if tlb_rtag[i] == page { return tlb_rphys[i]; }
     return tlb_fill_read(a);
 }
 
 inline fn page_write(a: u32) -> u32 {
     let page = a >> 12;
-    let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+    let i = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
     if tlb_wtag[i] == page { return tlb_wphys[i]; }
     return tlb_fill_write(a);
 }
@@ -546,7 +550,7 @@ inline fn seg_read(s: i64, off: u32, w: u8) -> u32 {
     let a = cpu.base[s] + off;
     if off < seg_top[s] && (a & 0xFFF) + nb <= 0x1000 {
         let page = a >> 12;
-        let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+        let i = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
         if tlb_rtag[i] == page {
             let q: i64 = tlb_rphys[i] | a & 0xFFF;
             if q < RAM_SIZE - 3 {
@@ -570,7 +574,7 @@ inline fn seg_write(s: i64, off: u32, w: u8, v: u32) {
     let a = cpu.base[s] + off;
     if off < seg_top[s] && (a & 0xFFF) + nb <= 0x1000 {
         let page = a >> 12;
-        let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+        let i = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
         if tlb_wtag[i] == page {
             let q: i64 = tlb_wphys[i] | a & 0xFFF;
             if q < RAM_SIZE - 3 {

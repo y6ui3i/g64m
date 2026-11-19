@@ -6267,3 +6267,148 @@ line.
 
 `tools/difftest.sh` has 155 lines, all ok (`s_pagetail` is two of them, with the debug
 build and without; it is also among the self-checks run with `--jit`).
+
+## E089: What ends a trip (2026-11-19)
+
+P8 of `docs/perf.md`, before P7.
+
+- **Hypothesis**: E086 counted instructions and called them trips (E088). A trip is one
+  return from generated code to Goose, and each return has a reason that can be read where
+  it comes back: through a link slot to an address with no block, through a way out (an
+  instruction in the block gave up when it ran, or the block stopped before one it could
+  not take), or from the far way not finding a block. **More than half of the returns under
+  X are the far way not finding a block or a slot whose target has none, and of those most
+  stand before an instruction the translator has no kind for**; if so P7 (prediction) saves
+  host instructions for each arrival and does not save trips.
+- **What changed since last time**: E085 and E086 counted on the general path's side.
+  This counts on the JIT's side, one count for each return.
+- **Next move for each result**:
+  - As said → P7 is judged by host time alone, and the instructions without a kind are
+    written down for the 64-bit count
+  - Most returns are ways out taken while running (the TLB, a segment's top) → P7 still;
+    the note for x86_64 is that the memory path wants looking at first there
+  - Most returns are to addresses that could head a block and do not yet (cold, or the
+    decode cache lost the entry) → look at `JIT_HOT` and at where arrivals are counted
+    before P7, since that is a few lines and carries over whole
+- **Cut-off**: one counting copy, two stages (the prompt and the desktop), one run each:
+  the counts are of events, not of time.
+
+### Result
+
+2026-11-19. **The card's first branch, and something it did not ask about: 27% of the
+returns are the TLB.** From `startx` to the desktop generated code comes back to Goose
+72.1 million times:
+
+| What the return was | Millions | Share |
+|---|---:|---:|
+| Through a link slot, to an instruction with no kind | 36.0 | 50% |
+| Through a link slot, to an instruction with a kind and no block | 10.4 | 14% |
+| A way out taken while running, before an instruction of a block | 13.4 | 19% |
+| The far way: the page of code is not in the TLB | 5.9 | 8% |
+| Through a link slot, to an instruction with no entry, or not yet classified | 3.9 | 5% |
+| The far way, the rest (no block there; in the page) | 2.0 | 3% |
+| Other ways out | 0.4 | 1% |
+
+- **No kind** (50%), by the first byte, in millions: prefix 66 9.0, F3 (the strings with
+  REP) 4.3, XCHG of a byte (86) 3.4, IMUL by a constant (6B, 69) 4.3, prefix 3E 1.7, FE
+  1.6, PUSHF 1.3, C7 1.1, SHRD and SHLD 2.4, BT and its group 1.4, C0 0.7. These are P2b,
+  P4, P5 and P6, which are left for the 64-bit count.
+- **A kind and no block** (14%): a block of one instruction is not made, so one
+  translatable instruction between two that are not is the interpreter's. These go when
+  their neighbours get kinds, not before.
+- **Ways out while running** (19%): asked of the loads among them (MOV, MOVZX, MOV of a
+  byte: 8.7 million), all are the TLB not having the page; none is a segment's top, 280
+  are an access across two pages. 6.4 million of the 8.7 are user code.
+- **The far way** finds no page in the TLB 5.9 million times, and no block where it looks
+  only 2 million: prediction (P7) cannot save trips, as the card said, only the host
+  instructions of the lookup: 161 million arrivals at 30 each are under 3% of the host's
+  instructions for the stretch.
+
+**So the TLB comes before P7.** It has 256 entries for each of the two privilege levels,
+found by the page number's low eight bits, shared by code and data, by the interpreter and
+the JIT; X with its clients uses more pages than that. A larger one is structure: it is
+the same table on x86_64, and the interpreter has it too. It is P9 in `docs/perf.md`, and
+P7 is weighed again after it: its ceiling is 3%.
+
+## E090: A larger TLB (2026-11-19)
+
+P9 of `docs/perf.md`.
+
+- **Hypothesis**: The TLB's 256 entries for each privilege level are found by the page
+  number's low eight bits, and X with its clients touches more pages than that between
+  two changes of CR3: two pages 256 apart push each other out. E089 counted 19.3 million
+  returns from generated code that are a page the TLB does not have. **With 1,024 or 4,096
+  entries for each level most of those go: generated code is entered under 60 million
+  times from `startx` to the desktop (72.1 now), and the host takes at least 5% less
+  time; the interpreter without `--jit` is no slower on the boot.** What a larger table
+  costs is emptying it (every write of CR3) and walking it (every page of code first
+  marked).
+- **What changed since last time**: E088 and before took instructions off the general
+  path. This is the first change to the memory path since E045; the size becomes a
+  constant, and the JIT's loads from the table take it from there.
+- **Next move for each result**:
+  - A size is at least 3% quicker under X and the boot's interpreter within 1% → keep
+    that size; P7 weighed again
+  - Trips fall and the time does not → the emptying is what it costs: count CR3 writes
+    and marks, and note for x86_64 that the table wants a generation instead of an
+    emptying; not kept
+  - Trips do not fall → the misses are first touches after CR3 changes, not pages pushing
+    each other out; size is not the matter; not kept, and the note for x86_64 is tags
+    with an address space number
+- **Cut-off**: 8 (now), 10 and 12 bits; the stretch timed three times each, the boot three
+  times each without `--jit`.
+
+### Result
+
+2026-11-19. **Kept, by the card's first branch: with 4,096 entries for each privilege level
+the host takes 9.23 seconds from `startx` to the desktop (10.52 with 256, in the same
+sitting; 12.3% less), and generated code is entered 54.3 million times (72.1).** The
+interpreter without `--jit` is 1.4% quicker on the Linux boot (25.91 billion host cycles
+against 26.27, medians of three).
+
+| Entries for each level | Stretch, three runs | Median | Entries into generated code | Boot to the prompt |
+|---|---|---:|---:|---:|
+| 256 | 10.52, 10.37, 10.96 s | 10.52 s | 72.12 million | 2.91 s |
+| 1,024 | 9.78, 9.38, 9.91 s | 9.78 s | 61.38 million | 2.66 s |
+| 4,096 | 9.23, 9.06, 9.24 s | 9.23 s | 54.29 million | 2.57 s |
+| 16,384 | 9.26, 9.43, 9.19 s (a second sitting; 4,096 there: 9.43, 10.04, 10.04) | | 53.99 million | |
+
+16,384 takes away 0.3 million entries more and no time that three runs can show: 4,096 it
+is. The emptying at each write of CR3 and the walk at each page of code marked, which the
+card feared, do not show at this size. The 17.8 million entries that went are the 19.3
+million E089 counted, nearly all.
+
+On E088's 299 million guest instructions a second that is 341 million: over the 305 that
+`--speed 4` wants. (The same caution as before: only one sitting's numbers are compared,
+and the 299 is itself a ratio put on E087's sitting.)
+
+**What was built.** `TLB_BITS` (`src/state.goose`), 12: every index into the TLB, the
+user's half, INVLPG's and the two loops over the whole table take the size from it. The
+JIT's code takes the index's width and the half from it, and reaches the three tables
+after the first with one more instruction where they are too far for a load's offset
+(`a_tlb`). The four tables are 128 KB together (8 KB before).
+
+**Tests.** Five, three of them new files:
+- `s_invlpg` and `s_invlpgu` take the page they use from a name; `s_invlpg2` and
+  `s_invlpgu2` are the same on 370000h, a page number that does not fit in eight bits.
+- `s_tlbcr3`: a page at 370000h read and written, its entry changed and CR3 written,
+  twelve times; and code written through 372000h, called, written again and called.
+- `s_tlbuser`: ring 0 reads a supervisor's page whose number has bit 8 set; ring 3 then
+  reads it from a loop the JIT has translated, and must fault.
+
+Nine wrong builds (INVLPG looking at the old index, or at the old place for the user's
+half; a write of CR3 or the marking of a page of code reaching only the first 512
+entries; the JIT with the user's half where it was, or reading a page or a tag from the
+wrong table), all caught. Three passed at first, and each was the test's fault:
+- `s_tlbcr3` summed 11111111h and 22222222h with a rotation between them: a rotation is a
+  doubling modulo 2^32 - 1, and a stale read changed the sum by a multiple of that.
+- Nothing wrote code through a page above 512.
+- `s_tlbuser`'s loop was all short executors, so it was one run of the interpreter and
+  the JIT never counted an arrival in it.
+
+**P7 weighed again.** The far way is arrived at 147 million times in the stretch now; at 30
+host instructions each that is under 3% of the host's instructions, and a prediction saves
+part of it. It is not started: the host keeps up with `--speed 4` by the stretch's
+measure, which was the plan's other stopping point.
+
+`tools/difftest.sh` has 163 lines, all ok (the four new self-checks are two lines each).

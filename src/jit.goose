@@ -12,7 +12,7 @@
 //   w1 w2 w3  the operands and the result of the last instruction that set the flags
 //   w26       where a block ends: that record's kind, or 0 if EFLAGS in memory is right (E070)
 //   x27       scratch for the far way
-//   w4        which half of the TLB the current privilege level uses: 0 or 100h
+//   w4        which half of the TLB the current privilege level uses: 0 or TLB_HALF
 //   w16 w17 w6 w5 w7  scratch
 //   x23       the time left: how many instructions may still be executed before control has
 //             to go back (a block takes its length off it where it begins)
@@ -72,6 +72,7 @@ let R_A = 1;                 // the flags' record
 let R_B = 2;
 let R_R = 3;
 let R_MODE = 4;
+let TLB_AT: u32 = TLB_SIZE * 4;  // how far each of the TLB's four tables is after the one before, in bytes
 let T1 = 16;                 // scratch
 let T2 = 17;
 let T3 = 6;
@@ -86,8 +87,8 @@ fn jit_init() {
     jit_tlb = jit_addr32(tlb_rtag[..]);
     jit_seg = jit_addr32(seg_top[..]);
     // Generated code reaches the four TLB arrays from one address.
-    if jit_addr32(tlb_rphys[..]) != jit_tlb + 2048 || jit_addr32(tlb_wtag[..]) != jit_tlb + 4096
-        || jit_addr32(tlb_wphys[..]) != jit_tlb + 6144 { return; }
+    if jit_addr32(tlb_rphys[..]) != jit_tlb + TLB_AT || jit_addr32(tlb_wtag[..]) != jit_tlb + 2 * TLB_AT
+        || jit_addr32(tlb_wphys[..]) != jit_tlb + 3 * TLB_AT { return; }
     // The way in: x0 the registers, x1 RAM, x2 the TLB, x3 seg_top, x4 pbase, x5 the block,
     // x6 the time, x7 the virtual time.
     e(0xA9BA7BFD);           // stp x29, x30, [sp, #-96]!
@@ -111,7 +112,7 @@ fn jit_init() {
     e(0x3941F004);           // ldrb w4, [x0, #CPL_AT]: 100h for the user's half of the TLB
     e(0x71000C9F);           // cmp w4, #3
     e(0x1A9F17E4);           // cset w4, eq
-    e(0x53185C84);           // lsl w4, w4, #8
+    a_lsl(4, 4, TLB_BITS);   // lsl w4, w4, #TLB_BITS
     e(0xD61F00A0);           // br x5
     // The way out: w16 the next address, x17 the link slot or 0.
     jit_out_at = jc.len;
@@ -162,14 +163,14 @@ fn jit_init() {
     e(0xEB0500FF);                                       // cmp x7, x5
     let m1 = jc.len;
     e(0x54000000 | C_HS);
-    e(0x53000000 | 12 << 16 | 19 << 10 | T3 << 5 | T2);  // ubfx w17, w6, #12, #8
+    e(0x53000000 | 12 << 16 | (11 + TLB_BITS) << 10 | T3 << 5 | T2);  // ubfx w17, w6, #12, #TLB_BITS
     a_op(5, T2, T2, R_MODE, 0);
     e(0x8B000000 | T2 << 16 | 2 << 10 | 20 << 5 | T2);   // add x17, x20, x17, lsl #2
     a_ldrn(T4, T2, 0);                                   // the TLB's tag for a read
     e(0x6B400000 | T3 << 16 | 12 << 10 | T4 << 5 | 31);  // cmp w5, w6, lsr #12
     let m2 = jc.len;
     e(0x54000000 | C_NE);
-    a_ldrn(T4, T2, 2048);                                // the page in RAM
+    a_tlb(T4, T2, TLB_AT, 0);                            // the page in RAM
     e(0x12002C00 | T3 << 5 | 7);                         // and w7, w6, #0xFFF
     a_op(5, T4, T4, 7, 0);                               // w5: the address in RAM
     e(0x12004000 | T4 << 5 | 7);                         // and w7, w5, #0x1FFFF: the slot
@@ -297,6 +298,16 @@ fn a_ldp(r1: u32, r2: u32, off: u32) { e(0x29400000 | (off >> 2) << 15 | r2 << 1
 fn a_stp(r1: u32, r2: u32, off: u32) { e(0x29000000 | (off >> 2) << 15 | r2 << 10 | r1); }
 fn a_ret() { e(0xD65F03C0); }
 fn a_ldrn(rt: u32, rn: u32, off: u32) { e(0xB9400000 | (off >> 2) << 10 | rn << 5 | rt); }    // ldr wt, [xn, #off]
+// ldr wt from the TLB: xn points at an entry of the first table moved on by `had` bytes, and
+// what is wanted is the same entry `off` bytes on. Where that is too far for one instruction
+// xn is moved on first. Says how far xn has been moved on now.
+fn a_tlb(rt: u32, rn: u32, off: u32, had: u32) -> u32 {
+    let d = off - had;
+    if d < 16384 { a_ldrn(rt, rn, d); return had; }
+    e(0x91400000 | (d >> 12) << 10 | rn << 5 | rn);      // add xn, xn, #(d >> 12), lsl #12
+    a_ldrn(rt, rn, 0);
+    return off;
+}
 // A load or a store of n bytes at [x19, x6]: in RAM, at the place j_mem worked out.
 fn a_load(n: u32, rt: u32) { e((if n == 4 { 0xB8606800 } else if n == 2 { 0x78606800 } else { 0x38606800 }) | T3 << 16 | 19 << 5 | rt); }
 fn a_store(n: u32, rt: u32) { e((if n == 4 { 0xB8206800 } else if n == 2 { 0x78206800 } else { 0x38206800 }) | T3 << 16 | 19 << 5 | rt); }
@@ -582,13 +593,13 @@ fn j_mem(sg: u32, n: u32, write: bool) {
     j_out(C_HS);
     a_ldr(T2, BASE_AT + sg * 4);                         // the linear address
     a_op(0, T1, T1, T2, 0);
-    e(0x53000000 | 12 << 16 | 19 << 10 | T1 << 5 | T2);  // ubfx w17, w16, #12, #8
+    e(0x53000000 | 12 << 16 | (11 + TLB_BITS) << 10 | T1 << 5 | T2);  // ubfx w17, w16, #12, #TLB_BITS
     a_op(5, T2, T2, R_MODE, 0);
     e(0x8B000000 | T2 << 16 | 2 << 10 | 20 << 5 | T2);   // add x17, x20, x17, lsl #2
-    a_ldrn(T3, T2, if write { 4096 } else { 0 });        // the tag
+    let had = a_tlb(T3, T2, if write { 2 * TLB_AT } else { 0 }, 0);   // the tag
     if n > 1 {
         // Against the page of the access's last byte: where that is the next page, the tag
-        // cannot be it (a tag has its index's low eight bits), so an access across two
+        // cannot be it (a tag has its index's low bits), so an access across two
         // pages leaves here too (E072).
         a_addi(7, T1, n - 1);
         e(0x6B400000 | 7 << 16 | 12 << 10 | T3 << 5 | 31);   // cmp w6, w7, lsr #12
@@ -596,7 +607,7 @@ fn j_mem(sg: u32, n: u32, write: bool) {
         e(0x6B400000 | T1 << 16 | 12 << 10 | T3 << 5 | 31);  // cmp w6, w16, lsr #12
     }
     j_out(C_NE);
-    a_ldrn(T3, T2, if write { 6144 } else { 2048 });     // the page in RAM
+    a_tlb(T3, T2, if write { 3 * TLB_AT } else { TLB_AT }, had);      // the page in RAM
     e(0x12002C00 | T1 << 5 | T2);                        // and w17, w16, #0xFFF
     a_op(5, T3, T3, T2, 0);
 }
@@ -1623,7 +1634,7 @@ fn jit_blocks() -> bool {
             // it is in RAM and a good block begins there, the slot is linked first.
             if from > 1 && far_lim != 0 && jit_off & 1024 == 0 {
                 let a = cpu.base[CS] + (r as! u32);
-                let t = a >> 12 & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+                let t = a >> 12 & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
                 if tlb_rtag[t] == a >> 12 {
                     let q = tlb_rphys[t] | a & 0xFFF;
                     let s3: i64 = q & (DC_HALF - 1);
