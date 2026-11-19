@@ -67,7 +67,7 @@ done
 # Self-checking tests, for what the oracle cannot judge. A test passes when the console says OK and nothing else.
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds|s_sse|s_jitind) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_invlpg2|s_invlpgu2|s_flagro|s_pairfault|s_jittsc|s_jitkinds|s_sse|s_jitind) cpu="--cpu i686" ;; *) cpu="" ;; esac
     # s_cmos waits a second of the guest's time, which is 4.8 million instructions.
     case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
     for exe in build/g86m-debug build/g86m; do
@@ -123,7 +123,7 @@ bad=0
 count=0
 for bin in build/s_*.bin; do
     name=$(basename "$bin" .bin)
-    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_flagro|s_pairfault|s_jittsc|s_jitkinds|s_sse|s_jitind) cpu="--cpu i686" ;; *) cpu="" ;; esac
+    case "$name" in s_686|s_fpu|s_fpu80|s_rdtsc|s_rmwro|s_invlpg|s_invlpgu|s_invlpg2|s_invlpgu2|s_flagro|s_pairfault|s_jittsc|s_jitkinds|s_sse|s_jitind) cpu="--cpu i686" ;; *) cpu="" ;; esac
     case "$name" in s_cmos) max=8000000 ;; *) max=2000000 ;; esac
     case "$name" in s_ide) dd if=/dev/zero of=build/s_ide.img bs=512 count=2048 2>/dev/null; disk="--disk build/s_ide.img" ;; *) disk="" ;; esac
     if [ "$name" = s_net ]; then

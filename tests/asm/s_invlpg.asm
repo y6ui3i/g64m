@@ -17,6 +17,10 @@
 ; INVLPG is a 486's, so this runs on the i686. Prints "OK".
 %define CPU686
 %include "common.inc"
+%ifndef TPAGE
+%define TPAGE 0x70                     ; the page the test uses, and the two after it (s_invlpg2 names another)
+%endif
+%define TP(x) ((TPAGE << 12) + (x))
 start:
     cli
     xor  ax, ax
@@ -51,29 +55,29 @@ pm:
     mov  dword [0x51000], 0x22222222
     mov  word [0x52000], 0xC342         ; inc edx / ret
     mov  word [0x53000], 0xC343         ; inc ebx / ret
-    mov  dword [0x52010], 0x003D010F    ; invlpg [72000h] / inc edx / ret
-    mov  dword [0x52014], 0x42000720
+    mov  dword [0x52010], 0x003D010F | (TP(0x2000) & 0xFF) << 24    ; invlpg [72000h] / inc edx / ret
+    mov  dword [0x52014], 0x42000000 | TP(0x2000) >> 8
     mov  byte [0x52018], 0xC3
-    mov  dword [0x53010], 0x003D010F    ; invlpg [72000h] / inc ebx / ret
-    mov  dword [0x53014], 0x43000720
+    mov  dword [0x53010], 0x003D010F | (TP(0x2000) & 0xFF) << 24    ; invlpg [72000h] / inc ebx / ret
+    mov  dword [0x53014], 0x43000000 | TP(0x2000) >> 8
     mov  byte [0x53018], 0xC3
     xor  ecx, ecx                       ; the sum
     xor  edx, edx
     xor  ebx, ebx
     xor  eax, eax
     call mix
-    mov  esi, 0x11000 + 0x70*4          ; the entry for 70000h
+    mov  esi, 0x11000 + TPAGE*4          ; the entry for 70000h
     mov  dword [esi], 0x50007           ; 1
-    mov  eax, [0x70000]
+    mov  eax, [TP(0x0000)]
     call mix
     mov  dword [esi], 0x51007
-    invlpg [0x70000]
-    mov  eax, [0x70000]
+    invlpg [TP(0x0000)]
+    mov  eax, [TP(0x0000)]
     call mix
-    mov  dword [0x70008], 0xAAAAAAAA    ; 2
+    mov  dword [TP(0x0008)], 0xAAAAAAAA    ; 2
     mov  dword [esi], 0x50007
-    invlpg [0x70000]
-    mov  dword [0x70008], 0xBBBBBBBB
+    invlpg [TP(0x0000)]
+    mov  dword [TP(0x0008)], 0xBBBBBBBB
     mov  eax, [0x51008]
     call mix
     mov  eax, [0x50008]
@@ -81,17 +85,17 @@ pm:
     mov  dword [esi + 8], 0x52007       ; 3: the entry for 72000h
     call four
     mov  dword [esi + 8], 0x53007
-    invlpg [0x72000]
+    invlpg [TP(0x2000)]
     call four
     mov  eax, edx
     call mix
     mov  eax, ebx
     call mix
     mov  dword [esi + 8], 0x52007       ; 4
-    invlpg [0x72000]
-    mov  ebp, 0x72010
+    invlpg [TP(0x2000)]
+    mov  ebp, TP(0x2010)
     call ebp
-    mov  eax, [0x72000]                 ; the TLB has the page again, as 52000h
+    mov  eax, [TP(0x2000)]                 ; the TLB has the page again, as 52000h
     mov  dword [esi + 8], 0x53007
     call ebp
     mov  eax, edx
@@ -105,7 +109,7 @@ pm:
 four:
     mov  ebp, 4
 .l:
-    mov  eax, 0x72000
+    mov  eax, TP(0x2000)
     call eax
     dec  ebp
     jnz  .l

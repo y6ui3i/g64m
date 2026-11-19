@@ -1530,7 +1530,7 @@ inline fn rmw_place() -> u32 {
     let a = cpu.base[s] + ea_off;
     if ea_off < seg_top[s] && (a & 0xFFF) + 4 <= 0x1000 {
         let page = a >> 12;
-        let i = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+        let i = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
         if tlb_wtag[i] == page { return tlb_wphys[i] | a & 0xFFF; }
     }
     return 0xFFFFFFFF;
@@ -2009,7 +2009,7 @@ fn exec_short() {
                 a = p + lin_of;
                 let page = a >> 12;
                 if page != code_page {
-                    let t = page & 0xFF | (if cpu.cpl == 3 { 0x100 } else { 0 });
+                    let t = page & (TLB_HALF - 1) | (if cpu.cpl == 3 { TLB_HALF } else { 0 });
                     if tlb_rtag[t] == page {
                         code_phys = tlb_rphys[t];
                         code_page = page;

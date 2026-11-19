@@ -9,6 +9,10 @@
 ; INVLPG is a 486's, so this runs on the i686. Prints "OK".
 %define CPU686
 %include "common.inc"
+%ifndef TPAGE
+%define TPAGE 0x70                     ; the page the test uses, and the two after it (s_invlpgu2 names another)
+%endif
+%define TP(x) ((TPAGE << 12) + (x))
 start:
     cli
     xor  ax, ax
@@ -54,8 +58,8 @@ pm:
     rep movsb
     xor  ecx, ecx                       ; the sum
     xor  edi, edi
-    mov  dword [0x11000 + 0x70*4], 0x50007
-    mov  eax, [0x70000]
+    mov  dword [0x11000 + TPAGE*4], 0x50007
+    mov  eax, [TP(0x0000)]
     call mix
     mov  ax, 0x2B                       ; to ring 3 with its data segment
     mov  ds, ax
@@ -66,11 +70,11 @@ pm:
     push dword 0x30000
     iretd
 ucode:                                  ; runs at 30000h; nothing in it depends on where it is
-    mov  esi, [0x70000]
-    mov  [0x70008], esi
+    mov  esi, [TP(0x0000)]
+    mov  [TP(0x0008)], esi
     hlt
-    mov  edi, [0x70000]
-    mov  [0x70008], edi
+    mov  edi, [TP(0x0000)]
+    mov  [TP(0x0008)], edi
     hlt
 ucode_end:
 mix:
@@ -82,9 +86,9 @@ gp:                                     ; at ring 3's HLT
     mov  ds, ax
     test edi, edi
     jnz  .done
-    mov  dword [0x11000 + 0x70*4], 0x51007
-    invlpg [0x70000]
-    mov  eax, [0x70000]
+    mov  dword [0x11000 + TPAGE*4], 0x51007
+    invlpg [TP(0x0000)]
+    mov  eax, [TP(0x0000)]
     call mix
     mov  ax, 0x2B
     mov  ds, ax
