@@ -53,15 +53,44 @@ var steps: u64 = 0;             // instructions done, which is also what RDTSC r
 var ip: u64 = 0;                // where the next byte of it is fetched from
 var m_off: u64 = 0;             // a memory operand's offset,
 var m_ea: u64 = 0;              // and its address: the offset with FS's or GS's base added
-var seg_base: u64 = 0;
-var rex: u8 = 0;                // the REX prefix, 0 for none
-var osz: u8 = 32;               // the operand size where it is not a byte: 16, 32 or 64
-var rep: u8 = 0;                // F2h, F3h or 0
+
+// What the instruction's bytes say (E109): the prefixes and the opcode, then what its ModRM,
+// SIB and displacement bytes describe. 24 bytes, kept whole in the decode cache, so that an
+// instruction met again is one copy and nothing is unpacked.
+struct Ins {
+    op: u8,
+    rex: u8,             // the REX prefix, 0 for none
+    osz: u8,             // the operand size where it is not a byte: 16, 32 or 64
+    rep: u8,             // F2h, F3h or 0
+    p66: bool,
+    asz32: bool,
+    sg: u8,              // a segment prefix that counts: 1 FS, 2 GS, 0 none
+    plen: u8,            // how many bytes the prefixes and the opcode take
+    mlen: u8,            // how many up to the end of the operand's bytes; 0: the rest is not known
+    mod: u8,
+    reg: u8,             // with REX.R
+    rm: u8,              // with REX.B where it names a register
+    base: u8,            // the base register; 16 none, 17 RIP
+    index: u8,           // the index register; 16 none
+    scale: u8,
+    spare: u8,
+    disp: u64,           // the displacement, sign-extended
+}
+var ins: Ins = Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
+                     mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, spare: 0, disp: 0 };
+
+// The ModRM byte's fields as the x87 reads them (fpu.goose, shared with the 32-bit machine):
+// 0 to 7 each, set for an escape opcode only.
 var m_mod: u8 = 0;
 var m_reg: u8 = 0;
 var m_rm: u8 = 0;
-var p66 = false;
-var asz32 = false;
+
+// The base a segment prefix adds. It is read from the register at each use: the prefix is
+// remembered, the base is not, since the program changes it.
+inline fn seg_base() -> u64 {
+    if ins.sg == 0 { return 0; }
+    return if ins.sg == 1 { fs_base } else { gs_base };
+}
 
 var halted = false;
 // Set by the few instructions after which the run loop must look up before the next one
@@ -175,14 +204,8 @@ fn ld32(i: i64) -> u64 {
 //
 // What an instruction's bytes say that does not change from one execution to the next: its
 // prefixes and opcode, and what its ModRM, SIB and displacement bytes describe. An entry is
-// found by the physical address of the instruction's first byte and holds:
-//   dc_info   bits 0-7 the opcode; 8-15 REX; 16 the prefix 66h; 17 the prefix 67h; 18-19
-//             REP (2 for F2h, 3 for F3h); 20-21 a segment prefix (1 FS, 2 GS); 22-25 how
-//             many bytes the prefixes and the opcode take;
-//             26 "the rest is there": 27-28 mod; 29-32 reg; 33-36 r/m; 37-41 the base
-//             register (16 none, 17 RIP); 42-46 the index register (16 none); 47-48 the
-//             scale; 49-52 how many bytes the instruction takes up to the operand's end
-//   dc_disp   the displacement, sign-extended
+// found by the physical address of the instruction's first byte (its tag) and holds the
+// instruction as decoded (Ins, above), in the form it is used in: 32 bytes with the tag.
 // Constants are not kept: they are read from the code page each time.
 //
 // An entry is made only from bytes that all lie on one page (the code page, E105), and is
@@ -194,9 +217,12 @@ let DC_SIZE = 1 << DC_BITS;
 let DC_NONE: u64 = 0xFFFFFFFFFFFFFFFF;
 let DC_GIVE_UP = 32;             // drops of one page after which it is not remembered from
 
-var dc_tag: u64[DC_SIZE] = [0xFFFFFFFFFFFFFFFF; DC_SIZE];
-var dc_info: u64[DC_SIZE] = [0; DC_SIZE];
-var dc_disp: u64[DC_SIZE] = [0; DC_SIZE];
+struct Entry {
+    tag: u64,            // all ones for none
+    ins: Ins,
+}
+var dc: Entry[DC_SIZE] = [Entry { tag: 0xFFFFFFFFFFFFFFFF, ins: Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
+                          mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, spare: 0, disp: 0 } }; DC_SIZE];
 var dc_mark: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];      // 1: holds entries; 2: given up
 var dc_drops: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
 var dc_cur: i64 = -1;            // the entry of the instruction at hand; -1 if it can have none
@@ -211,7 +237,7 @@ inline fn dc_drop(page: i64) {
     for k in 4096 {
         let at = base + (k as! u64);
         let slot = dc_slot(at);
-        if dc_tag[slot] == at { dc_tag[slot] = DC_NONE; }
+        if dc[slot].tag == at { dc[slot].tag = DC_NONE; }
     }
     if dc_drops[page] < 255 { dc_drops[page] += 1; }
     dc_mark[page] = if dc_drops[page] >= DC_GIVE_UP { 2 } else { 0 };
@@ -269,7 +295,7 @@ fn wr(a: u64, w: u8, v: u64) {
 
 fn frd(k: u32, w: u8) -> u32 { return rd(m_ea + k, w) as! u32; }
 fn fwr(k: u32, w: u8, v: u32) { wr(m_ea + k, w, v); }
-fn fp_env32() -> bool { return !p66; }
+fn fp_env32() -> bool { return !ins.p66; }
 fn fp_set_ax(v: u16) { sr(RAX, 16, v); }
 fn fp_set_zpc(bits: u32) { rflags = rflags & ~ARITH | bits; }
 fn fp_stop(code: i64) { stop64("an x87 instruction not written yet, opcode and ModRM", code as! u64); }
@@ -366,7 +392,7 @@ fn fimm(w: u8) -> u64 {
 // DIL with one.
 fn gr(i: u8, w: u8) -> u64 {
     if w == 8 {
-        if rex == 0 && i >= 4 && i < 8 { return reg[i - 4] >> 8 & 0xFF; }
+        if ins.rex == 0 && i >= 4 && i < 8 { return reg[i - 4] >> 8 & 0xFF; }
         return reg[i] & 0xFF;
     }
     return reg[i] & mask(w);
@@ -377,7 +403,7 @@ fn sr(i: u8, w: u8, v: u64) {
     if w == 64 { reg[i] = v; }
     else if w == 32 { reg[i] = v & 0xFFFFFFFF; }
     else if w == 16 { reg[i] = reg[i] & 0xFFFFFFFFFFFF0000 | v & 0xFFFF; }
-    else if rex == 0 && i >= 4 && i < 8 { reg[i - 4] = reg[i - 4] & 0xFFFFFFFFFFFF00FF | (v & 0xFF) << 8; }
+    else if ins.rex == 0 && i >= 4 && i < 8 { reg[i - 4] = reg[i - 4] & 0xFFFFFFFFFFFF00FF | (v & 0xFF) << 8; }
     else { reg[i] = reg[i] & 0xFFFFFFFFFFFFFF00 | v & 0xFF; }
 }
 
@@ -387,75 +413,69 @@ fn sr(i: u8, w: u8, v: u64) {
 // come after the operand (a constant): an address relative to RIP is relative to the end of
 // the whole instruction.
 fn modrm(after: u64) {
-    if dc_cur >= 0 {
-        let d = dc_info[dc_cur];
-        if d >> 26 & 1 != 0 {
-            // Remembered: the fields, and the address from the registers as they are now.
-            m_mod = (d >> 27 & 3) as! u8;
-            m_reg = (d >> 29 & 15) as! u8;
-            m_rm = (d >> 33 & 15) as! u8;
-            ip = rip + (d >> 49 & 15);
-            if m_mod == 3 { return; }
-            let base = d >> 37 & 31;
-            let index = d >> 42 & 31;
-            var a = dc_disp[dc_cur];
-            if base < 16 { a += reg[base]; } else if base == 17 { a += ip + after; }
-            if index < 16 { a += reg[index] << (d >> 47 & 3); }
-            if asz32 { a &= 0xFFFFFFFF; }
-            m_off = a;
-            m_ea = a + seg_base;
-            return;
-        }
+    if ins.mlen != 0 {
+        // Remembered: the fields are there, and the address is made from the registers as
+        // they are now.
+        ip = rip + ins.mlen;
+        if ins.mod == 3 { return; }
+        var a = ins.disp;
+        if ins.base < 16 { a += reg[ins.base]; } else if ins.base == 17 { a += ip + after; }
+        if ins.index < 16 { a += reg[ins.index] << ins.scale; }
+        if ins.asz32 { a &= 0xFFFFFFFF; }
+        m_off = a;
+        m_ea = a + seg_base();
+        return;
     }
     let b = fb() as! u8;
-    m_mod = b >> 6;
-    m_reg = b >> 3 & 7 | (rex & 4) << 1;
-    m_rm = b & 7;
+    ins.mod = b >> 6;
+    ins.reg = b >> 3 & 7 | (ins.rex & 4) << 1;
+    ins.rm = b & 7;
     var a: u64 = 0;
     var base: u64 = 16;
     var index: u64 = 16;
     var scale: u64 = 0;
     var disp: u64 = 0;
-    if m_mod == 3 { m_rm |= (rex & 1) << 3; }
+    if ins.mod == 3 { ins.rm |= (ins.rex & 1) << 3; }
     else {
-        if m_rm == 4 {
+        if ins.rm == 4 {
             let s = fb() as! u8;
-            let i = s >> 3 & 7 | (rex & 2) << 2;
+            let i = s >> 3 & 7 | (ins.rex & 2) << 2;
             scale = s >> 6;
             if i != 4 { index = i; a = reg[i] << scale; }
-            if s & 7 == 5 && m_mod == 0 { disp = fs32(); }
-            else { base = s & 7 | (rex & 1) << 3; a += reg[base]; }
-        } else if m_rm == 5 && m_mod == 0 {
+            if s & 7 == 5 && ins.mod == 0 { disp = fs32(); }
+            else { base = s & 7 | (ins.rex & 1) << 3; a += reg[base]; }
+        } else if ins.rm == 5 && ins.mod == 0 {
             disp = fs32();
             base = 17;
             a = ip + after;
         } else {
-            base = m_rm | (rex & 1) << 3;
+            base = ins.rm | (ins.rex & 1) << 3;
             a = reg[base];
         }
-        if m_mod == 1 { let d = fs8(); disp += d; } else if m_mod == 2 { let d = fs32(); disp += d; }
+        if ins.mod == 1 { let d = fs8(); disp += d; } else if ins.mod == 2 { let d = fs32(); disp += d; }
         a += disp;
-        if asz32 { a &= 0xFFFFFFFF; }
+        if ins.asz32 { a &= 0xFFFFFFFF; }
         m_off = a;
-        m_ea = a + seg_base;
+        m_ea = a + seg_base();
     }
     // Remembered for the next time, if all of it lies on the page.
     if dc_cur >= 0 && ip <= code_end && ip - rip <= 15 {
-        let mo: u64 = m_mod;
-        let rg: u64 = m_reg;
-        let rm: u64 = m_rm;
-        dc_info[dc_cur] |= 1 << 26 | mo << 27 | rg << 29 | rm << 33 | base << 37 | index << 42 | scale << 47 | (ip - rip) << 49;
-        dc_disp[dc_cur] = disp;
+        ins.base = base as! u8;
+        ins.index = index as! u8;
+        ins.scale = scale as! u8;
+        ins.disp = disp;
+        ins.mlen = (ip - rip) as! u8;
+        dc[dc_cur].ins = ins;
     }
 }
 
 fn rm_get(w: u8) -> u64 {
-    if m_mod == 3 { return gr(m_rm, w); }
+    if ins.mod == 3 { return gr(ins.rm, w); }
     return rd(m_ea, w);
 }
 
 fn rm_set(w: u8, v: u64) {
-    if m_mod == 3 { sr(m_rm, w, v); } else { wr(m_ea, w, v); }
+    if ins.mod == 3 { sr(ins.rm, w, v); } else { wr(m_ea, w, v); }
 }
 
 // ---- Arithmetic and flags ----
@@ -784,7 +804,7 @@ fn pop(w: u8) -> u64 {
 }
 
 // The operand size of what uses the stack: 64 bits, or 16 with the prefix 66h.
-inline fn ssz() -> u8 { return if p66 { 16 } else { 64 }; }
+inline fn ssz() -> u8 { return if ins.p66 { 16 } else { 64 }; }
 
 // ---- The strings ----
 
@@ -794,10 +814,10 @@ inline fn ssz() -> u8 { return if p66 { 16 } else { 64 }; }
 // repeated CMPS or SCAS are not to be seen until the last one either: between two
 // repetitions the CPU shows the flags the instruction began with.
 fn string_op(op: u8) -> u64 {
-    let w: u8 = if op & 1 == 0 { 8 } else { osz };
+    let w: u8 = if op & 1 == 0 { 8 } else { ins.osz };
     let n: u64 = w / 8;
-    let am: u64 = if asz32 { 0xFFFFFFFF } else { 0xFFFFFFFFFFFFFFFF };
-    if rep != 0 && reg[RCX] & am == 0 { return ip; }
+    let am: u64 = if ins.asz32 { 0xFFFFFFFF } else { 0xFFFFFFFFFFFFFFFF };
+    if ins.rep != 0 && reg[RCX] & am == 0 { return ip; }
     let began = rflags;
     let step = if flag(DF) { 0 - n } else { n };
     let si = reg[RSI] & am;
@@ -806,19 +826,19 @@ fn string_op(op: u8) -> u64 {
     var uses_di = false;
     var compares = false;
     match op & 0xFE {
-        0xA4 => { wr(di, w, rd(si + seg_base, w)); uses_si = true; uses_di = true; },
-        0xA6 => { let a = rd(si + seg_base, w); let b = rd(di, w); alu(7, a, b, w); uses_si = true; uses_di = true; compares = true; },
+        0xA4 => { wr(di, w, rd(si + seg_base(), w)); uses_si = true; uses_di = true; },
+        0xA6 => { let a = rd(si + seg_base(), w); let b = rd(di, w); alu(7, a, b, w); uses_si = true; uses_di = true; compares = true; },
         0xAA => { wr(di, w, reg[RAX]); uses_di = true; },
-        0xAC => { sr(RAX, w, rd(si + seg_base, w)); uses_si = true; },
+        0xAC => { sr(RAX, w, rd(si + seg_base(), w)); uses_si = true; },
         _ => { alu(7, reg[RAX], rd(di, w), w); uses_di = true; compares = true; },
     }
-    if uses_si { if asz32 { reg[RSI] = (si + step) & am; } else { reg[RSI] = si + step; } }
-    if uses_di { if asz32 { reg[RDI] = (di + step) & am; } else { reg[RDI] = di + step; } }
-    if rep == 0 { return ip; }
+    if uses_si { if ins.asz32 { reg[RSI] = (si + step) & am; } else { reg[RSI] = si + step; } }
+    if uses_di { if ins.asz32 { reg[RDI] = (di + step) & am; } else { reg[RDI] = di + step; } }
+    if ins.rep == 0 { return ip; }
     let left = (reg[RCX] - 1) & am;
-    if asz32 { reg[RCX] = left; } else { reg[RCX] = left; }
+    if ins.asz32 { reg[RCX] = left; } else { reg[RCX] = left; }
     if left == 0 { return ip; }
-    if compares && flag(ZF) != (rep == 0xF3) { return ip; }
+    if compares && flag(ZF) != (ins.rep == 0xF3) { return ip; }
     rflags = began | RF;
     return rip;
 }
@@ -827,10 +847,10 @@ fn string_op(op: u8) -> u64 {
 // like the others. The width is a byte, or 16 bits with the prefix 66h, or 32.
 fn port_string(op: u8) -> u64 {
     io_level();
-    let w: u8 = if op & 1 == 0 { 8 } else if p66 { 16 } else { 32 };
+    let w: u8 = if op & 1 == 0 { 8 } else if ins.p66 { 16 } else { 32 };
     let n: u64 = w / 8;
-    let am: u64 = if asz32 { 0xFFFFFFFF } else { 0xFFFFFFFFFFFFFFFF };
-    if rep != 0 && reg[RCX] & am == 0 { return ip; }
+    let am: u64 = if ins.asz32 { 0xFFFFFFFF } else { 0xFFFFFFFFFFFFFFFF };
+    if ins.rep != 0 && reg[RCX] & am == 0 { return ip; }
     let step = if flag(DF) { 0 - n } else { n };
     let port = reg[RDX] & 0xFFFF;
     if op < 0x6E {
@@ -842,10 +862,10 @@ fn port_string(op: u8) -> u64 {
         reg[RDI] = (di + step) & am;
     } else {
         let si = reg[RSI] & am;
-        io_out(port, w, rd(si + seg_base, w));
+        io_out(port, w, rd(si + seg_base(), w));
         reg[RSI] = (si + step) & am;
     }
-    if rep == 0 { return ip; }
+    if ins.rep == 0 { return ip; }
     let left = (reg[RCX] - 1) & am;
     reg[RCX] = left;
     if left == 0 { return ip; }
@@ -858,7 +878,7 @@ fn port_string(op: u8) -> u64 {
 fn bit_op(kind: u8, w: u8, off: u64, from_reg: bool) {
     let bits: u64 = w;
     var a = m_ea;
-    if m_mod != 3 && from_reg {
+    if ins.mod != 3 && from_reg {
         // A register's bit number reaches outside the operand: it is a signed number of bits
         // from the operand's address.
         let o = sx(off, w);
@@ -866,7 +886,7 @@ fn bit_op(kind: u8, w: u8, off: u64, from_reg: bool) {
         if o >> 63 != 0 { words |= 0xFFFFFFFFFFFFFFFF << (if w == 16 { 60 } else if w == 32 { 59 } else { 58 }); }
         a += words * (bits / 8);
     }
-    let v = if m_mod == 3 { gr(m_rm, w) } else { rd(a, w) };
+    let v = if ins.mod == 3 { gr(ins.rm, w) } else { rd(a, w) };
     let bit: u64 = 1 << (off & (bits - 1));
     set_flag(CF, v & bit != 0);
     var r = v;
@@ -876,7 +896,7 @@ fn bit_op(kind: u8, w: u8, off: u64, from_reg: bool) {
         2 => { r = v & ~bit; },
         _ => { r = v ^ bit; },
     }
-    if m_mod == 3 { sr(m_rm, w, r); } else { wr(a, w, r); }
+    if ins.mod == 3 { sr(ins.rm, w, r); } else { wr(a, w, r); }
 }
 
 // The instructions that touch ports and the interrupt flag need IOPL to allow the current
@@ -920,60 +940,52 @@ fn exec64() -> bool {
         let ph = rip - code_delta;
         let slot = dc_slot(ph);
         dc_cur = slot;
-        if dc_tag[slot] == ph {
-            let d = dc_info[slot];
-            op = d as! u8;
-            rex = (d >> 8) as! u8;
-            p66 = d >> 16 & 1 != 0;
-            asz32 = d >> 17 & 1 != 0;
-            let r = d >> 18 & 3;
-            rep = if r == 0 { 0 } else { (0xF0 + r) as! u8 };
-            let sg = d >> 20 & 3;
-            seg_base = if sg == 0 { 0 } else if sg == 1 { fs_base } else { gs_base };
-            ip = rip + (d >> 22 & 15);
+        if dc[slot].tag == ph {
+            ins = dc[slot].ins;
+            op = ins.op;
+            ip = rip + ins.plen;
             known = true;
         }
     }
     if !known {
-        rex = 0;
-        rep = 0;
-        p66 = false;
-        asz32 = false;
-        seg_base = 0;
-        var sg: u64 = 0;
+        ins.rex = 0;
+        ins.rep = 0;
+        ins.p66 = false;
+        ins.asz32 = false;
+        ins.sg = 0;
         while true {
             op = fb() as! u8;
-            if op & 0xF0 == 0x40 { rex = op; continue; }
+            if op & 0xF0 == 0x40 { ins.rex = op; continue; }
             match op {
-                0x66 => { p66 = true; },
-                0x67 => { asz32 = true; },
-                0xF2, 0xF3 => { rep = op; },
+                0x66 => { ins.p66 = true; },
+                0x67 => { ins.asz32 = true; },
+                0xF2, 0xF3 => { ins.rep = op; },
                 0xF0, 0x26, 0x2E, 0x36, 0x3E => {},
-                0x64 => { seg_base = fs_base; sg = 1; },
-                0x65 => { seg_base = gs_base; sg = 2; },
+                0x64 => { ins.sg = 1; },
+                0x65 => { ins.sg = 2; },
                 _ => { break; },
             }
             // A REX prefix counts only when it is the last prefix.
-            rex = 0;
+            ins.rex = 0;
         }
+        ins.op = op;
+        ins.osz = if ins.rex & 8 != 0 { 64 } else if ins.p66 { 16 } else { 32 };
+        ins.plen = (ip - rip) as! u8;
+        ins.mlen = 0;
         if dc_cur >= 0 {
             // Remembered, if the prefixes and the opcode lie on the page and the page has
             // not been given up.
             let ph = rip - code_delta;
             let page = (ph >> 12) as! i64;
             if ip <= code_end && ip - rip <= 15 && dc_mark[page] != 2 {
-                let o: u64 = op;
-                let x: u64 = rex;
-                let r: u64 = if rep == 0 { 0 } else { rep & 3 };
-                dc_tag[dc_cur] = ph;
-                dc_info[dc_cur] = o | x << 8 | (if p66 { 1 << 16 } else { 0 }) | (if asz32 { 1 << 17 } else { 0 }) | r << 18 | sg << 20 | (ip - rip) << 22;
+                dc[dc_cur].tag = ph;
+                dc[dc_cur].ins = ins;
                 dc_mark[page] = 1;
             } else { dc_cur = -1; }
         }
     }
-    osz = if rex & 8 != 0 { 64 } else if p66 { 16 } else { 32 };
-    let w: u8 = if op & 1 == 0 { 8 } else { osz };
-    let low: u8 = op & 7 | (rex & 1) << 3;         // the register in the opcode's low bits
+    let w: u8 = if op & 1 == 0 { 8 } else { ins.osz };
+    let low: u8 = op & 7 | (ins.rex & 1) << 3;         // the register in the opcode's low bits
     var next: u64 = 0;                             // where to go, when not to the next instruction
     var jump = false;
     rflags &= ~RF;
@@ -983,11 +995,11 @@ fn exec64() -> bool {
         if op & 7 < 4 {
             modrm(0);
             if op & 2 == 0 {
-                let r = alu(k, rm_get(w), gr(m_reg, w), w);
+                let r = alu(k, rm_get(w), gr(ins.reg, w), w);
                 if k != 7 { rm_set(w, r); }
             } else {
-                let r = alu(k, gr(m_reg, w), rm_get(w), w);
-                if k != 7 { sr(m_reg, w, r); }
+                let r = alu(k, gr(ins.reg, w), rm_get(w), w);
+                if k != 7 { sr(ins.reg, w, r); }
             }
         } else {
             let r = alu(k, gr(RAX, w), fimm(w), w);
@@ -995,7 +1007,7 @@ fn exec64() -> bool {
         }
     } else if op == 0x0F {
         let op2 = fb() as! u8;
-        let w2: u8 = if op2 & 1 == 0 { 8 } else { osz };
+        let w2: u8 = if op2 & 1 == 0 { 8 } else { ins.osz };
         if sse64_is(op2) { sse64_op(op2); rip = ip; return true; }
         match op2 >> 4 {
             0x0 => {
@@ -1023,10 +1035,10 @@ fn exec64() -> bool {
                 need_level0();
                 modrm(0);
                 match op2 {
-                    0x20 => { reg[m_rm | (rex & 1) << 3] = cr_get(m_reg); },
-                    0x22 => { cr_set(m_reg, reg[m_rm | (rex & 1) << 3]); },
-                    0x21 => { reg[m_rm | (rex & 1) << 3] = if m_reg & 7 == 6 { dr6 } else if m_reg & 7 == 7 { dr7 } else { 0 }; },
-                    0x23 => { if m_reg & 7 == 6 { dr6 = reg[m_rm | (rex & 1) << 3]; } else if m_reg & 7 == 7 { dr7 = reg[m_rm | (rex & 1) << 3]; } },
+                    0x20 => { reg[ins.rm | (ins.rex & 1) << 3] = cr_get(ins.reg); },
+                    0x22 => { cr_set(ins.reg, reg[ins.rm | (ins.rex & 1) << 3]); },
+                    0x21 => { reg[ins.rm | (ins.rex & 1) << 3] = if ins.reg & 7 == 6 { dr6 } else if ins.reg & 7 == 7 { dr7 } else { 0 }; },
+                    0x23 => { if ins.reg & 7 == 6 { dr6 = reg[ins.rm | (ins.rex & 1) << 3]; } else if ins.reg & 7 == 7 { dr7 = reg[ins.rm | (ins.rex & 1) << 3]; } },
                     _ => { stop64("an instruction not written yet, 0F", op2); },
                 }
             },
@@ -1049,9 +1061,9 @@ fn exec64() -> bool {
             },
             0x4 => {
                 modrm(0);
-                let v = rm_get(osz);
+                let v = rm_get(ins.osz);
                 // With a 32-bit operand the upper half is cleared whether it moves or not.
-                if cond(op2 & 15) { sr(m_reg, osz, v); } else if osz == 32 { sr(m_reg, 32, gr(m_reg, 32)); }
+                if cond(op2 & 15) { sr(ins.reg, ins.osz, v); } else if ins.osz == 32 { sr(ins.reg, 32, gr(ins.reg, 32)); }
             },
             0x8 => {
                 let d = fs32();
@@ -1068,18 +1080,18 @@ fn exec64() -> bool {
                     0xA8 => { push(seg[SEG_GS], ssz()); },
                     0xA1 => { let v = pop(ssz()); seg_load(SEG_FS, v); },
                     0xA9 => { let v = pop(ssz()); seg_load(SEG_GS, v); },
-                    0xA3 => { modrm(0); bit_op(0, osz, gr(m_reg, osz), true); },
-                    0xAB => { modrm(0); bit_op(1, osz, gr(m_reg, osz), true); },
+                    0xA3 => { modrm(0); bit_op(0, ins.osz, gr(ins.reg, ins.osz), true); },
+                    0xAB => { modrm(0); bit_op(1, ins.osz, gr(ins.reg, ins.osz), true); },
                     0xA4, 0xAC => {
                         modrm(1);
                         let n = fb();
-                        rm_set(osz, shift_double(op2 == 0xA4, rm_get(osz), gr(m_reg, osz), n, osz));
+                        rm_set(ins.osz, shift_double(op2 == 0xA4, rm_get(ins.osz), gr(ins.reg, ins.osz), n, ins.osz));
                     },
                     0xA5, 0xAD => {
                         modrm(0);
-                        rm_set(osz, shift_double(op2 == 0xA5, rm_get(osz), gr(m_reg, osz), reg[RCX] & 0xFF, osz));
+                        rm_set(ins.osz, shift_double(op2 == 0xA5, rm_get(ins.osz), gr(ins.reg, ins.osz), reg[RCX] & 0xFF, ins.osz));
                     },
-                    0xAF => { modrm(0); sr(m_reg, osz, imul2(gr(m_reg, osz), rm_get(osz), osz)); },
+                    0xAF => { modrm(0); sr(ins.reg, ins.osz, imul2(gr(ins.reg, ins.osz), rm_get(ins.osz), ins.osz)); },
                     _ => { stop64("an instruction not written yet, 0F", op2); },
                 }
             },
@@ -1091,27 +1103,27 @@ fn exec64() -> bool {
                         modrm(0);
                         let cur = rm_get(w2);
                         alu(7, gr(RAX, w2), cur, w2);
-                        if flag(ZF) { rm_set(w2, gr(m_reg, w2)); }
+                        if flag(ZF) { rm_set(w2, gr(ins.reg, w2)); }
                         else { rm_set(w2, cur); sr(RAX, w2, cur); }
                     },
-                    0xB3 => { modrm(0); bit_op(2, osz, gr(m_reg, osz), true); },
-                    0xBB => { modrm(0); bit_op(3, osz, gr(m_reg, osz), true); },
-                    0xB6, 0xB7 => { modrm(0); sr(m_reg, osz, rm_get(if op2 == 0xB6 { 8 } else { 16 })); },
-                    0xBE => { modrm(0); sr(m_reg, osz, sx(rm_get(8), 8)); },
-                    0xBF => { modrm(0); sr(m_reg, osz, sx(rm_get(16), 16)); },
+                    0xB3 => { modrm(0); bit_op(2, ins.osz, gr(ins.reg, ins.osz), true); },
+                    0xBB => { modrm(0); bit_op(3, ins.osz, gr(ins.reg, ins.osz), true); },
+                    0xB6, 0xB7 => { modrm(0); sr(ins.reg, ins.osz, rm_get(if op2 == 0xB6 { 8 } else { 16 })); },
+                    0xBE => { modrm(0); sr(ins.reg, ins.osz, sx(rm_get(8), 8)); },
+                    0xBF => { modrm(0); sr(ins.reg, ins.osz, sx(rm_get(16), 16)); },
                     0xBA => {
                         modrm(1);
                         let n = fb();
-                        if m_reg & 7 < 4 { stop64("an instruction not written yet, 0F BA field", m_reg); }
-                        bit_op(m_reg & 3, osz, n, false);
+                        if ins.reg & 7 < 4 { stop64("an instruction not written yet, 0F BA field", ins.reg); }
+                        bit_op(ins.reg & 3, ins.osz, n, false);
                     },
                     0xB8 => {
-                        if rep != 0xF3 { stop64("an instruction not written yet, 0F", op2); }
+                        if ins.rep != 0xF3 { stop64("an instruction not written yet, 0F", op2); }
                         modrm(0);
-                        var v = rm_get(osz);
+                        var v = rm_get(ins.osz);
                         var n: u64 = 0;
                         while v != 0 { n += v & 1; v = v >> 1; }
-                        sr(m_reg, osz, n);
+                        sr(ins.reg, ins.osz, n);
                         rflags = rflags & ~ARITH | (if n == 0 { ZF } else { 0 });
                     },
                     0xBC, 0xBD => {
@@ -1119,14 +1131,14 @@ fn exec64() -> bool {
                         // and all. (F3h in front makes no difference on a CPU without TZCNT
                         // and LZCNT.)
                         modrm(0);
-                        let v = rm_get(osz);
+                        let v = rm_get(ins.osz);
                         if v == 0 {
                             rflags = rflags & ~ARITH | ZF | PF;
                         } else {
                             var n: u64 = 0;
                             if op2 == 0xBC { while v >> n & 1 == 0 { n += 1; } }
-                            else { n = osz - 1; while v >> n & 1 == 0 { n -= 1; } }
-                            sr(m_reg, osz, n);
+                            else { n = ins.osz - 1; while v >> n & 1 == 0 { n -= 1; } }
+                            sr(ins.reg, ins.osz, n);
                             rflags = rflags & ~ARITH | PARITY[n];
                         }
                     },
@@ -1135,9 +1147,9 @@ fn exec64() -> bool {
             },
             0xC => {
                 if op2 >= 0xC8 {
-                    let i = op2 & 7 | (rex & 1) << 3;
+                    let i = op2 & 7 | (ins.rex & 1) << 3;
                     let v = reg[i];
-                    if osz == 64 {
+                    if ins.osz == 64 {
                         reg[i] = v >> 56 | (v >> 40 & 0xFF00) | (v >> 24 & 0xFF0000) | (v >> 8 & 0xFF000000)
                             | (v << 8 & 0xFF00000000) | (v << 24 & 0xFF0000000000) | (v << 40 & 0xFF000000000000) | v << 56;
                     } else {
@@ -1146,15 +1158,15 @@ fn exec64() -> bool {
                 } else if op2 == 0xC0 || op2 == 0xC1 {
                     modrm(0);
                     let a = rm_get(w2);
-                    let b = gr(m_reg, w2);
+                    let b = gr(ins.reg, w2);
                     let r = alu(0, a, b, w2);
-                    sr(m_reg, w2, a);
+                    sr(ins.reg, w2, a);
                     rm_set(w2, r);
                 } else if op2 == 0xC7 {
                     modrm(0);
-                    if m_reg & 7 != 1 || m_mod == 3 { stop64("an instruction not written yet, 0F C7 field", m_reg); }
+                    if ins.reg & 7 != 1 || ins.mod == 3 { stop64("an instruction not written yet, 0F C7 field", ins.reg); }
                     // CMPXCHG8B and, with a 64-bit operand size, CMPXCHG16B.
-                    let h: u8 = if osz == 64 { 64 } else { 32 };
+                    let h: u8 = if ins.osz == 64 { 64 } else { 32 };
                     let lo = rd(m_ea, h);
                     let hi = rd(m_ea + h / 8, h);
                     if lo == gr(RAX, h) && hi == gr(RDX, h) {
@@ -1181,12 +1193,12 @@ fn exec64() -> bool {
                     0x63 => {
                         modrm(0);
                         let v = rm_get(32);
-                        sr(m_reg, osz, if osz == 64 { sx(v, 32) } else { v });
+                        sr(ins.reg, ins.osz, if ins.osz == 64 { sx(v, 32) } else { v });
                     },
-                    0x68 => { let v = fimm(if p66 { 16 } else { 32 }); push(v, ssz()); },
+                    0x68 => { let v = fimm(if ins.p66 { 16 } else { 32 }); push(v, ssz()); },
                     0x6A => { let v = fs8(); push(v, ssz()); },
-                    0x69 => { modrm(imm_len(osz)); let b = fimm(osz); sr(m_reg, osz, imul2(rm_get(osz), b, osz)); },
-                    0x6B => { modrm(1); let b = fs8(); sr(m_reg, osz, imul2(rm_get(osz), b, osz)); },
+                    0x69 => { modrm(imm_len(ins.osz)); let b = fimm(ins.osz); sr(ins.reg, ins.osz, imul2(rm_get(ins.osz), b, ins.osz)); },
+                    0x6B => { modrm(1); let b = fs8(); sr(ins.reg, ins.osz, imul2(rm_get(ins.osz), b, ins.osz)); },
                     0x6C, 0x6D, 0x6E, 0x6F => { next = port_string(op); jump = true; },
                     _ => { stop64("an instruction not written yet,", op); },
                 }
@@ -1198,37 +1210,37 @@ fn exec64() -> bool {
             0x8 => {
                 match op {
                     0x80, 0x81, 0x83 => {
-                        modrm(if op == 0x81 { imm_len(osz) } else { 1 });
-                        let b = if op == 0x81 { fimm(osz) } else { fs8() };
-                        let r = alu(m_reg & 7, rm_get(w), b, w);
-                        if m_reg & 7 != 7 { rm_set(w, r); }
+                        modrm(if op == 0x81 { imm_len(ins.osz) } else { 1 });
+                        let b = if op == 0x81 { fimm(ins.osz) } else { fs8() };
+                        let r = alu(ins.reg & 7, rm_get(w), b, w);
+                        if ins.reg & 7 != 7 { rm_set(w, r); }
                     },
-                    0x84, 0x85 => { modrm(0); alu(4, rm_get(w), gr(m_reg, w), w); },
+                    0x84, 0x85 => { modrm(0); alu(4, rm_get(w), gr(ins.reg, w), w); },
                     0x86, 0x87 => {
                         modrm(0);
                         let a = rm_get(w);
-                        let b = gr(m_reg, w);
+                        let b = gr(ins.reg, w);
                         rm_set(w, b);
-                        sr(m_reg, w, a);
+                        sr(ins.reg, w, a);
                     },
-                    0x88, 0x89 => { modrm(0); rm_set(w, gr(m_reg, w)); },
-                    0x8A, 0x8B => { modrm(0); sr(m_reg, w, rm_get(w)); },
+                    0x88, 0x89 => { modrm(0); rm_set(w, gr(ins.reg, w)); },
+                    0x8A, 0x8B => { modrm(0); sr(ins.reg, w, rm_get(w)); },
                     0x8D => {
                         modrm(0);
-                        if m_mod == 3 { stop64("LEA of a register,", op); }
-                        sr(m_reg, osz, m_off);
+                        if ins.mod == 3 { stop64("LEA of a register,", op); }
+                        sr(ins.reg, ins.osz, m_off);
                     },
                     0x8C => {
                         // A segment register's selector: to a register at the operand size,
                         // to memory as 16 bits.
                         modrm(0);
-                        if m_reg & 7 > 5 { fault(6, false, 0); }
-                        rm_set(if m_mod == 3 { osz } else { 16 }, seg[m_reg & 7]);
+                        if ins.reg & 7 > 5 { fault(6, false, 0); }
+                        rm_set(if ins.mod == 3 { ins.osz } else { 16 }, seg[ins.reg & 7]);
                     },
                     0x8E => {
                         modrm(0);
-                        if m_reg & 7 > 5 || m_reg & 7 == 1 { fault(6, false, 0); }
-                        seg_load(m_reg & 7, rm_get(16));
+                        if ins.reg & 7 > 5 || ins.reg & 7 == 1 { fault(6, false, 0); }
+                        seg_load(ins.reg & 7, rm_get(16));
                     },
                     0x8F => {
                         // The operand's address is worked out with RSP already moved.
@@ -1244,24 +1256,24 @@ fn exec64() -> bool {
                     0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97 => {
                         // 90h alone is NOP (and PAUSE with F3h): it does not clear RAX's upper half.
                         if low != 0 {
-                            let a = gr(RAX, osz);
-                            let b = gr(low, osz);
-                            sr(RAX, osz, b);
-                            sr(low, osz, a);
+                            let a = gr(RAX, ins.osz);
+                            let b = gr(low, ins.osz);
+                            sr(RAX, ins.osz, b);
+                            sr(low, ins.osz, a);
                         }
                     },
                     0x98 => {
-                        if osz == 16 { sr(RAX, 16, sx(reg[RAX], 8)); }
-                        else if osz == 32 { sr(RAX, 32, sx(reg[RAX], 16)); }
+                        if ins.osz == 16 { sr(RAX, 16, sx(reg[RAX], 8)); }
+                        else if ins.osz == 32 { sr(RAX, 32, sx(reg[RAX], 16)); }
                         else { reg[RAX] = sx(reg[RAX], 32); }
                     },
-                    0x99 => { sr(RDX, osz, ones(reg[RAX] & msb(osz) != 0)); },
+                    0x99 => { sr(RDX, ins.osz, ones(reg[RAX] & msb(ins.osz) != 0)); },
                     0x9B => { if machine && cr0 & 0x0A == 0x0A { fault(7, false, 0); } },      // FWAIT
                     0x9C => { push(rflags & 0xFCFFFF, ssz()); },
                     0x9D => {
                         // IF and IOPL stay as they are unless the privilege level may change them.
                         let v = pop(ssz());
-                        var can: u64 = if p66 { 0x4DD5 } else { 0x244DD5 };
+                        var can: u64 = if ins.p66 { 0x4DD5 } else { 0x244DD5 };
                         if machine && cpl == 0 { can |= 0x3200; }
                         else if machine && cpl <= (rflags >> 12 & 3) { can |= 0x200; }
                         rflags = rflags & ~can | v & can;
@@ -1273,7 +1285,7 @@ fn exec64() -> bool {
             },
             0xA => {
                 if op < 0xA4 {
-                    let a = (if asz32 { fd() } else { fq() }) + seg_base;
+                    let a = (if ins.asz32 { fd() } else { fq() }) + seg_base();
                     if op < 0xA2 { sr(RAX, w, rd(a, w)); } else { wr(a, w, reg[RAX]); }
                 } else if op == 0xA8 || op == 0xA9 {
                     alu(4, gr(RAX, w), fimm(w), w);
@@ -1284,8 +1296,8 @@ fn exec64() -> bool {
             },
             0xB => {
                 if op < 0xB8 { let v = fb(); sr(low, 8, v); }
-                else if osz == 64 { reg[low] = fq(); }
-                else if osz == 32 { reg[low] = fd(); }
+                else if ins.osz == 64 { reg[low] = fq(); }
+                else if ins.osz == 32 { reg[low] = fd(); }
                 else { let v = fw(); sr(low, 16, v); }
             },
             0xC => {
@@ -1293,13 +1305,13 @@ fn exec64() -> bool {
                     0xC0, 0xC1 => {
                         modrm(1);
                         let n = fb();
-                        rm_set(w, shift(m_reg & 7, rm_get(w), n, w, m_mod == 3));
+                        rm_set(w, shift(ins.reg & 7, rm_get(w), n, w, ins.mod == 3));
                     },
                     0xC2 => { let n = fw(); next = pop(64); reg[RSP] += n; jump = true; },
                     0xC3 => { next = pop(64); jump = true; },
                     0xC6, 0xC7 => {
                         modrm(imm_len(w));
-                        if m_reg & 7 != 0 { stop64("an instruction not written yet, C6 or C7 field", m_reg); }
+                        if ins.reg & 7 != 0 { stop64("an instruction not written yet, C6 or C7 field", ins.reg); }
                         let v = fimm(w);
                         rm_set(w, v);
                     },
@@ -1316,13 +1328,14 @@ fn exec64() -> bool {
                 if op < 0xD4 {
                     modrm(0);
                     let n: u64 = if op < 0xD2 { 1 } else { reg[RCX] & 0xFF };
-                    rm_set(w, shift(m_reg & 7, rm_get(w), n, w, false));
+                    rm_set(w, shift(ins.reg & 7, rm_get(w), n, w, false));
                 } else if op >= 0xD8 {
                     // The x87 (fpu.goose). REX names no other register stack: the fields are
                     // 0 to 7. With EM or TS set in CR0 the unit is not available.
                     modrm(0);
-                    m_reg &= 7;
-                    if m_mod == 3 { m_rm &= 7; }
+                    m_mod = ins.mod;
+                    m_reg = ins.reg & 7;
+                    m_rm = ins.rm & 7;
                     if machine && cr0 & 0x0C != 0 { fault(7, false, 0); }
                     fpu_escape(op);
                 } else { stop64("an instruction not written yet,", op); }
@@ -1332,18 +1345,18 @@ fn exec64() -> bool {
                     0xE0, 0xE1, 0xE2 => {
                         let d = fs8();
                         var left = reg[RCX] - 1;
-                        if asz32 { left &= 0xFFFFFFFF; }
+                        if ins.asz32 { left &= 0xFFFFFFFF; }
                         reg[RCX] = left;
                         if left != 0 && (op == 0xE2 || flag(ZF) == (op == 0xE1)) { next = ip + d; jump = true; }
                     },
                     0xE3 => {
                         let d = fs8();
-                        if reg[RCX] & mask(if asz32 { 32 } else { 64 }) == 0 { next = ip + d; jump = true; }
+                        if reg[RCX] & mask(if ins.asz32 { 32 } else { 64 }) == 0 { next = ip + d; jump = true; }
                     },
-                    0xE4, 0xE5 => { let port = fb(); io_level(); sr(RAX, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 }, io_in(port, if op == 0xE4 { 8 } else if p66 { 16 } else { 32 })); },
-                    0xE6, 0xE7 => { let port = fb(); io_level(); io_out(port, if op == 0xE6 { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
-                    0xEC, 0xED => { io_level(); sr(RAX, if op == 0xEC { 8 } else if p66 { 16 } else { 32 }, io_in(reg[RDX] & 0xFFFF, if op == 0xEC { 8 } else if p66 { 16 } else { 32 })); },
-                    0xEE, 0xEF => { io_level(); io_out(reg[RDX] & 0xFFFF, if op == 0xEE { 8 } else if p66 { 16 } else { 32 }, reg[RAX]); },
+                    0xE4, 0xE5 => { let port = fb(); io_level(); sr(RAX, if op == 0xE4 { 8 } else if ins.p66 { 16 } else { 32 }, io_in(port, if op == 0xE4 { 8 } else if ins.p66 { 16 } else { 32 })); },
+                    0xE6, 0xE7 => { let port = fb(); io_level(); io_out(port, if op == 0xE6 { 8 } else if ins.p66 { 16 } else { 32 }, reg[RAX]); },
+                    0xEC, 0xED => { io_level(); sr(RAX, if op == 0xEC { 8 } else if ins.p66 { 16 } else { 32 }, io_in(reg[RDX] & 0xFFFF, if op == 0xEC { 8 } else if ins.p66 { 16 } else { 32 })); },
+                    0xEE, 0xEF => { io_level(); io_out(reg[RDX] & 0xFFFF, if op == 0xEE { 8 } else if ins.p66 { 16 } else { 32 }, reg[RAX]); },
                     0xE8 => { let d = fs32(); push(ip, 64); next = ip + d; jump = true; },
                     0xE9 => { let d = fs32(); next = ip + d; jump = true; },
                     0xEB => { let d = fs8(); next = ip + d; jump = true; },
@@ -1385,13 +1398,13 @@ fn exec64() -> bool {
                     },
                     0xFE, 0xFF => {
                         modrm(0);
-                        match m_reg & 7 {
+                        match ins.reg & 7 {
                             0 => { rm_set(w, incdec(false, rm_get(w), w)); },
                             1 => { rm_set(w, incdec(true, rm_get(w), w)); },
                             2 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 2); } next = rm_get(64); push(ip, 64); jump = true; },
                             4 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 4); } next = rm_get(64); jump = true; },
                             6 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 6); } push(rm_get(ssz()), ssz()); },
-                            _ => { stop64("an instruction not written yet, FF field", m_reg); },
+                            _ => { stop64("an instruction not written yet, FF field", ins.reg); },
                         }
                     },
                     _ => { stop64("an instruction not written yet,", op); },

@@ -7905,3 +7905,44 @@ table, by the kind of access and the privilege level), tag and load, then `mem_r
 of the block's end and the width: about 30 executed for a read that was 150. The larger
 part of the 378 is `exec64` itself again. Next is E107's second item, the instruction's
 state near at hand, and with it the twelve registers `exec64` saves.
+
+## E109: the decoded instruction in one place (2026-11-20)
+
+`exec64` itself is 200 of the host instructions a guest instruction costs (stepped through
+178 consecutive instructions of the boot: 337 for each there, 378 over the whole boot).
+132 of the 200 run for every instruction, whatever it is:
+
+| Part of `exec64` every instruction runs | Host instructions |
+|---|---:|
+| Saving and restoring twelve registers | 16 |
+| The checks for a machine and a pending interrupt | 8 |
+| `save_start` (sixteen registers, the flags, the level) | 18 |
+| Is RIP on the code page, at the same level | 20 |
+| Finding the decode cache's entry (three arrays) | 30 |
+| Unpacking it into `rex`, `p66`, `asz32`, `rep`, `seg_base`, `ip` | 33 |
+| `osz`, the width, the masks for it, clearing RF | 30 |
+
+The unpacking stores each field into a global of its own, and the globals lie so far apart
+(the memory and the cache's arrays between them) that each store builds its address with two
+instructions more. `modrm` (48 for a call, 0.67 calls an instruction) unpacks its fields
+the same way.
+
+- **Hypothesis**: **with the decoded fields kept in the cache in the form they are used in
+  (a struct of bytes and one displacement, 24 bytes), and the instruction at hand a copy of
+  that struct, a hit is one copy and no unpacking; the tag in the same entry makes the
+  lookup one address. The boot takes under 345 host instructions for a guest instruction
+  (378 now).**
+- **What changed since last time**: E107 and E108 added the cache and made memory access
+  short; this is the first change to how `exec64` holds what it decoded. No new structure:
+  the same cache, the same tag, the same drops; its entry laid out differently.
+- **Next move for each result**:
+  - Under 345 → kept; next is the twelve registers: a short front for the commonest
+    opcodes that needs few of them, the rest as now
+  - 345 to 365 → kept if the tests hold; read the compiled copy and lookup again (a copy
+    of 24 bytes that became byte moves, or the fields loaded back one by one, would say why)
+  - No change → the far stores were not the cost: the table above is wrong somewhere, step
+    again before anything else
+  - A test differs → a field is stale on a hit (the segment's base is the one that is
+    not constant: it is taken from FS or GS at each use, not remembered)
+- **Cut-off**: the layout of the decoded state and of the cache's entry, in `exec64` and
+  `modrm`. `save_start`, the run loop and the split of `exec64` are other entries.

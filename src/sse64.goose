@@ -32,13 +32,13 @@ fn sse64_unknown(op: u8) {
 
 // Word k (0 low, 1 high) of the XMM register or 128 bits of memory that r/m names.
 fn xq(k: i64) -> u64 {
-    if m_mod == 3 { let b: i64 = m_rm; return xmm[b * 2 + k]; }
+    if ins.mod == 3 { let b: i64 = ins.rm; return xmm[b * 2 + k]; }
     return rd(m_ea + ((k * 8) as! u64), 64);
 }
 
 // The low 32 bits of the XMM register, or 32 bits of memory, that r/m names.
 fn xs() -> u64 {
-    if m_mod == 3 { let b: i64 = m_rm; return xmm[b * 2] & LOW32; }
+    if ins.mod == 3 { let b: i64 = ins.rm; return xmm[b * 2] & LOW32; }
     return rd(m_ea, 32);
 }
 
@@ -167,11 +167,11 @@ fn fxrstor64() {
 // fences with a register one, and CLFLUSH, which have nothing to do here.
 fn sse64_group15() {
     modrm(0);
-    if m_mod == 3 {
-        if m_reg & 7 < 5 { sse64_unknown(0xAE); }
+    if ins.mod == 3 {
+        if ins.reg & 7 < 5 { sse64_unknown(0xAE); }
         return;
     }
-    match m_reg & 7 {
+    match ins.reg & 7 {
         0 => { fxsave64(); },
         1 => { fxrstor64(); },
         2 => { mxcsr = (rd(m_ea, 32) & 0xFFFF) as! u32; },
@@ -201,7 +201,7 @@ fn m_ae_fence() -> bool { return peek8() >> 6 == 3; }
 
 fn sse64_op(op: u8) {
     // Which prefix chose the instruction: 0 none, 1 66, 2 F3, 3 F2.
-    let p: u8 = if rep == 0xF3 { 2 } else if rep == 0xF2 { 3 } else if p66 { 1 } else { 0 };
+    let p: u8 = if ins.rep == 0xF3 { 2 } else if ins.rep == 0xF2 { 3 } else if ins.p66 { 1 } else { 0 };
     if machine {
         // In a machine these are there once the operating system says it keeps their state
         // (CR4.OSFXSR) and has not asked for the x87 to be emulated (CR0.EM): else the opcode
@@ -214,12 +214,12 @@ fn sse64_op(op: u8) {
     if op == 0x77 { sse64_unknown(op); }
     let has_imm = op == 0x70 || op == 0x71 || op == 0x72 || op == 0x73 || (op >= 0xC2 && op <= 0xC6 && op != 0xC3);
     modrm(if has_imm { 1 } else { 0 });
-    let rg: i64 = m_reg;
+    let rg: i64 = ins.reg;
     let r = rg * 2;
-    let bg: i64 = m_rm;
+    let bg: i64 = ins.rm;
     let b = bg * 2;
-    let direct = m_mod == 3;
-    let gw: u8 = if rex & 8 != 0 { 64 } else { 32 };       // a general register's width here
+    let direct = ins.mod == 3;
+    let gw: u8 = if ins.rex & 8 != 0 { 64 } else { 32 };       // a general register's width here
     match op {
         0x10 => {
             // MOVUPS, MOVUPD, MOVSS, MOVSD: to the register.
@@ -272,7 +272,7 @@ fn sse64_op(op: u8) {
             if p < 2 { sse64_unknown(op); }
             let cut = op == 0x2C;
             let v = if p == 2 { fs(xs(), 0) } else { fd(xq(0)) };
-            if gw == 64 { reg64_set(m_reg, to_i64(v, cut)); } else { sr(m_reg, 32, to_i32(v, cut)); }
+            if gw == 64 { reg64_set(ins.reg, to_i64(v, cut)); } else { sr(ins.reg, 32, to_i32(v, cut)); }
         },
         0x2E, 0x2F => {
             // UCOMISS, UCOMISD and COMISS, COMISD: ZF, PF and CF; the rest of the six clear.
@@ -291,8 +291,8 @@ fn sse64_op(op: u8) {
             if !direct || p > 1 { sse64_unknown(op); }
             let lo = xmm[b];
             let hi = xmm[b + 1];
-            if p == 1 { sr(m_reg, 32, lo >> 63 | hi >> 63 << 1); }
-            else { sr(m_reg, 32, lo >> 31 & 1 | lo >> 63 << 1 | (hi >> 31 & 1) << 2 | hi >> 63 << 3); }
+            if p == 1 { sr(ins.reg, 32, lo >> 63 | hi >> 63 << 1); }
+            else { sr(ins.reg, 32, lo >> 31 & 1 | lo >> 63 << 1 | (hi >> 31 & 1) << 2 | hi >> 63 << 3); }
         },
         0x51, 0x58, 0x59, 0x5C, 0x5D, 0x5E, 0x5F => { farith64(op, p, r); },
         0x52, 0x53 => { if p == 1 || p == 3 { sse64_unknown(op); } farith64(op, p, r); },
@@ -363,7 +363,7 @@ fn sse64_op(op: u8) {
             wr(m_ea, 64, xmm[r]);
             wr(m_ea + 8, 64, xmm[r + 1]);
         },
-        0xC3 => { if direct || p != 0 { sse64_unknown(op); } wr(m_ea, gw, reg[m_reg]); },      // MOVNTI
+        0xC3 => { if direct || p != 0 { sse64_unknown(op); } wr(m_ea, gw, reg[ins.reg]); },      // MOVNTI
         0xE6 => {
             // Two integers to doubles, and two doubles to integers.
             if p == 2 { let s = xq(0); xmm[r] = dbits(i2f(s & LOW32)); xmm[r + 1] = dbits(i2f(s >> 32)); }
@@ -429,7 +429,7 @@ fn sse64_op(op: u8) {
             if !direct || p != 1 { sse64_unknown(op); }
             let imm = fb() as! u32;
             let k: i64 = if imm & 4 != 0 { 1 } else { 0 };
-            sr(m_reg, 32, xmm[b + k] >> ((imm & 3) * 16) & 0xFFFF);
+            sr(ins.reg, 32, xmm[b + k] >> ((imm & 3) * 16) & 0xFFFF);
         },
         0xD7 => {
             // PMOVMSKB: the bytes' top bits.
@@ -438,13 +438,13 @@ fn sse64_op(op: u8) {
             let lo = xmm[b];
             let hi = xmm[b + 1];
             for i: u32 in 8 { bits |= (lo >> (i * 8 + 7) & 1) << i | (hi >> (i * 8 + 7) & 1) << (i + 8); }
-            sr(m_reg, 32, bits);
+            sr(ins.reg, 32, bits);
         },
         0xF7 => {
             // MASKMOVDQU: the bytes of the register whose byte in the mask has its top bit
             // set go to memory at RDI.
             if !direct || p != 1 { sse64_unknown(op); }
-            let at = (if asz32 { reg[RDI] & 0xFFFFFFFF } else { reg[RDI] }) + seg_base;
+            let at = (if ins.asz32 { reg[RDI] & 0xFFFFFFFF } else { reg[RDI] }) + seg_base();
             for i: u32 in 16 {
                 let k: i64 = if i < 8 { 0 } else { 1 };
                 let sh = (i & 7) * 8;
@@ -467,7 +467,7 @@ fn sse64_op(op: u8) {
             if !direct || p != 1 { sse64_unknown(op); }
             let n = fb();
             let w: u32 = if op == 0x71 { 16 } else if op == 0x72 { 32 } else { 64 };
-            let field = m_reg & 7;
+            let field = ins.reg & 7;
             if op == 0x73 && (field == 3 || field == 7) {
                 let lo = xmm[b];
                 let hi = xmm[b + 1];
