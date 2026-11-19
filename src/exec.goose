@@ -144,10 +144,12 @@ inline fn seg_of(def: i64) -> i64 {
 // and the operand that the ModRM, SIB and displacement bytes describe. The next time the
 // instruction runs, the parsing is skipped and the remembered fields are used.
 //
-// An entry is trusted only if the instruction's bytes are still the ones it was made from: its
-// first eight bytes are compared, under a mask of the bytes the entry depends on. So nothing has
-// to watch writes to memory, and code that changes itself, or a different program at the same
-// address, simply fails the comparison and is decoded again. An instruction whose prefixes,
+// An entry is trusted only if the instruction's bytes are still the ones it was made from. For
+// 16-bit code, where code and data share pages as a rule, its first eight bytes are compared,
+// under a mask of the bytes the entry depends on: code that changes itself, or a different
+// program at the same address, fails the comparison and is decoded again. For 32-bit code
+// nothing is compared: the pages that hold cached instructions are marked, and a write to one
+// empties its entries (E044). An instruction whose prefixes,
 // opcode and operand take more than eight bytes has only its prefixes and opcode cached.
 // Immediate operands are never cached: they are fetched each time.
 //
