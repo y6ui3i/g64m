@@ -145,7 +145,7 @@ implementation of each: the rest of the CPU has no arms for them.
 guest instruction, 5.7 instructions a cycle. Stopped 6,000 times and its program counter
 read, the time lies where the instructions are (`exec64` 48%, `main` 11%, `modrm` 9%),
 with one exception: loading the decode cache's entry and testing its tag and kind takes
-18% of the boot's time for a handful of instructions. A loop of five instructions that
+19% of the boot's time for a handful of instructions. A loop of five instructions that
 never leaves the nearest cache takes 45.5 cycles for each: nine tenths of the cycles are
 there when nothing waits, and fewer host instructions is still what makes the machine
 faster. The jump on the instruction's kind is under a tenth.
