@@ -480,9 +480,9 @@ fn msr_set(n: u64, v: u64) {
 // 0F 00: the task register and the LDT's selector.
 fn sys_group6() {
     modrm(0);
-    match m_reg & 7 {
-        0 => { rm_set(if m_mod == 3 { osz } else { 16 }, ldt_sel); },
-        1 => { rm_set(if m_mod == 3 { osz } else { 16 }, tr_sel); },
+    match ins.reg & 7 {
+        0 => { rm_set(if ins.mod == 3 { ins.osz } else { 16 }, ldt_sel); },
+        1 => { rm_set(if ins.mod == 3 { ins.osz } else { 16 }, tr_sel); },
         2 => { need_level0(); ldt_sel = rm_get(16) as! u16; },
         3 => {
             // LTR: the TSS's descriptor is sixteen bytes; it is marked busy.
@@ -513,22 +513,22 @@ fn sys_group6() {
                 let data = kind & 0x18 == 0x10;
                 let conforming = code && kind & 4 != 0;
                 let reach = conforming || (level >= cpl && level >= rpl);
-                if m_reg & 7 == 4 { ok = reach && (data || (code && kind & 2 != 0)); }
+                if ins.reg & 7 == 4 { ok = reach && (data || (code && kind & 2 != 0)); }
                 else { ok = reach && data && kind & 2 != 0; }
             }
             if ok { rflags |= ZF; } else { rflags &= ~ZF; }
         },
-        _ => { stop64("an instruction not written yet, 0F 00 field", m_reg); },
+        _ => { stop64("an instruction not written yet, 0F 00 field", ins.reg); },
     }
 }
 
 // 0F 01: the descriptor tables' registers, INVLPG, and the machine status word.
 fn sys_group7() {
     modrm(0);
-    let field = m_reg & 7;
-    if m_mod == 3 {
-        if field == 4 { sr(m_rm, osz, cr0); return; }
-        if field == 7 && m_rm & 7 == 0 {
+    let field = ins.reg & 7;
+    if ins.mod == 3 {
+        if field == 4 { sr(ins.rm, ins.osz, cr0); return; }
+        if field == 7 && ins.rm & 7 == 0 {
             // SWAPGS: GS's base and the one kept aside for the kernel change places.
             need_level0();
             let t = gs_base;
@@ -551,13 +551,13 @@ fn sys_group7() {
 
 // IRET: with a 64-bit operand size IRETQ, which is what 64-bit code uses.
 fn iret() {
-    let n: u64 = osz / 8;
+    let n: u64 = ins.osz / 8;
     let sp = reg[RSP];
-    let nrip = rd(sp, osz);
-    let ncs = rd(sp + n, osz) & 0xFFFF;
-    let nfl = rd(sp + 2 * n, osz);
-    let nrsp = rd(sp + 3 * n, osz);
-    let nss = rd(sp + 4 * n, osz) & 0xFFFF;
+    let nrip = rd(sp, ins.osz);
+    let ncs = rd(sp + n, ins.osz) & 0xFFFF;
+    let nfl = rd(sp + 2 * n, ins.osz);
+    let nrsp = rd(sp + 3 * n, ins.osz);
+    let nss = rd(sp + 4 * n, ins.osz) & 0xFFFF;
     let level = (ncs & 3) as! u8;
     if ncs & 0xFFF8 == 0 { fault(13, true, 0); }
     if level < cpl || (ncs | 7) > gdt_limit { fault(13, true, ncs & 0xFFFC); }
@@ -601,7 +601,7 @@ fn syscall_enter(ret: u64) {
 fn sysret() {
     if efer & 1 == 0 { fault(6, false, 0); }
     need_level0();
-    if osz != 64 { stop64("SYSRET to compatibility mode, which is not written, operand bits", osz); }
+    if ins.osz != 64 { stop64("SYSRET to compatibility mode, which is not written, operand bits", ins.osz); }
     let top = reg[RCX] >> 47;
     if top != 0 && top != 0x1FFFF { fault(13, true, 0); }
     by_syscall = true;
@@ -615,10 +615,10 @@ fn sysret() {
 
 // The far return, to the same privilege level.
 fn far_ret(extra: u64) {
-    let n: u64 = osz / 8;
+    let n: u64 = ins.osz / 8;
     let sp = reg[RSP];
-    let nrip = rd(sp, osz);
-    let ncs = rd(sp + n, osz) & 0xFFFF;
+    let nrip = rd(sp, ins.osz);
+    let ncs = rd(sp + n, ins.osz) & 0xFFFF;
     if ncs & 0xFFF8 == 0 { fault(13, true, 0); }
     if (ncs & 3) as! u8 != cpl { stop64("a far return to another privilege level, which is not written, selector", ncs); }
     if (ncs | 7) > gdt_limit { fault(13, true, ncs & 0xFFFC); }

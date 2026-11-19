@@ -7905,3 +7905,92 @@ table, by the kind of access and the privilege level), tag and load, then `mem_r
 of the block's end and the width: about 30 executed for a read that was 150. The larger
 part of the 378 is `exec64` itself again. Next is E107's second item, the instruction's
 state near at hand, and with it the twelve registers `exec64` saves.
+
+## E109: the decoded instruction in one place (2026-11-20)
+
+`exec64` itself is 200 of the host instructions a guest instruction costs (stepped through
+178 consecutive instructions of the boot: 337 for each there, 378 over the whole boot).
+132 of the 200 run for every instruction, whatever it is:
+
+| Part of `exec64` every instruction runs | Host instructions |
+|---|---:|
+| Saving and restoring twelve registers | 16 |
+| The checks for a machine and a pending interrupt | 8 |
+| `save_start` (sixteen registers, the flags, the level) | 18 |
+| Is RIP on the code page, at the same level | 20 |
+| Finding the decode cache's entry (three arrays) | 30 |
+| Unpacking it into `rex`, `p66`, `asz32`, `rep`, `seg_base`, `ip` | 33 |
+| `osz`, the width, the masks for it, clearing RF | 30 |
+
+The unpacking stores each field into a global of its own, and the globals lie so far apart
+(the memory and the cache's arrays between them) that each store builds its address with two
+instructions more. `modrm` (48 for a call, 0.67 calls an instruction) unpacks its fields
+the same way.
+
+- **Hypothesis**: **with the decoded fields kept in the cache in the form they are used in
+  (a struct of bytes and one displacement, 24 bytes), and the instruction at hand a copy of
+  that struct, a hit is one copy and no unpacking; the tag in the same entry makes the
+  lookup one address. The boot takes under 345 host instructions for a guest instruction
+  (378 now).**
+- **What changed since last time**: E107 and E108 added the cache and made memory access
+  short; this is the first change to how `exec64` holds what it decoded. No new structure:
+  the same cache, the same tag, the same drops; its entry laid out differently.
+- **Next move for each result**:
+  - Under 345 → kept; next is the twelve registers: a short front for the commonest
+    opcodes that needs few of them, the rest as now
+  - 345 to 365 → kept if the tests hold; read the compiled copy and lookup again (a copy
+    of 24 bytes that became byte moves, or the fields loaded back one by one, would say why)
+  - No change → the far stores were not the cost: the table above is wrong somewhere, step
+    again before anything else
+  - A test differs → a field is stale on a hit (the segment's base is the one that is
+    not constant: it is taken from FS or GS at each use, not remembered)
+- **Cut-off**: the layout of the decoded state and of the cache's entry, in `exec64` and
+  `modrm`. `save_start`, the run loop and the split of `exec64` are other entries.
+
+**Result: 333 host instructions for a guest instruction (378 before), and the boot in 27.5
+to 27.8 seconds (29.4 to 30.3): the card's first branch. Kept.**
+
+| Boot to the prompt (1,523,597,312 instructions) | Host instructions | Cycles | Time |
+|---|---:|---:|---:|
+| E108 | 575 thousand million (378 each) | 92.4 to 93.0 | 29.4 to 30.3 s |
+| this entry | 507 (333) | 85.5 to 85.6 | 27.5 to 27.8 s |
+| this entry, `--no-decode-cache` | 638 (419; 447 at E107) | 102.6 | 34.3 s |
+
+- **What was done.** The decoded instruction is a struct `Ins` of 24 bytes (sixteen fields
+  of a byte, and the displacement), the cache's entry is that struct with the tag in front
+  (32 bytes, one array where there were three), and the instruction at hand, `ins`, is a
+  copy of the entry's. The operand size is worked out when the instruction is decoded and
+  kept. The segment's base is not kept: `seg_base()` reads FS's or GS's base when an
+  address is made (the card's fourth branch named it as the field that can go stale).
+- **Read in the compiled code**, stepped as before (198 consecutive instructions of the
+  boot, 303 for each there): a hit is the tag's compare, one load and store of sixteen
+  bytes and one of eight; no field is unpacked. `exec64` itself 166 (200), `modrm` 34 for
+  a call (48).
+- **Held to the real CPU.** 18 programs and 8 system tests pass and the kernel boots its
+  four ways; the expected results are the ones taken before this entry.
+- **Wrong builds: 20 of 23 caught.** The three that passed:
+  - *The prefix 67h not cleared for the next instruction* (when that one is decoded for
+    the first time). No test has an address above 32 bits after an instruction with 67h:
+    the hole is older than this entry.
+  - *REX.R left in the x87's operation field.* No test puts REX in front of an escape
+    opcode.
+  - *REX.B left in the x87's register field.* The same hole; and on three register forms
+    it gave the right build's result, so it may be no wrong build at all (not looked into).
+- **The test for those: `a_prefix`, 36 traced instructions, and all 23 are caught.** An
+  instruction met for the first time after one with 67h, 66h, REX.W and F3h; REX in front
+  of five x87 instructions (register forms, a memory form, and FLD1, where the register
+  field is part of the opcode). The right build gave the real CPU's trace at the first
+  run. The third wrong build was a wrong build after all: the x87's code takes a register
+  number modulo 8, so REX.B left in it named the same register, but FLD1 with REX.B was
+  taken for an opcode that does not exist. The first version of the test had no such
+  instruction.
+- **A wrong reading on the way, corrected.** The test was first written when the oracle's
+  host did not answer, set aside under `tests/asm64/pending/`, and the entry said the host
+  could not be reached. It had been up all along (32 days); the machine this was run on
+  was on another network for that half hour. The wake-on-LAN packets sent then did
+  nothing.
+
+**Next.** As the card said for this branch: the twelve registers `exec64` saves and
+restores (16), with `save_start` (18) the largest things every instruction still pays
+before its own work. A short front for the commonest opcodes that needs few registers,
+the rest as now.
