@@ -6514,3 +6514,78 @@ had anything in the upper half, a case was added to `g_cond`, and it is caught.
 oracle, the x86_64 ABI's floating point being all SSE. No faults are delivered. Speed was
 not looked at: the CPU decodes every instruction every time, into globals. The 32-bit
 machine's sources are untouched, and its suite is as it was (163 lines ok).
+
+## E092: the same tests under QEMU's user-mode emulator (2026-11-19)
+
+After E091 the owner asked whether a Docker backend made of this CPU (M11 of
+[roadmap.md](roadmap.md)) could draw interest beside QEMU, FEX-Emu, Box64 and Blink. One
+thing this project has that could: tests whose expected results are a real CPU's, step by
+step. This runs them on the emulator Docker uses by default. (E091 called SSE2 "E092"; SSE2
+is the entry after this one.)
+
+- **Hypothesis**: QEMU's user-mode emulator (10.2.1, `-cpu IvyBridge`, one instruction per
+  translation block, logging the CPU state) gives the same registers after every
+  instruction of E091's ten programs as the real CPU, and the same flags wherever the
+  manual defines them. **Where it differs, the difference is a flag the manual leaves
+  undefined, or the way a REP instruction is stepped; none is a wrong register or a wrong
+  defined flag.**
+- **What changed since last time**: E091 compared this project's CPU with the real one.
+  The emulator under test is another's, and nothing of this project's code is changed.
+- **Next move for each result**:
+  - A register or a defined flag differs → look until it is certain which side is right by
+    the manual; if QEMU is wrong, write the smallest program that shows it and put the
+    draft of a report in front of the owner (nothing is sent without a go-ahead); the test
+    suite as a thing others can use becomes a named part of M11
+  - Only undefined flags differ → a table of which and how, for the write-up; the suite is
+    this project's own tool and not a finding about others; M11's case rests on being
+    small and readable
+  - QEMU cannot be made to print a state after each instruction that lines up with the
+    oracle's → step it through its gdb stub instead, once; if that fails too, compare what
+    the programs print and the registers at the end only
+- **Cut-off**: the ten programs of E091, QEMU only. Blink and FEX-Emu are not tried here.
+
+### Result
+
+2026-11-19. **By the card's first branch, in part: one difference is a wrong register, and
+QEMU is the side that is wrong; but it was already found and fixed upstream. Everything
+else is as the hypothesis said.** Of 27,527 instructions QEMU 10.2.1 (Ubuntu's package,
+unpacked without installing) gives the same registers and flags as the real CPU after
+26,876 of the states it logs; 555 fields differ, each counted once, at the instruction
+that brings the difference (`tools/qemu64.py`):
+
+| What | Where | Count | Kind |
+|---|---|---:|---|
+| **RCL and RCR by a constant that is a whole turn (9 for a byte, 17 for a word; 18 too): QEMU leaves 0 in the operand and clears CF. The real CPU, the manual and this project's CPU change nothing** | `g_shift` | 5, in 3 instructions | **a bug in QEMU** |
+| OF after shifts and rotates by a count over one | `g_shift`, `c_mix` | 450 | undefined |
+| ZF after MUL and IMUL (the real CPU clears it; QEMU sets it from the result) | `g_muldiv` | 33 | undefined |
+| SF and PF after BSF and BSR (and TZCNT, LZCNT, which this CPU model runs as those) | `g_bits` | 49 | undefined |
+| BSF and BSR of zero with a 32-bit operand: the real CPU leaves the upper half, QEMU clears it | `g_bits` | 7 | undefined (the manual says the destination is) |
+| RCX and R11 after SYSCALL: the kernel leaves the return address and the flags there; QEMU's user mode leaves them as they were | `a_first`, `c_mix` | 11 | not the CPU: the kernel's ABI says only that they are lost |
+
+`g_alu`, `g_cond`, `g_mov`, `g_stack` and `g_string` are the same throughout (the oracle's
+lines between two repetitions of a REP instruction have no counterpart in QEMU's log and
+are passed over).
+
+**The bug.** A program of eleven cases (`build/t64/rclq.asm`, not kept: `g_shift` has the
+cases) run freely, not stepped: `rcl al, 9`, `rcl ax, 17`, `rcr al, 9`, `rcr ax, 17` and
+`rcl al, 18` give 0 with CF clear under QEMU, with `-cpu IvyBridge` and with the default
+model; by CL the same counts are right. It is QEMU's work item 3452 ("Incorrect TCG
+translation of rcr instruction", May 2026): the count is reduced modulo 9 after the test
+for a zero count has been decided, and the code for a nonzero count runs with a count of
+zero. Fixed upstream ("apply mod to immediate count of an RCL/RCR operation") and in the
+stable series from 10.2.4; the package tried here is 10.2.1. **So there is nothing to
+report; what it shows is that these tests, written with no knowledge of that bug, met it
+in the first run.** The fix carries a question in a comment, whether the flags should
+change when the count is not zero but a whole turn. On an Ivy Bridge they do not: OF and
+CF are as they were (`g_shift`'s four cases). Saying so upstream would be a message to the
+outside, and is the owner's to decide.
+
+**What it means for M11.** The suite is worth something to others, not only to this
+project: it is the first branch of the card. It becomes a named part of M11
+([roadmap.md](roadmap.md)): the oracle and the generated tests kept able to run against
+any user-mode emulator, with a table like the one above for each. Blink and FEX-Emu were
+not tried (the card's cut-off).
+
+**Rejected on the way.** The first count had 1,988 differences: a flag that differs stays
+different until the next instruction that sets it, and each line was counted. The comparer
+now shows only what an instruction brings.

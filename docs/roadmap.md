@@ -11,6 +11,7 @@ desktop that can browse the web, still as an i686, and only then to x86_64.
 | M8 | A screen (done by script; the window by hand) | X (Xfbdev, twm, xterm) comes up in a window on the host, with keyboard and mouse |
 | M9 | A browser (done) | NetSurf or Dillo shows a page fetched over HTTPS |
 | M10 | x86_64 | A 64-bit Linux kernel boots to a shell |
+| M11 | A backend for Docker | `docker run --platform linux/amd64 alpine` on an arm64 host runs its x86_64 programs through this CPU |
 
 ## Why 32-bit first
 
@@ -112,3 +113,42 @@ devices on a CPU that is still moving.
 - Done so far:
   - E091: the integer instructions in user mode, and the ptrace oracle
     (`tools/oracle/step64.c`, `tools/difftest64.sh`).
+
+### M11: a backend for Docker
+
+Proposed by the owner on 2026-11-19, for after x86_64: an x86_64 container image run with
+the `docker` command on an arm64 host, its programs executed by this CPU. It may be slow;
+it is worth trying.
+
+- **How Docker runs a foreign image today**: its Linux VM is arm64, and the kernel's
+  `binfmt_misc` hands every x86_64 ELF to a registered interpreter (QEMU's user-mode
+  emulator, or Rosetta). The container, its file system and its kernel stay arm64 Linux's;
+  only the program's instructions are emulated, and its system calls are passed on.
+- **So the backend is a user-mode emulator, and E091's `x64` is the beginning of one**: it
+  already loads a static ELF and answers three system calls itself. What M11 adds:
+  - `x64` built for arm64 Linux (Goose emits C and has a Linux release; to be tried first);
+  - system calls passed to the host kernel: the numbers differ between x86_64 and arm64, a
+    few calls exist only on x86_64 (`open`, `stat`, `fork`, `pipe`: done with `openat`,
+    `newfstatat`, `clone`, `pipe2`), and `struct stat` is laid out differently;
+  - the guest's memory as the host's own (`mmap`, `brk`, `mprotect` at the guest's addresses),
+    not one block from address 0;
+  - a dynamic ELF: the interpreter (`ld-musl`, `ld-linux`) loaded beside the program, the
+    stack with its arguments, environment and auxiliary vector, `arch_prctl` for FS;
+  - signals; then threads (`clone`, `futex`, LOCK made atomic), which is the hard part;
+  - registering with `binfmt_misc` (the `F` flag, so that it works inside a container).
+- **Steps, each one a program that runs**: a static busybox → Alpine's dynamic busybox →
+  `docker run --platform linux/amd64 alpine echo` → a shell session → a program with
+  threads. Compared against QEMU's user-mode emulator on the same image for results, and
+  for speed once it works.
+- **The tests are part of it** (E092): the ptrace oracle and the generated tests run
+  against any user-mode emulator, not only this one (`tools/qemu64.py` does it for QEMU).
+  Their first run on QEMU 10.2.1 met a bug in RCL and RCR that upstream had fixed a few
+  months before. A table of where each emulator parts from a real CPU is something this
+  project can offer that the others do not have.
+- **Speed** is the JIT's, as on the 32-bit machine: the design carries over (docs/perf.md),
+  and under Linux the generated code's memory is made executable with `mprotect`.
+- **It does not need the kernel half of M10** (long mode, paging, devices): it needs the
+  user-mode instructions and SSE2, which are M10's first steps. The other way to do it, a
+  whole 64-bit machine that boots Linux with `dockerd` inside and is reached as a Docker
+  context, needs all of M10 and emulates the kernel too; it is not the plan.
+
