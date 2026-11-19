@@ -129,7 +129,9 @@ devices on a CPU that is still moving.
     beside it and differs in three places so far.
   - E095: privilege level 3 and back: IRETQ, SYSRET, SYSCALL, SWAPGS, faults and INT from
     level 3 with the TSS's stack, the single step.
-- Left, in order: a TLB under the walk; the 32-bit machine's devices behind the
+  - E096: a TLB under the walk (six tables: read, write and execute, for level 3 and for
+    the rest).
+- Left, in order: the 32-bit machine's devices behind the
   64-bit CPU (the interrupt controller, the timer, the serial port first), and with them
   interrupts from outside and a HLT that wakes; the x87 and
   FXSAVE the kernel wants; then the kernel, entered at its 64-bit entry point.

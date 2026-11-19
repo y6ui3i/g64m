@@ -6851,3 +6851,95 @@ the real CPU's are 896h, and nothing is printed after the SYSRET. Not looked int
 
 **Not done, and next.** Interrupts from outside (with the devices, as the card says),
 compatibility mode, the far return to level 3. Next by the card: the TLB (E096).
+
+## E096: a TLB under the 64-bit CPU's page walk (2026-11-19)
+
+The third step of M10's kernel half.
+
+- **Hypothesis**: Every access of the machine walks four levels of tables (E094), and
+  every instruction walks once more for its first byte. **Six tables of 4,096 entries
+  (read, write and execute, each for privilege level 3 and for the rest), found by the
+  page number's low twelve bits, where an entry is made only by a walk that succeeded and
+  so stands for "this access is allowed and its accessed and dirty bits are set", emptied
+  by a write of CR3, CR0, CR4 or EFER and one page at a time by INVLPG, take the walk off
+  all but the first access of a page: a loop of plain instructions over memory runs at
+  least three times as fast, and the four system tests print what they printed.** What a
+  guest can see of a TLB is what it may not do: use a translation the guest has
+  invalidated, let level 3 use what level 0 walked, write through an entry made by a
+  read without setting the dirty bit, keep allowing what CR0.WP or EFER.NXE has since
+  forbidden. A new test asks each of those of the real CPU and of this one.
+- **What changed since last time**: E094 and E095 had no TLB by intent, and their tests
+  invalidate as a real CPU needs. The 32-bit machine's TLB (E045, E090) is the model: four
+  tables there, no execute table.
+- **Next move for each result**:
+  - Three times as fast or more and all five tests the same → kept; next is the devices
+    (E097)
+  - The tests are the same and the loop is under twice as fast → the walk was not what
+    the time went on: count where it does go (the save of sixteen registers at each
+    instruction is the first suspect) before keeping anything
+  - A test differs → the table that let it through is missing a key (the privilege
+    level, the kind of access) or an emptying; a wrong build for that case goes in with
+    the fix
+- **Cut-off**: no global pages kept across a write of CR3 (everything is emptied: slower
+  and never wrong), no address-space numbers (CR4.PCIDE is not offered), no fast path in
+  front of the tables. The loop is a measure of this CPU against itself, not of anything
+  a kernel does.
+
+### Result
+
+2026-11-19. **Kept, though the hypothesis's number was missed by a little: the loop takes
+1.83 seconds where it took 5.34 (medians of three; 2.9 times as fast, and the card said
+three), and the five system tests print the same as the real CPU under KVM.** The card
+named what to do at three times and at under two, and nothing between: 2.9 is taken as
+the first, with what the rest of the time goes on counted as the second asks.
+
+| Build | The loop, three runs | Instructions a second |
+|---|---|---:|
+| Before (a walk for every access and one more for every instruction) | 5.91, 5.41, 5.34 s | 11.8 million |
+| With the TLB | 1.84, 1.84, 1.83 s | 34.4 million |
+| The same without the save of sixteen registers at each instruction (a counting build) | 2.29, 1.84, 1.78 s | 3% fewer seconds |
+| and without the check of the first byte's page (which then went anyway: see below) | 2.00, 1.80 s | 2% fewer again |
+
+The loop is 63 million instructions and prints the same sum on the real CPU. **The walk
+was two thirds of the time and is gone; the save at each instruction, which E094 wrote
+down as a cost, is 3%.** What is left is the interpreter itself, which decodes every
+instruction into globals every time: the 32-bit machine was there before its decode cache
+(E010 on). That is for after the kernel boots, by a count of what the kernel runs.
+
+**What was built.** `xlate` in `src/sys64.goose` looks in one of six tables and calls
+`walk` on a miss; `walk` fills the table when it succeeds. Emptied by writes of CR3, CR0,
+CR4 and EFER. INVLPG drops every entry in the address's 2 MB, since an entry stands for
+4 KB and a 2 MB page's entries may be anywhere in it; if an entry of a 1 GB page was made
+since the last emptying, everything.
+
+**Two things the wrong builds changed in the design.**
+- **Instructions are fetched through the execute table.** They were read like data, with
+  one separate check that the first byte's page may be executed. A wrong build that left
+  the execute tables out of the emptying passed: the stale entry was only ever asked
+  "may this be executed", and the bytes came through the read table. Now every fetched
+  byte goes through the execute translation, the separate check is gone, and an
+  instruction that runs on into a page that may not be executed faults there.
+- **INVLPG had a quick path for when no 2 MB page was about, and it never ran**: the
+  tests' own code is in 2 MB pages, as a kernel's is. Two wrong builds of it passed. The
+  path is taken out.
+
+**The test** (`tests/sys64/y_tlb.asm`, 59 lines of output): a write after a read sets the
+dirty bit; level 3 after level 0 on level 0's page; level 3 writing after reading where it
+may only read; executing after reading where it may not; the same after the right is
+taken away; CR0.WP turned on after a write it would have refused; EFER.NXE turned off
+after a read through an entry with bit 63; one page invalidated and then read, written
+and executed; a write of CR3; three pages that share a place in the tables (two of them
+4,096 pages apart, the third 65,536); a 2 MB page invalidated by one address in it and
+read at another; level 3 reading the IDT's page after a fault has had the CPU read it.
+
+**Wrong builds.** 17 (`build/mut96.py`). 15 caught, seven of them after the changes above
+and three new cases. Two change no result: no emptying at a write of CR4 (no bit of CR4
+that this CPU offers changes a translation), and filling only the read tables (every
+write and fetch then walks: slow, and right).
+
+**Rejected on the way.** The test read through a register the mapping macro had changed,
+and so read address 3: the real CPU printed what a BIOS leaves there, the emulator zero.
+The test was wrong; and nothing here may read memory it has not written.
+
+**Next.** The devices (E097): the interrupt controller, the timer and the serial port of
+the 32-bit machine behind the 64-bit CPU, interrupts from outside, a HLT that wakes.

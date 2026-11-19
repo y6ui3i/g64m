@@ -1,11 +1,10 @@
 // The system side of the 64-bit CPU (E094): what long mode has beyond a program's view.
 //
 // When `machine` is true the CPU is a whole one, at a privilege level, and:
-// - memory is reached through four levels of page tables (xlate): 4 KB, 2 MB and 1 GB
+// - memory is reached through four levels of page tables (walk): 4 KB, 2 MB and 1 GB
 //   pages, the present, write, user and no-execute bits, CR0.WP, the accessed and dirty
-//   bits. There is no TLB yet: every access walks the tables. A real CPU keeps
-//   translations until INVLPG or a write of CR3, so a guest that changes an entry in use
-//   invalidates it, and a TLB can be put under this later without the guest seeing it;
+//   bits; with a TLB in front (xlate), so that a page's tables are walked once for each
+//   kind of access;
 // - a fault does not end the run: fault() puts the registers back as the instruction found
 //   them, and the next call of exec64 delivers it through the IDT (deliver);
 // - the instructions that load and read the tables, the control registers and the MSRs are
@@ -129,8 +128,68 @@ fn page_fault(a: u64, acc: u8, kind: u64) {
     fault(14, true, code);
 }
 
+// ---- The TLB (E096) ----
+//
+// Six tables of TLB_SIZE entries: for reads, writes and fetches of instructions, each for
+// privilege level 3 and for the rest. An entry is found by the page number's low bits and
+// holds the page number and the physical page behind it. It is made only by a walk that
+// succeeded for that kind of access at that level, so a hit means: allowed, and the
+// accessed bits (and for a write the dirty bit) are already set. Nothing is checked on a
+// hit.
+//
+// What an entry was made under must still hold: a write of CR3 empties everything, as do
+// writes of CR0 (WP), CR4 and EFER (NXE); INVLPG empties one page's six entries. A guest
+// that makes an entry more permissive without invalidating meets no stale refusal, since
+// a refusal is never kept: the access that was refused walks again.
+
+let TLB_BITS = 12;
+let TLB_SIZE = 1 << TLB_BITS;
+let TLB_EMPTY: u64 = 0xFFFFFFFFFFFFFFFF;       // no page has this number
+
+var tlb_tag: u64[6 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 6 * TLB_SIZE];
+var tlb_phys: u64[6 * TLB_SIZE] = [0; 6 * TLB_SIZE];
+
+// An entry stands for 4 KB even when the page is larger, so a large page has many entries.
+// This says whether any entry made since the last emptying came from a 1 GB page.
+var tlb_has_1g = false;
+
+fn tlb_flush() {
+    for i in 6 * TLB_SIZE { tlb_tag[i] = TLB_EMPTY; }
+    tlb_has_1g = false;
+}
+
+// INVLPG: the page that a is in is forgotten, whatever its size. Every entry in a's 2 MB is
+// dropped (512 places in each table), since entries of a 2 MB page may be anywhere in it;
+// with entries of 1 GB pages about, everything. More than asked for is always allowed.
+fn tlb_forget(a: u64) {
+    if tlb_has_1g { tlb_flush(); return; }
+    let first = a >> 12 & 0xFFFFFFFFFFFFFE00;
+    for k in 512 {
+        let i = ((first + (k as! u64)) & (TLB_SIZE - 1)) as! i64;
+        for t in 6 {
+            if tlb_tag[t * TLB_SIZE + i] >> 9 == first >> 9 { tlb_tag[t * TLB_SIZE + i] = TLB_EMPTY; }
+        }
+    }
+}
+
+// Which table an access of kind acc uses now.
+inline fn tlb_table(acc: u8) -> i64 {
+    var t = 0;
+    if acc & ACC_WRITE != 0 { t = 2; } else if acc & ACC_EXEC != 0 { t = 4; }
+    if cpl == 3 && acc & ACC_SYSTEM == 0 { t += 1; }
+    return t * TLB_SIZE;
+}
+
 // The physical address behind linear address a, for an access of kind acc; or a fault.
-fn xlate(a: u64, acc: u8) -> u64 {
+inline fn xlate(a: u64, acc: u8) -> u64 {
+    let page = a >> 12;
+    let i = tlb_table(acc) + ((page & (TLB_SIZE - 1)) as! i64);
+    if tlb_tag[i] == page { return tlb_phys[i] | a & 0xFFF; }
+    return walk(a, acc);
+}
+
+// The walk of the four levels, which fills the TLB when it succeeds.
+fn walk(a: u64, acc: u8) -> u64 {
     let top = a >> 47;
     if top != 0 && top != 0x1FFFF { fault(13, true, 0); }
     let user = cpl == 3 && acc & ACC_SYSTEM == 0;
@@ -170,7 +229,13 @@ fn xlate(a: u64, acc: u8) -> u64 {
     let want: u64 = if acc & ACC_WRITE != 0 { 0x60 } else { 0x20 };
     if e & want != want { phys_wr(at[level], 64, e | want); }
     let low: u64 = ((1 as u64) << shift) - 1;
-    return e & ADDR_BITS & ~low | a & low;
+    let p = e & ADDR_BITS & ~low | a & low;
+    // One entry, for this 4 KB of it, whatever the page's size.
+    let i = tlb_table(acc) + ((a >> 12 & (TLB_SIZE - 1)) as! i64);
+    tlb_tag[i] = a >> 12;
+    tlb_phys[i] = p & 0xFFFFFFFFFFFFF000;
+    if shift == 30 { tlb_has_1g = true; }
+    return p;
 }
 
 // A read through the page tables. One that crosses a page is done a byte at a time.
@@ -323,12 +388,14 @@ fn cr_set(n: u8, v: u64) {
         0 => {
             if v & 0x80000001 != 0x80000001 { stop64("CR0 written without paging or protection: leaving long mode is not written, value", v); }
             cr0 = v;
+            tlb_flush();
         },
         2 => { cr2 = v; },
-        3 => { cr3 = v; },
+        3 => { cr3 = v; tlb_flush(); },
         4 => {
             if v & 0x20 == 0 { stop64("CR4 written without PAE: leaving long mode is not written, value", v); }
             cr4 = v;
+            tlb_flush();
         },
         8 => { cr8 = v & 15; },
         _ => { fault(6, false, 0); },
@@ -358,6 +425,7 @@ fn msr_set(n: u64, v: u64) {
             if v & 0x100 == 0 { stop64("EFER written without LME: leaving long mode is not written, value", v); }
             if v & 0xFFFFFFFFFFFFF2FE != 0 { fault(13, true, 0); }
             efer = v & 0x901 | 0x500;
+            tlb_flush();
         },
         0xC0000081 => { msr_star = v; },
         0xC0000082 => { msr_lstar = v; },
@@ -420,7 +488,7 @@ fn sys_group7() {
         2 => { need_level0(); let l = rd(m_ea, 16); let b = rd(m_ea + 2, 64); gdt_limit = l; gdt_base = b; },
         3 => { need_level0(); let l = rd(m_ea, 16); let b = rd(m_ea + 2, 64); idt_limit = l; idt_base = b; },
         4 => { wr(m_ea, 16, cr0); },
-        7 => { need_level0(); },                 // INVLPG: there is no TLB to drop it from
+        7 => { need_level0(); tlb_forget(m_ea); },
         _ => { stop64("an instruction not written yet, 0F 01 field", field); },
     }
 }

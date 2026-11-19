@@ -168,10 +168,18 @@ fn wr(a: u64, w: u8, v: u64) {
 
 // ---- Fetching ----
 
-fn fb() -> u64 { let v = rd(ip, 8); ip += 1; return v; }
-fn fw() -> u64 { let v = rd(ip, 16); ip += 2; return v; }
-fn fd() -> u64 { let v = rd(ip, 32); ip += 4; return v; }
-fn fq() -> u64 { let v = rd(ip, 64); ip += 8; return v; }
+// The instruction's bytes are read as what they are: in a machine, through the translation
+// for executing, so that a page that may not be executed faults at its first byte fetched.
+fn code_rd(a: u64, w: u8) -> u64 {
+    if machine { return sys_rd(a, w, ACC_EXEC); }
+    if a >= MEM_SIZE - 8 { stop64("an instruction outside memory, at", a); }
+    return mem_rd(a, w);
+}
+
+fn fb() -> u64 { let v = code_rd(ip, 8); ip += 1; return v; }
+fn fw() -> u64 { let v = code_rd(ip, 16); ip += 2; return v; }
+fn fd() -> u64 { let v = code_rd(ip, 32); ip += 4; return v; }
+fn fq() -> u64 { let v = code_rd(ip, 64); ip += 8; return v; }
 fn fs8() -> u64 { return sx(fb(), 8); }
 fn fs32() -> u64 { return sx(fd(), 32); }
 
@@ -683,8 +691,6 @@ fn exec64() -> bool {
         delivered = false;
         if pending >= 0 { deliver_pending(); return true; }
         save_start();
-        // The first byte's page must be one that may be executed.
-        xlate(rip, ACC_EXEC);
     }
     ip = rip;
     rex = 0;
@@ -1095,7 +1101,7 @@ fn exec64() -> bool {
                     0xFD => { rflags |= DF; },
                     0xF6, 0xF7 => {
                         // Peek at the field: TEST has a constant behind the operand.
-                        let field = (rd(ip, 8) as! u8) >> 3 & 7;
+                        let field = (code_rd(ip, 8) as! u8) >> 3 & 7;
                         modrm(if field < 2 { imm_len(w) } else { 0 });
                         match field {
                             0, 1 => { let b = fimm(w); alu(4, rm_get(w), b, w); },
