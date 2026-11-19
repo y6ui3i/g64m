@@ -7946,3 +7946,46 @@ the same way.
     not constant: it is taken from FS or GS at each use, not remembered)
 - **Cut-off**: the layout of the decoded state and of the cache's entry, in `exec64` and
   `modrm`. `save_start`, the run loop and the split of `exec64` are other entries.
+
+**Result: 333 host instructions for a guest instruction (378 before), and the boot in 27.5
+to 27.8 seconds (29.4 to 30.3): the card's first branch. Kept.**
+
+| Boot to the prompt (1,523,597,312 instructions) | Host instructions | Cycles | Time |
+|---|---:|---:|---:|
+| E108 | 575 thousand million (378 each) | 92.4 to 93.0 | 29.4 to 30.3 s |
+| this entry | 507 (333) | 85.5 to 85.6 | 27.5 to 27.8 s |
+| this entry, `--no-decode-cache` | 638 (419; 447 at E107) | 102.6 | 34.3 s |
+
+- **What was done.** The decoded instruction is a struct `Ins` of 24 bytes (sixteen fields
+  of a byte, and the displacement), the cache's entry is that struct with the tag in front
+  (32 bytes, one array where there were three), and the instruction at hand, `ins`, is a
+  copy of the entry's. The operand size is worked out when the instruction is decoded and
+  kept. The segment's base is not kept: `seg_base()` reads FS's or GS's base when an
+  address is made (the card's fourth branch named it as the field that can go stale).
+- **Read in the compiled code**, stepped as before (198 consecutive instructions of the
+  boot, 303 for each there): a hit is the tag's compare, one load and store of sixteen
+  bytes and one of eight; no field is unpacked. `exec64` itself 166 (200), `modrm` 34 for
+  a call (48).
+- **Held to the real CPU.** 18 programs and 8 system tests pass and the kernel boots its
+  four ways; the expected results are the ones taken before this entry.
+- **Wrong builds: 20 of 23 caught.** The three that passed:
+  - *The prefix 67h not cleared for the next instruction* (when that one is decoded for
+    the first time). No test has an address above 32 bits after an instruction with 67h:
+    the hole is older than this entry.
+  - *REX.R left in the x87's operation field.* No test puts REX in front of an escape
+    opcode.
+  - *REX.B left in the x87's register field.* The same hole; and on three register forms
+    it gave the right build's result, so it may be no wrong build at all (not looked into).
+- **A test for those is written and not in the suite**: `tests/asm64/pending/a_prefix.asm`
+  (an instruction met for the first time after one with 67h, 66h, REX.W and F3h; REX in
+  front of four x87 instructions). The first two wrong builds differ from the right build
+  on it. Its expected trace has to come from the real CPU, and the oracle's host could not
+  be reached from where this was run (another network; a wake-on-LAN packet was sent and
+  nothing answered in a few minutes). **Open: take the trace
+  (`ORACLE_HOST=hal tools/difftest64.sh a_prefix` after moving the file up); only then is
+  it known that the right build is right there.**
+
+**Next.** As the card said for this branch: the twelve registers `exec64` saves and
+restores (16), with `save_start` (18) the largest things every instruction still pays
+before its own work. A short front for the commonest opcodes that needs few registers,
+the rest as now.
