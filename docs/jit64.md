@@ -53,6 +53,40 @@ QEMU runs straight-line integer code at 2,000 to 8,000, jumps through a register
 800, double and float at 200 to 600, the x87 at 74. g86m interpreted is 24 to 47 whatever
 the instruction. Each task below is reported as this table again.
 
+**After E120 to E125 (E126)**, with each primitive's work done thirty times so that it can
+be timed (`tools/prim64_long.sh`), million guest instructions a second:
+
+| | QEMU | Rosetta | g86m `--jit` | g86m / QEMU |
+|---|---:|---:|---:|---:|
+| `p_muldiv` | 1405 | 9515 | 5698 | 4.06 |
+| `p_recursion` | 1567 | 3319 | 2745 | 1.75 |
+| `p_funcptr` | 455 | 1486 | 699 | 1.54 |
+| `p_loop` | 3988 | 15023 | 5778 | 1.45 |
+| `p_fill` | 536 | 3211 | 593 | 1.11 |
+| `p_pointer` | 3495 | 9245 | 3319 | 0.95 |
+| `p_bignum` | 3412 | 10083 | 3097 | 0.91 |
+| `p_if` | 2439 | 4827 | 2001 | 0.82 |
+| `p_index` | 3494 | 14254 | 2833 | 0.81 |
+| `p_ternary` | 10743 | 16881 | 8206 | 0.76 |
+| `p_bytes` | 5112 | 11531 | 3858 | 0.75 |
+| `p_switch` | 834 | 1840 | 584 | 0.70 |
+| `p_pixel` | 10316 | 13935 | 6157 | 0.60 |
+| `p_shift` | 16598 | 21417 | 7041 | 0.42 |
+| `p_ldbl` | 115 | 47 | 35 | 0.31 |
+| `p_dbl_conv` | 298 | 7251 | 53 | 0.18 |
+| `p_sha` | 7534 | 13643 | 840 | 0.11 |
+| `p_dbl_arith` | 505 | 2134 | 52 | 0.10 |
+| `p_float` | 589 | 2501 | 52 | 0.09 |
+| `p_dbl_cmp` | 885 | 9365 | 59 | 0.07 |
+| `p_rotate` | 4091 | 5939 | 270 | 0.07 |
+| `p_bitfield` | 11936 | 14847 | 524 | 0.04 |
+| `p_simd` | 1477 | 8735 | 36 | 0.02 |
+
+Ahead of QEMU on division, RET and jumps through an operand; within a factor of three
+on the rest of the integer code that runs in blocks; ten times and more behind on the
+floating point, on rotations and on 16-bit operations, none of which is translated (or,
+for rotations, not where their flags are needed).
+
 ## What the guest's code looks like to a translator (the boot, 1,524 million instructions)
 
 Counted with the kinds the short front has now (E110: ALU with ModRM, MOV, the group

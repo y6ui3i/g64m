@@ -274,6 +274,7 @@ var so_n = 0;
 var so_pos: i64[SO_MAX] = [0; SO_MAX];
 var so_off: u64[SO_MAX] = [0; SO_MAX];
 var so_cnt: u64[SO_MAX] = [0; SO_MAX];
+var so_op: u32[SO_MAX] = [0; SO_MAX];        // the branch itself: cbnz or cbz, and its register
 
 // The entry of the instruction at physical address q, into je and jk. False if there is none.
 fn j_entry(q: u64) -> bool {
@@ -463,12 +464,54 @@ fn j_exit_to(r: u32, cnt: u64) {
 // ---- Memory, for a program without a kernel ----
 
 // cbnz x2 to the way out before the instruction being translated.
-fn j_leave_if() {
+fn j_leave_if() { j_leave(S2, false); }
+
+// To that way out if host register r is not zero, or if it is.
+fn j_leave(r: u32, zero: bool) {
     so_pos[so_n] = jc.len;
     so_off[so_n] = j_off;
     so_cnt[so_n] = j_cnt;
+    so_op[so_n] = (if zero { 0xB4000000 } else { 0xB5000000 }) | r;
     so_n += 1;
-    e(0xB5000000 | S2);
+    e(0);
+}
+
+// Whether the flags the instruction in je sets are overwritten before anything can read
+// them: the instructions behind it on the page, as far as the decode cache knows them,
+// come to one that sets all six before one that reads any, sets only some, or jumps.
+// (That later instruction may be run by the interpreter, after the block is left: the
+// flags are as dead.) je and jk are as they were afterwards. page_end bounds the look.
+fn j_flags_dead(q: u64, page_end: u64) -> bool {
+    let keep = je;
+    let keep_k = jk;
+    var at = q;
+    var dead = false;
+    for i in 12 {
+        if at >= page_end || !j_entry(at) { break; }
+        let len = j_len();
+        if len == 0 { break; }
+        let k = jk;
+        let op = je.op;
+        let f = je.reg & 7;
+        var full = false;
+        var neutral = false;
+        match k {
+            K_ALU, K_ALUA => { full = op >> 3 != 2 && op >> 3 != 3; },
+            K_GRP1 => { full = f != 2 && f != 3; },
+            K_TEST, K_TESTA, K_IMUL2, K_IMUL3 => { full = true; },
+            K_GRP3 => { full = f != 2 && f < 6; neutral = f == 2; },
+            K_SHIFTI => { full = f >= 4 && mem_rd(at + len - 1, 8) & 0x1F != 0 && (je.osz != 64 || op == 0xC0 || mem_rd(at + len - 1, 8) & 0x3F != 0); },
+            K_SHIFT => { full = f >= 4 && op < 0xD2; },
+            K_MOV, K_LEA, K_MOVZX8, K_MOVZX16, K_MOVSX8, K_MOVSX16, K_MOVSXD, K_MOVI, K_MOVMI, K_PUSH, K_POP, K_PUSHI, K_NOP, K_NOPM, K_CONV => { neutral = true; },
+            _ => {},
+        }
+        if full { dead = true; break; }
+        if !neutral { break; }
+        at += len;
+    }
+    je = keep;
+    jk = keep_k;
+    return dead;
 }
 
 // The address of je's operand in memory, into S1.
@@ -545,7 +588,8 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     j_ilen = len;
     let op = je.op;
     let k = jk;
-    if je.asz32 || je.p66 || je.sg != 0 { return 0; }
+    // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
+    if je.asz32 || (je.p66 && k != K_NOP && k != K_NOPM) || je.sg != 0 { return 0; }
     if je.rep != 0 && k != K_NOP && k != K_NOPM { return 0; }
     if k < 64 && jit_no >> k & 1 != 0 { return 0; }
     let sf: u32 = if je.osz == 64 { 1 } else { 0 };
@@ -699,7 +743,10 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             a_mov(sf, r, S1);
         },
         K_MOVZX8 => {
-            if regs { if !j_byte_ok(je.rm) { return 0; } e(0x12001C00 | m << 5 | r); }      // and wr, wm, #0xFF
+            if regs {
+                if j_byte_ok(je.rm) { e(0x12001C00 | m << 5 | r); }          // and wr, wm, #0xFF
+                else { e(0x53083C00 | hg(je.rm - 4) << 5 | r); }             // AH, CH, DH, BH: ubfx wr, w, #8, #8
+            }
             else { if !inmem { return 0; } j_addr(); j_chk(false); j_load(8, r); }
         },
         K_MOVZX16 => {
@@ -748,6 +795,45 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_SHIFTI, K_SHIFT => {
             let which = je.reg & 7;
+            if regs && wide && which < 2 {
+                // ROL and ROR set CF and OF and leave the rest: translated where what they
+                // set is dead (no record, and the host's flags stay the last setter's), or
+                // by a constant as the first to set flags in the block.
+                let bits: u32 = je.osz;
+                let dead = j_flags_dead(q + len, q + room);
+                if op == 0xD3 {
+                    if !dead { return 0; }
+                    var by = hg(1);
+                    if which == 0 { a_rrr(A_SUB, sf, S2, ZR, hg(1)); by = S2; }      // left: right by the count's negative
+                    e(0x1AC02C00 | sf << 31 | by << 16 | m << 5 | m);                 // rorv
+                    return len;
+                }
+                let n: u32 = (if op == 0xD1 { 1 } else { mem_rd(q + len - 1, 8) & (if sf == 1 { 63 } else { 31 }) }) as! u32;
+                if n == 0 || (!dead && j_set) { return 0; }
+                if !dead {
+                    j_needs = true;
+                    a_imm(S1, n);
+                    // 28h and 29h: of a register by a constant, which leaves OF unless by one.
+                    j_rec((if op == 0xC1 { 0x28 } else { 0x20 }) | (which as u32), m, S1);
+                    j_hf = 0;
+                }
+                let right: u32 = if which == 1 { n } else { bits - n };
+                e((if sf == 1 { 0x93C00000 } else { 0x13800000 }) | m << 16 | right << 10 | m << 5 | m);     // ror #right
+                return len;
+            }
+            if regs && !wide && which >= 4 && op != 0xD2 {
+                // A byte shifted by a constant: on 32 bits, and the byte put back.
+                if !j_byte_ok(je.rm) { return 0; }
+                let n = if op == 0xD0 { 1 } else { mem_rd(q + len - 1, 8) & 0x1F };
+                if n == 0 { return 0; }
+                a_imm(S1, n);
+                j_rec_w(0x20 | (which as u32), 8, m, S1);
+                if which == 7 { e(0x13001C00 | m << 5 | S4); } else { e(0x12001C00 | m << 5 | S4); }     // sxtb, or and #0xFF
+                a_shifti(which, 0, S4, S4, n as! u32);
+                e(0xB3401C00 | S4 << 5 | m);                 // bfi
+                j_hf = 0;
+                return len;
+            }
             if !regs || !wide || which < 4 { return 0; }
             let top: u64 = if sf == 1 { 63 } else { 31 };
             if op == 0xD3 {
@@ -773,7 +859,58 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_GRP3 => {
             let field = je.reg & 7;
-            if !regs || !wide || field > 3 { return 0; }
+            if field > 3 {
+                // MUL, IMUL, DIV and IDIV with one operand: the operand into S3.
+                if !wide || !(regs || inmem) { return 0; }
+                if regs { a_mov(sf, S3, m); } else { j_addr(); j_chk(false); j_load(wb, S3); }
+                let ax = hg(0);
+                let dx = hg(2);
+                if field < 6 {
+                    j_rec(if field == 4 { 0x31 } else { 0x32 }, ax, S3);
+                    if sf == 1 {
+                        e((if field == 4 { 0x9BC07C00 } else { 0x9B407C00 }) | S3 << 16 | ax << 5 | S2);    // umulh, smulh
+                        e(0x9B007C00 | S3 << 16 | ax << 5 | ax);                                            // mul
+                        a_mov(1, dx, S2);
+                    } else {
+                        e((if field == 4 { 0x9BA07C00 } else { 0x9B207C00 }) | S3 << 16 | ax << 5 | S4);    // umull, smull
+                        a_mov(0, ax, S4);
+                        a_shifti(5, 1, dx, S4, 32);
+                    }
+                    j_hf = 0;
+                    return len;
+                }
+                // The divisions leave the flags alone. They leave the block where the
+                // interpreter would fault or would need the dividend's upper half.
+                if sf == 1 {
+                    if field == 6 { j_leave(dx, false); }
+                    else {
+                        a_shifti(7, 1, S1, ax, 63);
+                        a_rrr(A_EOR, 1, S1, S1, dx);
+                        j_leave(S1, false);
+                        a_addi(0x11, 1, S1, S3, 1);
+                        j_leave(S1, true);               // by -1: the one quotient that does not fit
+                    }
+                    j_leave(S3, true);
+                    e((if field == 6 { 0x9AC00800 } else { 0x9AC00C00 }) | S3 << 16 | ax << 5 | S2);       // udiv, sdiv
+                    e(0x9B008000 | S3 << 16 | ax << 10 | S2 << 5 | dx);                                     // msub: the remainder
+                    a_mov(1, ax, S2);
+                } else {
+                    if field == 7 { e(0x93407C00 | S3 << 5 | S3); }                  // sxtw: the divisor's sign
+                    j_leave(S3, true);
+                    a_mov(0, S4, ax);
+                    e(0xAA008000 | dx << 16 | S4 << 5 | S4);                         // orr x4, x4, xDX, lsl #32
+                    e((if field == 6 { 0x9AC00800 } else { 0x9AC00C00 }) | S3 << 16 | S4 << 5 | S2);
+                    // The quotient must fit 32 bits: unsigned, or with its sign.
+                    if field == 6 { a_shifti(5, 1, S1, S2, 32); }
+                    else { e(0x93407C00 | S2 << 5 | S1); a_rrr(A_EOR, 1, S1, S1, S2); }
+                    j_leave(S1, false);
+                    e(0x9B008000 | S3 << 16 | S4 << 10 | S2 << 5 | S1);              // msub
+                    a_mov(0, ax, S2);
+                    a_mov(0, dx, S1);
+                }
+                return len;
+            }
+            if !regs || !wide { return 0; }
             if field < 2 {
                 a_imm(S1, j_const(q + len - 4, 4));
                 j_alu(4, true, 0, m, S1);
@@ -935,7 +1072,7 @@ fn jit_translate(ph: u64) {
             // The ways out, behind the block.
             for i in so_n {
                 let at = so_pos[i];
-                e_at(at, 0xB5000000 | (((jc.len - at) >> 2) as! u32) << 5 | S2);
+                e_at(at, so_op[i] | (((jc.len - at) >> 2) as! u32) << 5);
                 j_exit(so_off[i], so_cnt[i], false);
             }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
@@ -1005,6 +1142,28 @@ fn j_settle() {
     else if what == 16 { incdec(false, jx[1], w); }
     else if what == 17 { incdec(true, jx[1], w); }
     else if what == 0x30 { imul2(jx[1], jx[2], w); }
+    else if what == 0x31 || what == 0x32 {
+        // MUL and IMUL with one operand: as muldiv has them.
+        let a = jx[1];
+        let b = jx[2];
+        let m = mask(w);
+        var lo: u64 = 0;
+        var over = false;
+        if w == 64 {
+            if what == 0x31 { let hi, l = mul64(a, b); lo = l; over = hi != 0; }
+            else { let hi, l = imul64(a, b); lo = l; over = hi != ones(l >> 63 != 0); }
+        } else if what == 0x31 {
+            let full = (a & m) * (b & m);
+            lo = full & m;
+            over = full >> w & m != 0;
+        } else {
+            let full = sx(a & m, w) * sx(b & m, w);
+            lo = full & m;
+            over = sx(lo, w) != full;
+        }
+        mul_flags(over, lo, w);
+    }
+    else if what == 0x28 || what == 0x29 { shift(what & 7, jx[1], jx[2], w, true); }
     else { shift(what & 7, jx[1], jx[2], w, false); }
 }
 
