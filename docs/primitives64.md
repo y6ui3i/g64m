@@ -67,7 +67,7 @@ met: E104 has the opcodes of the boot and of three user programs).
 | # | Group | Primitives | Why here |
 |---|---|---|---|
 | 1 (done, E113: 369 → 84) | String instructions with a repeat count: all the repetitions in one go | `p_fill` | 369 for each byte, where a loop in the CPU is a few; 1.7% of the boot's instructions and 3.9% of user programs' are repetitions, and every library copies and fills this way |
-| 2 | Division | `p_muldiv` | done bit by bit; 14% of the program's instructions make it 369 |
+| 2 (done, E114: 369 → 311) | Division | `p_muldiv` | done bit by bit; 14% of the program's instructions make it 369 |
 | 3 | The front's missing integer kinds: shifts and rotations, CMOV and SETcc, MOV of a constant, MOVSXD, NOT and NEG, IMUL, the indirect CALL and JMP | `p_shift`, `p_bitfield`, `p_rotate`, `p_sha`, `p_pixel`, `p_ternary`, `p_bytes`, `p_funcptr`, `p_switch`, `p_bignum` | 60 host instructions for each such instruction: the widest group, the smallest gain for each |
 | 4 | double and float: the scalar SSE instructions by a short way | `p_dbl_arith`, `p_dbl_cmp`, `p_dbl_conv`, `p_float` | 373 to 385; 1% of user programs' instructions, most of a program that computes |
 | 5 | Packed SSE | `p_simd` | 471 and 98 cycles; what a drawing library runs |

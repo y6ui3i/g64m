@@ -707,6 +707,11 @@ fn imul2(a: u64, b: u64, w: u8) -> u64 {
 // hi:lo divided by d, all unsigned, when the quotient fits in 64 bits (hi < d): the
 // quotient and the remainder.
 fn div128(hi: u64, lo: u64, d: u64) -> u64, u64 {
+    // Nearly always the upper half is empty (E114), and it is one division.
+    if hi == 0 {
+        let q0 = lo / d;
+        return q0, lo - q0 * d;
+    }
     var r = hi;
     var q: u64 = 0;
     for i in 64 {

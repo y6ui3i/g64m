@@ -8370,3 +8370,46 @@ unchanged, 1,523,597,312. Kept.**
 **Next.** The plan's second line: division. And for the string instructions, what is left
 is the first repetition's way through the rest of the CPU (a short REP is an instruction
 like any other); that belongs to the plan's third line.
+
+## E114: division of 64 bits without the loop when the upper half is empty (2026-11-20)
+
+The plan's second line. `p_muldiv` takes 369 host instructions for a guest instruction,
+and 14% of its instructions are DIV and IDIV. A division whose operand is 64 bits wide
+divides the 128 bits of RDX:RAX, and `div128` does that one bit at a time, 64 times
+round, whatever the numbers are. Narrower divisions are one division of the host's
+already.
+
+- **Hypothesis**: **nearly every 64-bit division a compiler makes has an upper half that
+  holds nothing (RDX cleared for DIV; for IDIV, RDX filled with RAX's sign by CQO, which
+  is nothing once the sign is taken off). With that case one division of the host's,
+  `p_muldiv` takes under 345 host instructions for each (369 now). The boot does not
+  change: it hardly divides.**
+- **What changed since last time**: nothing in the way instructions are run; one function,
+  `div128`, gets a short way in front of the loop it has.
+- **Next move for each result**:
+  - Under 345 → kept; what is left in `p_muldiv` is the rest of the CPU's instructions in
+    it (CQO, MOVSXD, IMUL), which is the plan's third line
+  - Little change → the divisions are not what makes it 369, or its 64-bit ones are a
+    small part: step one division and see what it runs
+  - A test differs → the short way is taken when it may not be (the quotient must fit:
+    the caller has checked that the upper half is less than the divisor)
+- **Cut-off**: `div128`'s entry. The loop stays for a dividend of more than 64 bits.
+
+**Result: `p_muldiv` takes 311 host instructions for a guest instruction (369 before) and
+51.6 cycles (75.1): among the other integer primitives now. The boot is unchanged (284,
+the same count of instructions). Kept.**
+
+- One division of the host's where `div128`'s upper half is empty; the loop of 64 rounds
+  stays for the rest. `p_bignum`, which multiplies and does not divide, is unchanged
+  (325).
+- **Held to the real CPU.** 20 programs (one new), 9 system tests, the 23 primitives, the
+  kernel's four boots.
+- **Wrong builds: 4 of 4 caught**, 3 at first. The one that passed took the short way
+  when the upper half held one: no test divided such a number (the generated tests'
+  upper halves are large, the C programs' are empty). New: `a_div`, 87 traced
+  instructions from the real CPU: upper halves of nothing, one, two and one less than the
+  divisor, and for IDIV each with each sign.
+
+**Next.** The plan's third line, the widest: the integer instructions the front does not
+run. With division out of the way `p_muldiv`'s 311 against `p_if`'s 291 is that line
+(CQO, MOVSXD, IMUL: 27% of its instructions go to the rest of the CPU).
