@@ -8597,3 +8597,130 @@ by its speed and by `p_ldbl` it is Rosetta.
   clock of 10 ms over twenty runs; the short ones are good to a fifth at best. g86m was
   timed while another g86m was using one core. Longer programs are for a later entry.
 - `tools/prim64_qemu.sh` does the measurement.
+
+## E118: the kinds that cut the runs (the JIT's first task; 2026-11-20)
+
+E116 counted the boot: 86% of its instructions are of the short front's kinds, and a
+quarter of them lie in runs that an instruction of no kind cuts short. The list of what
+cuts is short. This entry gives those instructions kinds, in the front, as interpreted
+instructions: one implementation each, the rest of the CPU losing its arms for them. It
+generates no code. (The guest's NetHack build of E115 is still counting on another core
+as this is done, so nothing here is timed: host instructions and counts only.)
+
+- **Hypothesis**: **with kinds for the shifts and rotations (`C0`/`C1`, `D0` to `D3`),
+  the groups `F6`/`F7` and `FE`/`FF`, NOP (`90`, `0F 18` to `1F`, which is ENDBR64 too),
+  MOVSXD, MOV of a constant (`B0` to `BF`, `C6`/`C7`), the ALU and TEST forms on the A
+  register with a constant, and CMOVcc, 96% or more of the boot's instructions are of a
+  kind, three quarters or more lie in runs of two or more that end at a jump, and such a
+  run is five instructions or longer in the mean. None of them changes a register before
+  the last point it can fault at, so none needs the save of the registers.**
+- **What changed since last time**: E110 chose its kinds by how often they run, for the
+  interpreter's sake. These are chosen by what ends a run.
+- **Next move for each result**:
+  - 96% of a kind and three quarters in runs to a jump → the JIT's second task: the
+    arm64 emitter and blocks without memory operands
+  - Of a kind, but the runs still cut → what cuts them now is counted, and the next few
+    become kinds the same way (once more; after that the translator takes the runs as
+    they are)
+  - The boot costs more host instructions for a guest instruction than 284 → the jump
+    on the kind has got worse with the kinds added: its listing is read before anything
+    else is built on it
+  - A wrong build of a new arm passes every test → a test for it, against the real CPU,
+    first
+- **Cut-off**: one count of the boot's runs; the three suites; wrong builds of each new
+  arm.
+
+**Result: the hypothesis holds on all three counts. 99.75% of the boot's instructions are
+of a kind, 96.1% lie in runs of two or more that end at a jump, and such a run is 5.8
+instructions in the mean. The boot costs 275.6 host instructions for a guest instruction
+(E113: 284).**
+
+| The boot, 1,524 million instructions | E116 | Now |
+|---|---:|---:|
+| Of a kind | 86.3% | 99.75% |
+| In a run of two or more that ends at a jump | 53.3%, mean 3.7 | 96.1%, mean 5.8 |
+| In a run of two or more that an instruction of no kind cuts | 25.4% | 0.8% |
+| Host instructions for a guest instruction | 284 | 275.6 |
+
+- **Two rounds, as the card allows.** The first was the card's list. After it the boot
+  was at 99.6%, but the primitives showed what still cut a user program's runs: SETcc
+  (7% of `p_bytes`), IMUL with two or three operands (18% of `p_pixel`), MOVSX, CDQ and
+  its family (7% of `p_muldiv`). The second round gave those kinds, and PUSH of a
+  constant. Every integer primitive now runs in the front whole; what the front leaves
+  is the SSE, the x87, BSF and BSR, and the string instructions.
+- **None of them needs the save of the registers**, and that was read off the code, one
+  by one, before it was moved: MUL and DIV change RAX and RDX after the last fault they
+  can raise; CALL through an operand reads the operand and then pushes; LEAVE was left
+  out because it changes RSP and then reads.
+- **One implementation of each**: the rest of the CPU lost its arms for all of them.
+  (92 lines out of `cpu64.goose`, 135 in.)
+- **Wrong builds: 45 of 46 caught, after two tests were added.** Of the first 28, two
+  passed: a JMP through a register that took 32 bits of the address (no test jumped
+  above 4 GB except by RET), and a CALL through memory that pushed before it read. For
+  the first, `y_tlb` now jumps and calls through a register and through memory to code
+  above 4 GB. For the second, a new trace test `a_call`: CALL, JMP and PUSH of operands
+  found from RSP, among them a CALL through the very place the return address goes to
+  (a first version of the test, without that one, did not catch it: the operand's
+  address is worked out before anything is pushed, so only the read's place in the
+  order shows). The one left, PUSH of an operand read after RSP has moved, changes
+  nothing that can be seen, for the same reason.
+- **The primitives** moved little, as E112 said they would (60 host instructions for an
+  instruction that goes to the rest): `p_shift` 312 → 303, `p_pixel` 339 → 312,
+  `p_muldiv` 311 → 297, `p_bytes` 309 → 302; `p_loop`, `p_if` and `p_switch` are within
+  3 of where they were. The table in `docs/primitives64.md` is the new one.
+- **Not timed.** The guest's NetHack build held a core through most of this, and when
+  it ended the host was busy with something of its own (a boot took 38 s for the same
+  74 billion cycles: it ran on the slow cores). The times, and the comparison with QEMU
+  again (E117's g86m column was taken under the same load), wait for a quiet host.
+- **Found and not fixed**: an instruction that begins with `0F` takes its kind from the
+  byte after, and when that byte is the first of the next page the kind is remembered
+  with the first page's entries: a write to the second page does not drop it. It has
+  been so since E110, nothing here widens it (the groups look at their field each time
+  they run), and no test reaches it.
+
+**Next.** The JIT's second task (`docs/jit64.md`): the arm64 emitter and a block of
+instructions without memory operands. And the `0F` entry across two pages, with a test.
+
+## E119: NetHack built in the guest, counted (E115's next step; 2026-11-20)
+
+This was started as the last line of E115 says, without a card of its own, before E116
+and E118: recorded here as what was seen. A disk of 640 MB with Alpine 3.24's GCC 15.2,
+make, musl and ncurses and NetHack's source; `make all` in the guest, under a copy of
+g86m that counts (the build of E113, with the kinds of E110).
+
+**Result: the build stopped at the last file but four, and not because of g86m. The
+count is whole enough to use: 428 billion guest instructions, 80% of them in user mode,
+85.0% run by the short front as it was; with E118's kinds it would be 96.3%.**
+
+- **What stopped it**: `sys/share/unixtty.c` includes `linux/vt.h`, and the disk has no
+  kernel headers (the package `linux-headers`). The image was made without it. Every
+  file of `src/` before that compiled, the compiler's exit codes clean: about 125 runs
+  of `cc1`, `as` and `make` with no instruction not written and no fault that was not
+  the program's own. What they wrote was not checked: nothing was linked or run.
+- **How long**: 4 h 29 min under the counting copy, on a host doing other work, which
+  is not a time. At the 62 million instructions a second the plain build runs at, 428
+  billion are 115 minutes, for a part of the build that takes the real machine a little
+  over a minute: about a hundred times slower, as E116 guessed.
+- **What a compiler's instructions are** (share of all 428 billion):
+
+  | | Share |
+  |---|---:|
+  | In user mode | 80.3% |
+  | Run by the front (E110's kinds) | 85.0% |
+  | Would be, with E118's kinds | 96.3% |
+  | … of which: `C1` shifts 1.6%, NOP and ENDBR64 1.4%, the A register and a constant 1.4%, MOV of a constant 2.3%, `F6`/`F7` 1.1%, MOVSXD 0.6%, `D3`/`D1` 0.6%, `FF` 0.5%, SETcc and CMOV 0.8%, IMUL 0.3% | 11.2% |
+  | SSE, nearly all of it moves (`0F 6F`, `0F 11`, `0F 29`, `0F 6E`, `0F 7E`) and PXOR/POR: GCC copying and clearing structures | about 2% |
+  | Repetitions of string instructions | about 1% |
+  | BT | 0.2% |
+
+  MOV is 26% of everything, the short Jcc 8.5%, ALU with ModRM 10%, the group
+  80h/81h/83h 10%. A fifth of the time is the kernel's (page faults, files, `fork` and
+  `exec` for each of the 125 compilations).
+- **For the JIT**: a compiler looks like the boot to a translator once E118's kinds are
+  there. The first thing it adds to the list is the SSE's moves, which task 8 (scalar
+  SSE) did not have in view: they are there in integer code.
+
+**Next.** `linux-headers` on the disk (a download, for the owner to allow), and `make`
+again from where it stopped, under the plain build on a quiet host: the objects are on
+the disk, so it is the last few files, the link and the install. Then the NetHack it
+built, run.
