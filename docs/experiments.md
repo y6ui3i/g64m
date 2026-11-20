@@ -9229,3 +9229,22 @@ instruction and `p_muldiv` 108 → 16; `p_bitfield` 61 → 45, `p_sha` 111 → 4
   instructions with all their instructions in blocks: not an instruction that is not
   translated, so a block that will not be entered from another (it reads RFLAGS with a
   record waiting) or a look-up that misses. To be counted.
+- **Wrong builds: 17 of 17 caught, after a test was written.** Eight at first. `j_arith`
+  (a trace test, expected from the real CPU) has what the other nine needed: rotations
+  by CL both ways, a rotation whose carry an ADC reads and one whose carry a jump reads
+  (the look ahead must not call those dead), ROL of a register by a constant over one
+  with OF set before it, MUL and IMUL of 32 bits with the upper half kept and with and
+  without overflow read back from the record, a byte shifted right with its sign.
+- **Where the blocks of `p_switch`, `p_funcptr` and `p_sha` leave**, counted by the
+  address a block hands back with a record waiting:
+  - `p_switch`: `cmp; je; jbe`, a second jump on the same comparison. A block ends at
+    the first, the second begins a block that reads RFLAGS in memory, and with the
+    comparison's record waiting it cannot be entered from the first. A million times.
+  - `p_funcptr`: `or ah, 1`, an operation on one of the second bytes, not translated.
+  - `p_sha`: `ror; ror; xor`: the look ahead stops at the second rotation, which it
+    should pass (a rotation reads no flag).
+
+**Next.** A block that goes on through a conditional jump's side that is not taken (so
+that the second jump uses the host's flags); the look ahead passing instructions that
+read no flag, and used for INC and DEC too; the second bytes. Then the primitives with
+a count of rounds, timed against QEMU.
