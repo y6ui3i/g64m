@@ -8454,3 +8454,146 @@ status lines under it.
   NetHack nor the image is in the repository.
 
 **Next.** NetHack built inside the guest, with the instructions counted while it builds.
+
+## E116: a JIT for the 64-bit CPU: what it is to be (a survey; 2026-11-20)
+
+NetHack built by the guest's own GCC takes the real machine 71 seconds and g86m more than
+half an hour. g86m runs 62 million guest instructions a second; the plan in
+`docs/primitives64.md` takes host instructions off the 284 each costs, a few tens at a
+time, and all of it together is a factor of two at best. The 32-bit machine's JIT took its
+Linux boot from 88 host instructions for a guest instruction to 22 (E073). The owner's
+decision: the JIT comes first, and the plan's other lines wait behind it.
+
+This entry builds nothing. It reads the 32-bit JIT (`docs/jit.md`, `src/jit.goose`, 1,659
+lines) for what carries over, counts what the 64-bit guest's code looks like to a
+translator, and writes the design down.
+
+- **Hypothesis**: **the 32-bit JIT's design carries over whole (blocks found through the
+  decode cache, guest registers in host registers, the flags as a record, memory by the
+  TLB inline with a way out, links inside a page and a far way between pages), and what
+  is new for 64 bits is small: sixteen registers, operands of 64 bits, addresses relative
+  to RIP. Counted over the boot, nine tenths of the instructions lie in runs of two or
+  more instructions of the short front's kinds that end at a jump, which is what a
+  first translator could take.**
+- **What changed since last time**: the direction. No entry before this was about
+  translating.
+- **Next move for each result**:
+  - Nine tenths or more → the first translator takes the front's kinds as they are: the
+    first step is a block of them without memory operands, run from the front
+    (`p_loop`), then memory, then links
+  - Between a half and nine tenths → the instructions that cut the runs short are
+    counted, and the commonest become kinds before the translator is begun (this is the
+    plan's third line, done for another reason)
+  - Under a half → the runs are too short for blocks as the 32-bit JIT makes them: look
+    at what ends them (jumps every few instructions) and whether a block may go on
+    through a jump not taken
+  - Something in the 64-bit machine that the 32-bit design cannot hold → named, with
+    what would hold it, before anything is built
+- **Cut-off**: the count over the boot and one user program; the design as a document
+  (`docs/jit64.md`). No generated code.
+
+**Result: the design carries over, and the design is written (`docs/jit64.md`); the count
+is the card's middle branch. 79% of the boot's instructions lie in runs of two or more of
+the front's kinds, not nine tenths, and the runs are under four instructions long.**
+
+| The boot, 1,524 million instructions | Share | Runs | Mean length |
+|---|---:|---:|---:|
+| In a run of two or more that ends at a jump | 53.3% | 220 million | 3.7 |
+| In a run of two or more that ends at an instruction of no kind | 25.4% | 92 million | 4.2 |
+| Of a kind, alone | 5.9% | | |
+| Of no kind | 13.7% | | |
+
+- **What cuts the runs is a short list**: shifts and rotations 5.8% of all instructions,
+  the group `F6`/`F7` 2.5%, NOP 1.8%, MOV of a constant 1.3%, MOVSXD 0.7%, ENDBR64 0.5%.
+  With those and a few more the kinds cover 97%. They are the plan's third line
+  ("the front's missing integer kinds"), which E112 found worth little to the
+  interpreter (60 host instructions each): to a translator each one ends a block, so
+  they are its first task.
+- **What the 32-bit design cannot hold as it is, and what holds it**: RIP is not a
+  constant in a block, since a block is found by its physical address and a page of a
+  shared library is at another virtual address in each program: the page's virtual base
+  is kept in a register. And sixteen guest registers with everything else come to 28
+  host registers, all there are.
+- **Not counted**: a user program. The boot is 99.8% the kernel. NetHack's build in the
+  guest is counting as this is written; its numbers go into `docs/jit64.md` when it
+  ends.
+
+**Next.** The JIT's first task (`docs/jit64.md`): the kinds that cut the runs, in the
+short front, each tested as interpreted; then the count again.
+
+## E117: where QEMU is (a measurement; 2026-11-20)
+
+The owner's aim, from today: to get past QEMU, and to see how near an old technique,
+written in a language an AI made, built by an AI, can come. QEMU's user-mode emulator is
+what Docker hands an x86_64 program to on an arm64 host that is not a Mac, which is the
+place M11 means g86m to take. So its speed is the number to be measured against, on the
+same host and the same programs.
+
+- **Hypothesis**: **on this host QEMU runs the integer primitives some tens of times
+  faster than g86m (62 million guest instructions a second), and floating point by less,
+  since it computes that in software.**
+- **What changed since last time**: g86m's numbers have been compared only with its own.
+- **Next move for each result**:
+  - Tens of times on integers, less on floating point → the JIT's order stands (integers
+    first), and each of its steps is reported as a distance from QEMU on these programs
+  - Hundreds of times → QEMU's translation is far better than the 32-bit JIT's was, and
+    the design is to be read against QEMU's before it is built
+  - Under ten → the interpreter is nearer than thought; measure longer programs before
+    believing it
+- **Cut-off**: the 23 primitives, run twenty times each in a container (Alpine for arm64
+  with its package `qemu-x86_64`), and three times on g86m. No longer programs, no system
+  emulation.
+
+**Result: 6 to 200 times on the integer primitives, 6 to 14 on double and float, 3 on
+long double, and level on filling and copying.** Million guest instructions a second,
+Apple M1, each program's count of instructions (E112) over the time of a run; g86m's
+time less the 0.09 s it takes to start (it clears 256 MB and the decode cache):
+
+| Primitive | QEMU 11.0.3 | Docker's own | g86m | g86m behind QEMU |
+|---|---:|---:|---:|---:|
+| `p_shift` | 8,200 | 11,354 | 42 | 195 times |
+| `p_bitfield` | 5,878 | 7,511 | 38 | 155 times |
+| `p_ternary` | 4,925 | 7,164 | 43 | 115 times |
+| `p_pixel` | 4,077 | 5,889 | 40 | 102 times |
+| `p_sha` | 2,800 | 4,800 | 42 | 67 times |
+| `p_bytes` | 2,768 | 5,767 | 44 | 62 times |
+| `p_rotate` | 2,594 | 3,978 | 47 | 56 times |
+| `p_index` | 1,993 | 6,644 | 41 | 48 times |
+| `p_bignum` | 1,596 | 4,257 | 35 | 45 times |
+| `p_loop` | 2,000 | 5,000 | 45 | 44 times |
+| `p_pointer` | 2,000 | 5,077 | 47 | 43 times |
+| `p_simd` | 851 | 4,150 | 24 | 36 times |
+| `p_if` | 1,394 | 3,538 | 45 | 31 times |
+| `p_recursion` | 841 | 1,743 | 46 | 18 times |
+| `p_muldiv` | 832 | 4,400 | 46 | 18 times |
+| `p_dbl_cmp` | 620 | 5,357 | 43 | 14 times |
+| `p_switch` | 511 | 1,290 | 40 | 13 times |
+| `p_dbl_arith` | 369 | 1,394 | 37 | 10 times |
+| `p_float` | 376 | 1,650 | 37 | 10 times |
+| `p_funcptr` | 292 | 1,020 | 46 | 6 times |
+| `p_dbl_conv` | 207 | 5,200 | 37 | 6 times |
+| `p_ldbl` | 74 | 35 | 26 | 3 times |
+| `p_fill` | 339 | 1,560 | 277 | 1.2 times |
+
+"Docker's own" is what Docker on this host runs an x86_64 program with when nothing is
+said (the same program started in the arm64 container without `qemu-x86_64` in front);
+by its speed and by `p_ldbl` it is Rosetta.
+
+- **QEMU is not one number.** Straight-line integer code runs at 2,000 to 8,000 million
+  instructions a second; where the program jumps through a register (`p_funcptr`,
+  `p_switch`, and every return in `p_recursion`) it falls to 300 to 800, because each
+  such jump is looked up; double and float are 200 to 600, the x87 74. g86m is 24 to 47
+  for everything but the string instructions: it pays the same for every instruction.
+- **Where g86m is already level**: `p_fill`, 272 against 339, since E113 moves a
+  stretch in memory. And on `p_ldbl` it is within three of QEMU, and of Rosetta, which
+  is slower than QEMU there.
+- **What it says for the JIT**: to pass QEMU on straight-line integer code a guest
+  instruction must cost about two host instructions; the 32-bit JIT's boot cost 22, with
+  the interpreter's share and the TLB in it. On jumps through a register and on floating
+  point QEMU is five to twenty times slower than its best, and that is where a
+  translator that keeps the guest's registers in the host's, links what it can and uses
+  the host's floating point has the most room.
+- **How rough it is**: a run under QEMU takes 6 to 190 ms, its start included, read on a
+  clock of 10 ms over twenty runs; the short ones are good to a fifth at best. g86m was
+  timed while another g86m was using one core. Longer programs are for a later entry.
+- `tools/prim64_qemu.sh` does the measurement.

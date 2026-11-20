@@ -60,6 +60,12 @@ boot (289).
 
 ## The order of work
 
+**Changed on 2026-11-20 (E116): the JIT comes first** ([jit64.md](jit64.md)). The first two
+lines below are done; the rest wait behind the JIT, and some of them become its tasks
+(the third line is its first task, for another reason: an instruction the front does not
+know cuts a block short). The primitives stay what each step is measured on.
+
+
 Each line is an entry of its own in the ledger, with a card before it and its primitives
 and the boot measured after it. The order is (what the group costs) × (how often it is
 met: E104 has the opcodes of the boot and of three user programs).
