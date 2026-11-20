@@ -76,3 +76,9 @@ int64_t jit_addr_u64(jit_uquads a) { return (int64_t)a.data; }
 int64_t jit_call4(int64_t enter, int64_t a, int64_t b, int64_t c, int64_t d) {
     return ((int64_t (*)(int64_t, int64_t, int64_t, int64_t))enter)(a, b, c, d);
 }
+
+// Where an array of structures is, and the 64 bits at an address (jit64.goose checks with
+// it that the decode cache is laid out as its generated code reads it).
+typedef struct { const void *data; int64_t len; } jit_any;
+int64_t jit_addr_any(jit_any a) { return (int64_t)a.data; }
+int64_t jit_peek64(int64_t at) { return *(const int64_t *)at; }
