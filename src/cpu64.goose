@@ -1051,6 +1051,26 @@ let K_MOVZX8 = 12;      // 0F B6h
 let K_MOVZX16 = 13;     // 0F B7h
 let K_JCC8 = 0x10;      // 70h to 7Fh
 let K_JCC32 = 0x20;     // 0F 80h to 8Fh: with the condition in the low four bits
+// The kinds that used to cut a run of the ones above short (E118).
+let K_SHIFTI = 14;      // C0h, C1h: a shift or rotation by a constant
+let K_SHIFT = 15;       // D0h to D3h: by one, or by CL
+let K_GRP3 = 17;        // F6h, F7h: TEST, NOT, NEG, MUL, IMUL, DIV, IDIV
+let K_GRP5 = 18;        // FEh, FFh: INC, DEC, and CALL, JMP and PUSH of an operand
+let K_NOP = 19;         // 90h without REX.B
+let K_NOPM = 20;        // 0F 18h to 1Fh: the hints, the long NOP, ENDBR64
+let K_MOVSXD = 21;      // 63h
+let K_MOVI = 22;        // B0h to BFh: a constant to a register
+let K_MOVMI = 23;       // C6h, C7h: a constant to an operand
+let K_ALUA = 24;        // 04h, 05h, 0Ch, ... 3Dh: the A register and a constant
+let K_TESTA = 25;       // A8h, A9h
+let K_IMUL2 = 26;       // 0F AFh
+let K_IMUL3 = 27;       // 69h, 6Bh: IMUL by a constant
+let K_MOVSX8 = 28;      // 0F BEh
+let K_MOVSX16 = 29;     // 0F BFh
+let K_CONV = 30;        // 98h, 99h: CBW, CWDE, CDQE and CWD, CDQ, CQO
+let K_PUSHI = 31;       // 68h, 6Ah: PUSH of a constant
+let K_CMOV = 0x30;      // 0F 40h to 4Fh: with the condition in the low four bits
+let K_SETCC = 0x40;     // 0F 90h to 9Fh: with the condition in the low four bits
 
 // The kind of the instruction whose prefixes and opcode have just been read. (F2h and F3h
 // in front of these do nothing.)
@@ -1060,9 +1080,15 @@ fn kind_of(op: u8) -> u8 {
         if op2 & 0xF0 == 0x80 { return K_JCC32 | op2 & 15; }
         if op2 == 0xB6 { return K_MOVZX8; }
         if op2 == 0xB7 { return K_MOVZX16; }
+        if op2 & 0xF0 == 0x40 { return K_CMOV | op2 & 15; }
+        if op2 & 0xF0 == 0x90 { return K_SETCC | op2 & 15; }
+        if op2 == 0xAF { return K_IMUL2; }
+        if op2 == 0xBE { return K_MOVSX8; }
+        if op2 == 0xBF { return K_MOVSX16; }
+        if op2 >= 0x18 && op2 < 0x20 { return K_NOPM; }
         return 0;
     }
-    if op < 0x40 { return if op & 7 < 4 { K_ALU } else { 0 }; }
+    if op < 0x40 { return if op & 7 < 4 { K_ALU } else if op & 7 < 6 { K_ALUA } else { 0 }; }
     if op >= 0x50 && op < 0x58 { return K_PUSH; }
     if op >= 0x58 && op < 0x60 { return K_POP; }
     if op >= 0x70 && op < 0x80 { return K_JCC8; }
@@ -1070,6 +1096,18 @@ fn kind_of(op: u8) -> u8 {
     if op == 0x84 || op == 0x85 { return K_TEST; }
     if op >= 0x88 && op < 0x8C { return K_MOV; }
     if op == 0x8D { return K_LEA; }
+    if op == 0x63 { return K_MOVSXD; }
+    if op == 0x68 || op == 0x6A { return K_PUSHI; }
+    if op == 0x69 || op == 0x6B { return K_IMUL3; }
+    if op == 0x98 || op == 0x99 { return K_CONV; }
+    if op == 0x90 { return if ins.rex & 1 == 0 { K_NOP } else { 0 }; }
+    if op == 0xA8 || op == 0xA9 { return K_TESTA; }
+    if op >= 0xB0 && op < 0xC0 { return K_MOVI; }
+    if op == 0xC0 || op == 0xC1 { return K_SHIFTI; }
+    if op == 0xC6 || op == 0xC7 { return K_MOVMI; }
+    if op >= 0xD0 && op < 0xD4 { return K_SHIFT; }
+    if op == 0xF6 || op == 0xF7 { return K_GRP3; }
+    if op == 0xFE || op == 0xFF { return K_GRP5; }
     if op == 0xC3 { return K_RET; }
     if op == 0xE8 { return K_CALL; }
     if op == 0xE9 { return K_JMP32; }
@@ -1151,8 +1189,95 @@ inline fn run_kind() -> bool {
         K_JMP32 => { let d = fs32(); rip = ip + d; return true; },
         K_MOVZX8 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, rm_get(8)); },
         K_MOVZX16 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, rm_get(16)); },
+        K_SHIFTI => {
+            modrm(1);
+            let n = fb();
+            rm_set(w, shift(ins.reg & 7, rm_get(w), n, w, ins.mod == 3));
+        },
+        K_SHIFT => {
+            modrm(0);
+            let n: u64 = if op < 0xD2 { 1 } else { reg[RCX] & 0xFF };
+            rm_set(w, shift(ins.reg & 7, rm_get(w), n, w, false));
+        },
+        K_GRP3 => {
+            // Peek at the field: TEST has a constant behind the operand. MUL and DIV
+            // change RAX and RDX after the last fault they can raise.
+            let field = (peek8() as! u8) >> 3 & 7;
+            modrm(if field < 2 { imm_len(w) } else { 0 });
+            match field {
+                0, 1 => { let b = fimm(w); alu(4, rm_get(w), b, w); },
+                2 => { rm_set(w, ~rm_get(w)); },
+                3 => { rm_set(w, alu(5, 0, rm_get(w), w)); },
+                _ => { muldiv(field, rm_get(w), w); },
+            }
+        },
+        K_GRP5 => {
+            modrm(0);
+            match ins.reg & 7 {
+                0 => { rm_set(w, incdec(false, rm_get(w), w)); },
+                1 => { rm_set(w, incdec(true, rm_get(w), w)); },
+                2 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 2); } let to = rm_get(64); push(ip, 64); rip = to; return true; },
+                4 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 4); } rip = rm_get(64); return true; },
+                6 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 6); } push(rm_get(ssz()), ssz()); },
+                _ => { stop64("an instruction not written yet, FF field", ins.reg); },
+            }
+        },
+        K_NOP => {},
+        K_NOPM => { ip += 1; modrm(0); },
+        K_MOVSXD => {
+            modrm(0);
+            let v = rm_get(32);
+            sr(ins.reg, ins.osz, if ins.osz == 64 { sx(v, 32) } else { v });
+        },
+        K_MOVI => {
+            let low: u8 = op & 7 | (ins.rex & 1) << 3;
+            if op < 0xB8 { let v = fb(); sr(low, 8, v); }
+            else if ins.osz == 64 { reg[low] = fq(); }
+            else if ins.osz == 32 { reg[low] = fd(); }
+            else { let v = fw(); sr(low, 16, v); }
+        },
+        K_MOVMI => {
+            modrm(imm_len(w));
+            if ins.reg & 7 != 0 { stop64("an instruction not written yet, C6 or C7 field", ins.reg); }
+            let v = fimm(w);
+            rm_set(w, v);
+        },
+        K_ALUA => {
+            let k = op >> 3;
+            let r = alu(k, gr(RAX, w), fimm(w), w);
+            if k != 7 { sr(RAX, w, r); }
+        },
+        K_TESTA => { alu(4, gr(RAX, w), fimm(w), w); },
+        K_IMUL2 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, imul2(gr(ins.reg, ins.osz), rm_get(ins.osz), ins.osz)); },
+        K_IMUL3 => {
+            modrm(if op == 0x69 { imm_len(ins.osz) } else { 1 });
+            let b = if op == 0x69 { fimm(ins.osz) } else { fs8() };
+            sr(ins.reg, ins.osz, imul2(rm_get(ins.osz), b, ins.osz));
+        },
+        K_MOVSX8 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, sx(rm_get(8), 8)); },
+        K_MOVSX16 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, sx(rm_get(16), 16)); },
+        K_CONV => {
+            if op == 0x99 { sr(RDX, ins.osz, ones(reg[RAX] & msb(ins.osz) != 0)); }
+            else if ins.osz == 16 { sr(RAX, 16, sx(reg[RAX], 8)); }
+            else if ins.osz == 32 { sr(RAX, 32, sx(reg[RAX], 16)); }
+            else { reg[RAX] = sx(reg[RAX], 32); }
+        },
+        K_PUSHI => {
+            let v = if op == 0x6A { fs8() } else { fimm(if ins.p66 { 16 } else { 32 }) };
+            push(v, ssz());
+        },
         _ => {
-            if ins.kind & K_JCC32 != 0 {
+            if ins.kind >= K_SETCC {
+                ip += 1;
+                modrm(0);
+                rm_set(8, if cond(ins.kind & 15) { 1 } else { 0 });
+            } else if ins.kind >= K_CMOV {
+                ip += 1;
+                modrm(0);
+                let v = rm_get(ins.osz);
+                // With a 32-bit operand the upper half is cleared whether it moves or not.
+                if cond(ins.kind & 15) { sr(ins.reg, ins.osz, v); } else if ins.osz == 32 { sr(ins.reg, 32, gr(ins.reg, 32)); }
+            } else if ins.kind & K_JCC32 != 0 {
                 ip += 1;
                 let d = fs32();
                 if cond(ins.kind & 15) { rip = ip + d; return true; }
@@ -1222,11 +1347,7 @@ fn exec64_rest() -> bool {
     rflags &= ~RF;
 
     // (Arms that are not here are the short front's: run_kind.)
-    if op < 0x40 && op & 7 < 6 {
-        let k = op >> 3;
-        let r = alu(k, gr(RAX, w), fimm(w), w);
-        if k != 7 { sr(RAX, w, r); }
-    } else if op == 0x0F {
+    if op == 0x0F {
         let op2 = fb() as! u8;
         let w2: u8 = if op2 & 1 == 0 { 8 } else { ins.osz };
         if sse64_is(op2) { sse64_op(op2); rip = ip; return true; }
@@ -1263,10 +1384,6 @@ fn exec64_rest() -> bool {
                     _ => { stop64("an instruction not written yet, 0F", op2); },
                 }
             },
-            0x1 => {
-                if op2 >= 0x18 { modrm(0); }
-                else { stop64("an instruction not written yet, 0F", op2); }
-            },
             0x3 => {
                 if op2 == 0x31 { reg[RAX] = steps & 0xFFFFFFFF; reg[RDX] = steps >> 32; }
                 else if machine && op2 == 0x30 {
@@ -1279,16 +1396,6 @@ fn exec64_rest() -> bool {
                     reg[RDX] = v >> 32;
                 }
                 else { stop64("an instruction not written yet, 0F", op2); }
-            },
-            0x4 => {
-                modrm(0);
-                let v = rm_get(ins.osz);
-                // With a 32-bit operand the upper half is cleared whether it moves or not.
-                if cond(op2 & 15) { sr(ins.reg, ins.osz, v); } else if ins.osz == 32 { sr(ins.reg, 32, gr(ins.reg, 32)); }
-            },
-            0x9 => {
-                modrm(0);
-                rm_set(8, if cond(op2 & 15) { 1 } else { 0 });
             },
             0xA => {
                 match op2 {
@@ -1308,7 +1415,6 @@ fn exec64_rest() -> bool {
                         modrm(0);
                         rm_set(ins.osz, shift_double(op2 == 0xA5, rm_get(ins.osz), gr(ins.reg, ins.osz), reg[RCX] & 0xFF, ins.osz));
                     },
-                    0xAF => { modrm(0); sr(ins.reg, ins.osz, imul2(gr(ins.reg, ins.osz), rm_get(ins.osz), ins.osz)); },
                     _ => { stop64("an instruction not written yet, 0F", op2); },
                 }
             },
@@ -1325,8 +1431,6 @@ fn exec64_rest() -> bool {
                     },
                     0xB3 => { modrm(0); bit_op(2, ins.osz, gr(ins.reg, ins.osz), true); },
                     0xBB => { modrm(0); bit_op(3, ins.osz, gr(ins.reg, ins.osz), true); },
-                    0xBE => { modrm(0); sr(ins.reg, ins.osz, sx(rm_get(8), 8)); },
-                    0xBF => { modrm(0); sr(ins.reg, ins.osz, sx(rm_get(16), 16)); },
                     0xBA => {
                         modrm(1);
                         let n = fb();
@@ -1402,15 +1506,6 @@ fn exec64_rest() -> bool {
         match op >> 4 {
             0x6 => {
                 match op {
-                    0x63 => {
-                        modrm(0);
-                        let v = rm_get(32);
-                        sr(ins.reg, ins.osz, if ins.osz == 64 { sx(v, 32) } else { v });
-                    },
-                    0x68 => { let v = fimm(if ins.p66 { 16 } else { 32 }); push(v, ssz()); },
-                    0x6A => { let v = fs8(); push(v, ssz()); },
-                    0x69 => { modrm(imm_len(ins.osz)); let b = fimm(ins.osz); sr(ins.reg, ins.osz, imul2(rm_get(ins.osz), b, ins.osz)); },
-                    0x6B => { modrm(1); let b = fs8(); sr(ins.reg, ins.osz, imul2(rm_get(ins.osz), b, ins.osz)); },
                     0x6C, 0x6D, 0x6E, 0x6F => { next = port_string(op); jump = true; },
                     _ => { stop64("an instruction not written yet,", op); },
                 }
@@ -1448,20 +1543,13 @@ fn exec64_rest() -> bool {
             0x9 => {
                 match op {
                     0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97 => {
-                        // 90h alone is NOP (and PAUSE with F3h): it does not clear RAX's upper half.
-                        if low != 0 {
-                            let a = gr(RAX, ins.osz);
-                            let b = gr(low, ins.osz);
-                            sr(RAX, ins.osz, b);
-                            sr(low, ins.osz, a);
-                        }
+                        // 90h alone is NOP (and PAUSE with F3h), which is the front's: this
+                        // is XCHG with the A register.
+                        let a = gr(RAX, ins.osz);
+                        let b = gr(low, ins.osz);
+                        sr(RAX, ins.osz, b);
+                        sr(low, ins.osz, a);
                     },
-                    0x98 => {
-                        if ins.osz == 16 { sr(RAX, 16, sx(reg[RAX], 8)); }
-                        else if ins.osz == 32 { sr(RAX, 32, sx(reg[RAX], 16)); }
-                        else { reg[RAX] = sx(reg[RAX], 32); }
-                    },
-                    0x99 => { sr(RDX, ins.osz, ones(reg[RAX] & msb(ins.osz) != 0)); },
                     0x9B => { if machine && cr0 & 0x0A == 0x0A { fault(7, false, 0); } },      // FWAIT
                     0x9C => { push(rflags & 0xFCFFFF, ssz()); },
                     0x9D => {
@@ -1481,33 +1569,14 @@ fn exec64_rest() -> bool {
                 if op < 0xA4 {
                     let a = (if ins.asz32 { fd() } else { fq() }) + seg_base();
                     if op < 0xA2 { sr(RAX, w, rd(a, w)); } else { wr(a, w, reg[RAX]); }
-                } else if op == 0xA8 || op == 0xA9 {
-                    alu(4, gr(RAX, w), fimm(w), w);
                 } else {
                     next = string_op(op);
                     jump = true;
                 }
             },
-            0xB => {
-                if op < 0xB8 { let v = fb(); sr(low, 8, v); }
-                else if ins.osz == 64 { reg[low] = fq(); }
-                else if ins.osz == 32 { reg[low] = fd(); }
-                else { let v = fw(); sr(low, 16, v); }
-            },
             0xC => {
                 match op {
-                    0xC0, 0xC1 => {
-                        modrm(1);
-                        let n = fb();
-                        rm_set(w, shift(ins.reg & 7, rm_get(w), n, w, ins.mod == 3));
-                    },
                     0xC2 => { let n = fw(); next = pop(64); reg[RSP] += n; jump = true; },
-                    0xC6, 0xC7 => {
-                        modrm(imm_len(w));
-                        if ins.reg & 7 != 0 { stop64("an instruction not written yet, C6 or C7 field", ins.reg); }
-                        let v = fimm(w);
-                        rm_set(w, v);
-                    },
                     0xC9 => { reg[RSP] = reg[RBP]; let v = pop(ssz()); sr(RBP, ssz(), v); },
                     0xCA => { let n = fw(); far_ret(n); return true; },
                     0xCB => { far_ret(0); return true; },
@@ -1518,11 +1587,7 @@ fn exec64_rest() -> bool {
                 }
             },
             0xD => {
-                if op < 0xD4 {
-                    modrm(0);
-                    let n: u64 = if op < 0xD2 { 1 } else { reg[RCX] & 0xFF };
-                    rm_set(w, shift(ins.reg & 7, rm_get(w), n, w, false));
-                } else if op >= 0xD8 {
+                if op >= 0xD8 {
                     // The x87 (fpu.goose). REX names no other register stack: the fields are
                     // 0 to 7. With EM or TS set in CR0 the unit is not available.
                     modrm(0);
@@ -1575,28 +1640,6 @@ fn exec64_rest() -> bool {
                     0xF9 => { rflags |= CF; },
                     0xFC => { rflags &= ~DF; },
                     0xFD => { rflags |= DF; },
-                    0xF6, 0xF7 => {
-                        // Peek at the field: TEST has a constant behind the operand.
-                        let field = (peek8() as! u8) >> 3 & 7;
-                        modrm(if field < 2 { imm_len(w) } else { 0 });
-                        match field {
-                            0, 1 => { let b = fimm(w); alu(4, rm_get(w), b, w); },
-                            2 => { rm_set(w, ~rm_get(w)); },
-                            3 => { rm_set(w, alu(5, 0, rm_get(w), w)); },
-                            _ => { muldiv(field, rm_get(w), w); },
-                        }
-                    },
-                    0xFE, 0xFF => {
-                        modrm(0);
-                        match ins.reg & 7 {
-                            0 => { rm_set(w, incdec(false, rm_get(w), w)); },
-                            1 => { rm_set(w, incdec(true, rm_get(w), w)); },
-                            2 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 2); } next = rm_get(64); push(ip, 64); jump = true; },
-                            4 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 4); } next = rm_get(64); jump = true; },
-                            6 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 6); } push(rm_get(ssz()), ssz()); },
-                            _ => { stop64("an instruction not written yet, FF field", ins.reg); },
-                        }
-                    },
                     _ => { stop64("an instruction not written yet,", op); },
                 }
             },

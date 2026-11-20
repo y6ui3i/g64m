@@ -379,6 +379,23 @@ test:
     ret
 .high_back:
     PRINT rax
+    PUTS "a jump and a call through a register to an address above 4 GB"
+    mov rax, 0x00E3FF00000078B8             ; MOV EAX, 78h, and JMP RBX
+    mov [r13 + 0x200], rax
+    lea rbx, [.high_back2]
+    mov rdx, V + 0x100062200
+    jmp rdx
+.high_back2:
+    PRINT rax
+    mov rdx, V + 0x100062100                ; the MOV EAX, 77h, and RET of before
+    xor eax, eax
+    call rdx
+    PRINT rax
+    mov [r13 + 0x300], rdx
+    mov rdx, V + 0x100062300
+    xor eax, eax
+    call [rdx]                              ; and through memory
+    PRINT rax
 
     PUTS "a page of 2 MB invalidated by any address in it"
     mov rdi, V + 0x400000

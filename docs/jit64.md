@@ -73,8 +73,30 @@ MOVSXD 0.7%; MOV of a constant to a register (`B8` to `BF`) 0.8% and to an opera
 (`C6`, `C7`) 0.5%; ENDBR64 0.5%; the group `FF` 0.2%; the forms with a constant and the A
 register 0.3%; CMOV 0.1%. With those the kinds cover 97%.
 
-The boot is the kernel unpacking itself and starting (0.2% of it at privilege level 3). A
-user program's count is to be added here when there is one (NetHack built in the guest).
+**With those kinds added (E118)**, and a few more that cut the runs in user programs
+(SETcc, IMUL with two and three operands, MOVSX, CDQ and its family, PUSH of a constant):
+
+| | Share of the instructions | Runs | Mean length |
+|---|---:|---:|---:|
+| In a run of two or more that ends at a jump (the jump included) | 96.1% | 253 million | 5.8 |
+| In a run of two or more that ends at an instruction of no kind | 0.8% | 2.2 million | 5.4 |
+| Of a kind, but alone | 1.1% | | |
+| Of no kind | 0.25% | | |
+
+(The first table's shares do not sum to 100 either: an instruction of a kind that follows
+a jump and is followed by one is counted nowhere.) A jump here is any of CALL, RET, JMP
+and Jcc, taken or not, the forms through an operand included. What is left without a
+kind, by share of all instructions: PUSHF 0.03%, STOSD 0.03%, CMPXCHG 0.03%, CLI 0.02%,
+MOV from a segment register 0.02%, BT with a constant 0.02%, LEAVE 0.01%. The integer
+primitives run in the front whole; what they leave is the SSE, the x87, BSF and BSR, and
+the string instructions.
+
+The boot is the kernel unpacking itself and starting (0.2% of it at privilege level 3).
+
+**A user program (E119)**: NetHack's source compiled in the guest by GCC, 428 billion
+instructions, 80% in user mode. With E118's kinds 96.3% of them are of a kind. What is
+left is the SSE's moves and PXOR/POR (about 2%: GCC copies and clears structures with
+them, in integer code), repetitions of string instructions (about 1%), and BT.
 
 ## What is the same as the 32-bit JIT
 
@@ -140,10 +162,10 @@ user program's count is to be added here when there is one (NetHack built in the
 
 ## What is not known yet
 
-- How long blocks are once the cutting instructions are kinds (the 32-bit boot's mean
-  was not recorded either; its blocks are at most 60 instructions).
+- How long a block is when it may go on through a jump that is not taken: a run as
+  counted above ends at every Jcc, and is 5.8 instructions in the mean (E118).
 - Whether 28 registers are enough in practice, or which guest registers go to memory.
-- What a user program's instructions look like: the count above is the kernel's.
+- A user program's runs: E119 counted its kinds, not how they fall into runs.
 - The cost in the interpreter of carrying the hook (the 32-bit one's was 0.1% to 1.1%).
 
 ## Tasks
@@ -155,7 +177,7 @@ without `--jit`.
 
 | # | Task | Measured on |
 |---|---|---|
-| 1 | The kinds that cut the runs: shifts and rotations, `F6`/`F7`, NOP and ENDBR64, MOVSXD, MOV of a constant, the constant-and-A forms, CMOV and SETcc, the indirect CALL and JMP. In the short front first, so that each is tested as interpreted before it is translated | the count above, again |
+| 1 (done, E118) | The kinds that cut the runs: shifts and rotations, `F6`/`F7`, NOP and ENDBR64, MOVSXD, MOV of a constant, the constant-and-A forms, CMOV and SETcc, the indirect CALL and JMP. In the short front first, so that each is tested as interpreted before it is translated | the count above, again |
 | 2 | An emitter for arm64 with 64-bit operands (`src/jit64.goose`), the way in and out, and a block of instructions without memory operands, entered from the front; `--jit` on `build/x64` | `p_loop`, `p_if`, `p_shift` |
 | 3 | The flags' record for four widths, and the jump that reads it | `p_ternary`, `p_switch`, the trace tests with `--jit` |
 | 4 | Memory operands for a program without a kernel, with the way out | `p_pointer`, `p_index`, `p_bytes`, all the primitives |
