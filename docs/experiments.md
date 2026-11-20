@@ -9038,3 +9038,66 @@ part of the figure.)
 **Next.** The far way: RET and the jumps through an operand looked up in generated
 code. Then the kinds still missing (ADC and SBB, byte operations), and the primitives
 given a count of rounds, so that they can be timed against QEMU.
+
+## E123: the far way: RET and jumps through an operand, looked up in generated code (2026-11-20)
+
+E122 left the programs that return and jump through operands coming back to the
+interpreter each time: `p_recursion` every 17 instructions (60 host instructions for a
+guest instruction), `p_switch` every 6 (114), `p_funcptr` every 4 (121).
+
+- **Hypothesis**: **with the target of a RET, and of a CALL or JMP through an operand,
+  looked up in the decode cache by generated code (the entry for the address, whether a
+  block begins there, where its code is: about fourteen host instructions) and entered
+  without leaving, those three primitives run a thousand instructions or more for each
+  entry from the interpreter and come under 40.**
+- **What changed since last time**: an exit whose target is not known when the block is
+  translated no longer leaves generated code, in a program without a kernel.
+- **Next move for each result**:
+  - Under 40 → the kinds still missing (ADC and SBB, byte operations), then the
+    primitives given a count of rounds and timed against QEMU
+  - The look-up finds the block but the figure stays → the look-up's own cost is read
+    in the listing (a cache of the last target at each exit is what QEMU and the 32-bit
+    JIT do not have either)
+  - The look-up misses → what the targets are (blocks under two instructions, a block
+    that reads RFLAGS entered with a record waiting) is counted
+- **Cut-off**: those three primitives; the suites; wrong builds of the look-up.
+
+**Result: two of the three. `p_recursion` 60 → 37 host instructions for a guest
+instruction, entered from the interpreter 44 times in all; `p_funcptr` 121 → 40;
+`p_switch` 114 → 79, still left every 10 instructions.**
+
+| | Interpreted | E122 | Now | In blocks | Instructions for each entry |
+|---|---:|---:|---:|---:|---:|
+| `p_recursion` | 313 | 60 | 37 | 100% | 276602 |
+| `p_funcptr` | 309 | 121 | 40 | 99% | 67 |
+| `p_switch` | 298 | 114 | 79 | 95% | 10 |
+| `p_if` | 304 | 23 | 23 | 100% | 28231 |
+| `p_loop` | 328 | 28 | 27 | 100% | 5000 |
+| `p_pointer` | 323 | 18 | 18 | 100% | 21479 |
+| `p_shift` | 312 | 8 | 8 | 100% | 36773 |
+| `p_index` | 347 | 39 | 39 | 97% | 45 |
+| `p_bignum` | 333 | 172 | 160 | 81% | 4 |
+| `p_bytes` | 311 | 204 | 193 | 75% | 3 |
+
+- **The look-up** is fifteen host instructions at one place in the mapping, reached by
+  every exit whose target is in a register: the entry for the address as `dc_slot`
+  finds it, its tag compared, whether a block begins there, where its code is; then
+  into the block, which checks the time and the flags' record as for any link. A miss
+  goes out. It reads the decode cache as it lies in memory, and is built only if a
+  check at the start finds an entry 32 bytes long with the tag first.
+- **One instruction is a block now**, where blocks are entered from one another: a case
+  of a switch that is one JMP was not a block (two at least, E120), so every such case
+  left generated code. `p_switch` went from 100 to 79 by that, `p_funcptr` from 47 to
+  40.
+- **What holds `p_switch` and `p_funcptr`** is the 1 to 5% of their instructions that
+  are not translated: each sends the program out and in again. With `p_bignum` (ADC,
+  SBB) and `p_bytes` (byte operations) that is the card's first branch: the missing
+  kinds are next.
+- **Wrong builds of the look-up: 3 of 7 caught**, and the other four change nothing a
+  program can see (a look-up that misses is only slower; two conditions that cannot
+  arise yet). The tag's comparison taken out passed at first: `j_slot` was rewritten
+  for it, with a block translated again each round and a jump through a register to
+  the address that shares its entry.
+
+**Next.** ADC and SBB, the byte operations, and what `p_switch` still leaves for; then
+the primitives with a count of rounds, timed against QEMU.

@@ -43,6 +43,9 @@ extern fn jit_alloc(size: i64) -> i64;
 extern fn jit_write(at: i64, code: const u8[:]);
 extern fn jit_addr_u64(a: const u64[:]) -> i64;
 extern fn jit_addr8(a: const u8[:]) -> i64;
+extern fn jit_addr32(a: const u32[:]) -> i64;
+extern fn jit_addr_any(a: const Entry[:]) -> i64;
+extern fn jit_peek64(at: i64) -> i64;
 extern fn jit_call4(enter: i64, a: i64, b: i64, c: i64, d: i64) -> i64;
 
 var jit_on = false;
@@ -54,6 +57,7 @@ var j_mem = 0;               // where the code is mapped
 var j_used = 0;              // how much of it holds code
 var j_keep = 0;              // how much of that is the way in and out
 var j_out_at = 0;
+var j_far_at = 0;            // the far way: to the block at the address in x1, if there is one; 0 if not built
 var j_regs = 0;
 var j_ctx = 0;
 var j_blocks = 0;            // blocks translated
@@ -68,7 +72,8 @@ let J_MIN = 2;               // and at least
 // What a block is given and gives back: [0] RFLAGS in, [1] [2] [3] the flags' record,
 // [4] the next RIP, [5] where the memory is, [6] where dc_mark is, [7] how many stores
 // are in the log and [8] where the log is, [9] the time left, in and out, [10] where the
-// guest's registers are.
+// guest's registers are, [11] the decode cache, [12] dc_n, [13] dc_code and [14] the
+// mapping, for the far way.
 var jx: u64[16] = [0; 16];
 // --jit-check: each store's address and the eight bytes that were there.
 var jlog: u64[256] = [0; 256];
@@ -182,6 +187,41 @@ fn jit64_init() -> bool {
     a_ldp(25, 26, 31, 64);
     e(0xA8C67BFD);                       // ldp x29, x30, [sp], #96
     e(0xD65F03C0);                       // ret
+    // The far way (E123): x1 an address that was not known when the block was translated
+    // (a RET's, a jump's through an operand). The decode cache's entry for it is found as
+    // dc_slot finds it; if it is that address's and a block begins there, into the block,
+    // which checks the rest; if not, out. Only if the cache is laid out as this reads it:
+    // an entry of 32 bytes with the tag first.
+    let dc_at = jit_addr_any(dc[..]);
+    let keep = dc[1].tag;
+    dc[1].tag = 0x1122334455667788;
+    let laid = jit_peek64(dc_at + 32) == 0x1122334455667788 && jit_peek64(dc_at) == (dc[0].tag as! i64);
+    dc[1].tag = keep;
+    if laid && DC_BITS == 18 {
+        jx[11] = dc_at as! u64;
+        jx[12] = jit_addr8(dc_n[..]) as! u64;
+        jx[13] = jit_addr32(dc_code[..]) as! u64;
+        jx[14] = j_mem as! u64;
+        let out_back: u32 = (((j_out_at - jc.len) >> 2) as! u32) & 0x3FFFFFF;
+        let to_out = jc.len;
+        e(0x14000000 | out_back);                            // b the way out
+        j_far_at = jc.len;
+        e(0xCA404800 | S1 << 16 | S1 << 5 | S2);             // eor x2, x1, x1, lsr #18
+        e(0x92404400 | S2 << 5 | S2);                        // and x2, x2, #0x3FFFF
+        a_ldr(S3, CTX, 88);
+        e(0x8B001400 | S2 << 16 | S3 << 5 | S3);             // add x3, x3, x2, lsl #5
+        a_ldr(S3, S3, 0);
+        a_rrr(A_SUBS, 1, ZR, S3, S1);                        // cmp x3, x1
+        e(0x54000001 | ((((to_out - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);     // b.ne out
+        a_ldr(S3, CTX, 96);
+        e(0x38606800 | S2 << 16 | S3 << 5 | S3);             // ldrb w3, [x3, x2]
+        e(0x34000000 | ((((to_out - jc.len) >> 2) as! u32) & 0x7FFFF) << 5 | S3);    // cbz w3, out
+        a_ldr(S3, CTX, 104);
+        e(0xB8607800 | S2 << 16 | S3 << 5 | S3);             // ldr w3, [x3, x2, lsl #2]
+        a_ldr(S4, CTX, 112);
+        a_rrr(A_ADD, 1, S3, S4, S3);
+        e(0xD61F0000 | S3 << 5);                             // br x3
+    }
     jit_write(j_mem, jc[..]);
     j_keep = jc.len;
     j_used = j_keep;
@@ -373,7 +413,8 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
 fn j_exit_to(r: u32, cnt: u64) {
     a_mov(1, S1, r);
     a_addi(0x51, 1, 0, 0, cnt as! u32);
-    let d: u32 = ((j_out_at - (j_used + jc.len)) >> 2) as! u32;
+    let far = j_far_at != 0 && !machine && !jit_check && jit_no >> 62 & 1 == 0;
+    let d: u32 = (((if far { j_far_at } else { j_out_at }) - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
 }
 
@@ -802,7 +843,8 @@ fn jit_translate(ph: u64) {
             n += 1;
             if j_end { break; }
         }
-        if n >= J_MIN {
+        // One instruction is worth a block where blocks are entered from one another.
+        if n >= J_MIN || (n == 1 && !machine && !jit_check) {
             if !j_end { j_exit(q - head, n as! u64, true); }
             // The ways out, behind the block.
             for i in so_n {
