@@ -9101,3 +9101,55 @@ instruction, entered from the interpreter 44 times in all; `p_funcptr` 121 → 4
 
 **Next.** ADC and SBB, the byte operations, and what `p_switch` still leaves for; then
 the primitives with a count of rounds, timed against QEMU.
+
+## E124: byte operations, ADC and SBB in blocks (2026-11-20)
+
+What the interpreter still runs under `--jit`, counted by first byte in the primitives:
+the group `80` and the ALU and TEST forms on bytes (`p_switch`, `p_funcptr`, `p_bytes`,
+`p_index`: a `cmp byte` in front of a jump), ADC and SBB (`p_bignum`), rotations
+(`p_sha`, `p_rotate`), MUL and DIV with one operand (`p_muldiv`), byte shifts
+(`p_bitfield`). This entry takes the first two.
+
+- **Hypothesis**: **with the ALU instructions on bytes translated so that the host's
+  flags are the byte's (both operands shifted up 24 bits, as the 32-bit JIT does), and
+  ADC and SBB taking the carry from the host's flags where the instruction before left
+  it there, `p_switch` (79), `p_funcptr` (40), `p_index` (39), `p_bytes` (193) and
+  `p_bignum` (160) run 99% of their instructions in blocks and come under 40.**
+- **What changed since last time**: the flags' record takes a width of 8, and for ADC
+  and SBB the carry that went in.
+- **Next move for each result**:
+  - Under 40 → rotations (their flags are dead nearly always: a look ahead in the
+    block), MUL and DIV, byte shifts; then the timing against QEMU
+  - In blocks but over 40 → the listing of the hot block is read
+  - Still leaving → the counter again
+- **Cut-off**: those five primitives; the suites; wrong builds.
+
+**Result: two of the five under 40, two at it, one above. `p_bytes` 193 → 17 host
+instructions for a guest instruction, `p_index` 39 → 22, `p_switch` 79 → 41, `p_funcptr`
+40 → 40, `p_bignum` 160 → 56.**
+
+| | Interpreted | E123 | Now | In blocks | Instructions for each entry |
+|---|---:|---:|---:|---:|---:|
+| `p_bytes` | 311 | 193 | 17 | 100% | 3997 |
+| `p_index` | 347 | 39 | 22 | 99% | 746 |
+| `p_switch` | 298 | 79 | 41 | 100% | 21 |
+| `p_funcptr` | 310 | 40 | 40 | 99% | 67 |
+| `p_bignum` | 333 | 160 | 56 | 95% | 18 |
+| `p_muldiv` | 307 | 110 | 108 | 87% | 7 |
+| `p_sha` | 323 | 112 | 111 | 85% | 9 |
+| `p_rotate` | 301 | 71 | 71 | 81% | 142 |
+| `p_bitfield` | 324 | 62 | 61 | 93% | 14 |
+
+(The first five are the card's; the last four are what the next entry is for.)
+
+- **Bytes**: the two operands are shifted up 24 bits and the operation done on 32, so
+  the host's flags are the byte's and a `cmp byte` in front of a jump is one block with
+  the jump, as for the wider operands. The record takes the width 8 and the
+  interpreter's `alu` settles it as before.
+- **ADC and SBB** take the carry from the host's flags when the instruction before in
+  the block left it there (ADD, SUB, CMP, ADC, SBB; clear after the logic
+  instructions), or from RFLAGS in memory when they are the first to set flags. The
+  carry that went in is kept in the record, so that `alu` gives the flags it would have.
+- **What still holds `p_bignum`, `p_switch` and `p_funcptr`**: 1 to 5% of their
+  instructions are not translated, and each costs an entry. By the counter: MUL and DIV
+  with one operand, rotations, byte shifts.
