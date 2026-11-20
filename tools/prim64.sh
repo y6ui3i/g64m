@@ -54,7 +54,7 @@ fail=0
 for src in $list; do
     name=$(basename "$src" .c)
     if [ ! -f "tests/prim64/$name.elf" ] || [ ! -f "tests/prim64/$name.out" ]; then fail=1; echo "FAIL  $name: not built"; continue; fi
-    if build/x64 "tests/prim64/$name.elf" 2> "build/$name.err" | cmp -s - "tests/prim64/$name.out"; then
+    if build/x64 ${X64:-} "tests/prim64/$name.elf" 2> "build/$name.err" | cmp -s - "tests/prim64/$name.out"; then
         echo "ok    $name"
     else
         fail=1

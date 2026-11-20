@@ -48,6 +48,7 @@ import os;
 import cpu64;
 import sse64;
 import sys64;
+import jit64;
 import dev;
 import linux64;
 
@@ -465,6 +466,15 @@ fn main() {
         }
         else if a[i] == "--faults" { show_faults = true; }
         else if a[i] == "--no-decode-cache" { dc_on = false; }
+        else if a[i] == "--jit" { jit_on = true; }
+        else if a[i] == "--jit-check" { jit_on = true; jit_check = true; }
+        else if a[i] == "--jit-stats" { jit_stats = true; }
+        else if a[i] == "--jit-off" && i + 1 < a.len {
+            i++;
+            let n, ok = parse_int(a[i]);
+            guard ok else { write_stderr("x64: --jit-off needs a number\n"); exit(2); }
+            jit_no = n as! u64;
+        }
         else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }
         else if a[i] == "--keep" { disk_scratch = 0; }
@@ -533,6 +543,7 @@ fn main() {
     }
     tick_insns = 64;
     timer_on = false;
+    if jit_on && !(dc_on && jit64_init()) { jit_on = false; }
     var asleep = false;
     var scripted = false;
     // A kernel started from a terminal, with no script and no trace: the terminal is its
@@ -589,6 +600,7 @@ fn main() {
         if exec64() && machine { single_step(tf); }
         if shadow { sti_shadow = false; }
         steps += 1;
+        if jit_left != 0 { jit_tick(); }
         if trace && !stopped { trace_line(); }
 
         // The run (E106). What is above does one instruction with every question asked. Most
@@ -596,7 +608,7 @@ fn main() {
         // is due is worked out here, and they are run with one test after each: has anything
         // asked for attention (a halt, a stop, STI, SYSCALL and SYSRET set `attn`; a write to
         // the timer sets `replan`), is TF set, is a request waiting with IF set.
-        if machine && !trace && !stopped {
+        if machine && !trace && !stopped && jit_left == 0 {
             var stop_at = max;
             if kernel && next_look < stop_at { stop_at = next_look; }
             if net_on && net_next < stop_at { stop_at = net_next; }
@@ -617,7 +629,13 @@ fn main() {
             }
             rep_until = 0;
             attn = false;
+            if jit_left != 0 { jit_tick(); }
         }
+    }
+    if jit_stats {
+        var msg: u8[>..] = [];
+        format(msg, "x64: jit: ", j_blocks, " blocks, ", j_used, " bytes, entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes\n");
+        write_stderr(msg);
     }
     if screen_on { screen_close(); }
     if shot_arg > 0 && fb_w != 0 {

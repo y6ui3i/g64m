@@ -8724,3 +8724,101 @@ count is whole enough to use: 428 billion guest instructions, 80% of them in use
 again from where it stopped, under the plain build on a quiet host: the objects are on
 the disk, so it is the last few files, the link and the install. Then the NetHack it
 built, run.
+
+## E120: the first generated code: blocks of instructions that touch no memory (the JIT's second task; 2026-11-20)
+
+E118 left 96% of the boot's instructions in runs of the front's kinds. This entry
+translates the part of such a run that needs nothing from memory: an emitter for arm64
+(`src/jit64.goose`), a way in and out, and blocks made of register-only instructions
+with operands of 32 and 64 bits, entered from the short front by one more kind. No
+links between blocks, no memory operands, no stack: those are tasks 4 to 6. The flags
+are a record of the last flag-setting instruction's operands, settled after the block
+by the interpreter's own functions (task 3 makes it cheaper).
+
+- **Hypothesis**: **generated code for register-only runs, entered and left through C
+  for every block, already takes the primitives that are loops over registers
+  (`p_loop`, `p_if`, `p_shift`) from about 300 host instructions for a guest instruction
+  to under 100; and with every block run both ways and compared (`--jit-check`: the
+  block, then the same instructions interpreted from the same state), every suite
+  passes.**
+- **What changed since last time**: the first generated code on the 64-bit CPU.
+  Everything up to E118 was the interpreter.
+- **Next move for each result**:
+  - Under 100 on those three → task 4, memory operands for a program without a kernel,
+    which is what makes blocks as long as the runs
+  - 100 to 200 → the way in and out is what is left: counted, and links (task 6) come
+    before memory
+  - No gain to speak of → how many instructions ran in blocks is read: if few, the
+    blocks are too short without memory operands and task 4 comes at once; if many,
+    the listing of one block is read
+  - `--jit-check` finds a difference → that instruction's translation, with the test
+    that shows it, before anything else
+- **Cut-off**: the three primitives' host instructions; the suites with `--jit` and
+  with `--jit-check`; wrong builds of the translator. The comparison with QEMU when the
+  host is quiet.
+
+**Result: generated code runs, and every block agrees with the interpreter; the
+hypothesis's number holds for one of its three primitives. `p_shift` 309 → 60 host
+instructions for a guest instruction, `p_loop` 326 → 102, `p_if` 301 → 233. The boot:
+276 → 207, with 48% of its instructions run in blocks.** (Whole runs, the program's
+start included, so a little above the table's figures.)
+
+| | Host instructions for a guest instruction, interpreted | With `--jit` | Instructions run in blocks | Instructions for each entry into a block |
+|---|---:|---:|---:|---:|
+| `p_ternary` | 297 | 40 | 96% | 22.9 |
+| `p_shift` | 309 | 60 | 97% | 8.7 |
+| `p_pixel` | 319 | 79 | 89% | 10.0 |
+| `p_bitfield` | 321 | 99 | 82% | 9.0 |
+| `p_loop` | 326 | 102 | 100% | 5.0 |
+| `p_muldiv` | 304 | 136 | 80% | 4.8 |
+| `p_sha` | 321 | 145 | 76% | 6.4 |
+| `p_switch` | 297 | 219 | 65% | 2.5 |
+| `p_if` | 301 | 233 | 64% | 2.3 |
+| `p_pointer` | 321 | 247 | 50% | 2.7 |
+| `p_funcptr` | 306 | 252 | 44% | 2.7 |
+| `p_dbl_arith` | 399 | 403 | 0% |  |
+| The boot | 276 | 207 | 48% | 3.2 |
+
+- **What a block costs is the way in and out, not its instructions.** Stepped one host
+  instruction at a time through a shell's loop in the guest: an entry into a block is
+  300 to 500 host instructions, in many small parts and no large one: the front's
+  beginning and the rest of the CPU's (where a block's first instruction is found), 88
+  in `jit_enter` itself, the sixteen registers loaded and stored, the flags settled by
+  `alu` (60), the run loop. A block's own instructions are a few each. So the figure
+  for a primitive is nearly 400 divided by how many instructions it runs for each
+  entry: 23 in `p_ternary`, 2.3 in `p_if`.
+- **The card's middle branch, then, with its order confirmed by the count**: what is
+  left is the entries. Two things take them away, and both were in the plan: memory
+  operands (tasks 4 and 5), which make a block as long as the run (the boot's blocks
+  are 3.2 instructions for runs of 5.8, and a program's that uses the stack are 2 to
+  3), and links (task 6), which take a block to the next without the way out and in.
+- **How it is built.** A block's first instruction is kept in the decode cache without
+  a kind, so it goes to the rest of the CPU, which looks whether a block begins there:
+  the front's path has nothing of the JIT in it (Goose refuses a function that reaches
+  itself, and the front's jump on the kind could not take one more arm that goes back
+  to the front). Arrivals are counted where a jump lands and where a page is entered;
+  at the eighth, the page is translated from there on, block after block, as far as
+  the decode cache knows the instructions.
+- **The flags** are not made in generated code. The block leaves the last
+  flag-setting instruction's operands and what it was, and the interpreter's own `alu`,
+  `shift`, `incdec` or `imul2` is called on them: right by construction. A jump on a
+  condition right after a CMP, SUB, ADD, AND, OR, XOR or TEST in the same block uses
+  the host's flags; one with no flag-setting instruction before it in the block tests
+  RFLAGS in memory; anything else ends the block before it. INC, DEC and a shift by CL
+  leave some flags as they were, and are translated only as the first to set flags in
+  their block.
+- **`--jit-check`** runs every block and then, from the same state, the same
+  instructions interpreted, and compares the registers, RFLAGS and RIP. It is what
+  the suites are run with: the 23 primitives, the 9 system tests and the six Linux
+  checks (the boot to the shell, the disk, NetHack, the network, the frame buffer)
+  pass with it and with `--jit`. The trace tests print every instruction and so run
+  no block: they say nothing about the JIT.
+- **The globals' order cost the interpreter 27 host instructions for each guest
+  instruction, and was put right.** The first build ran the boot without `--jit` at 303
+  where E118 had 276: the four arrays the JIT keeps beside the decode cache (1.8 MB)
+  had come in front of the CPU's own state among the globals, and every use of a
+  register, RIP or the flags was two host instructions longer (E110 found the same
+  rule). They are declared behind the guest's memory now, in `cpu64.goose`, and the
+  boot without `--jit` is 276 again (420.1 billion). The numbers above are after that.
+- **Not timed against QEMU**: the wrong builds were running. One boot with `--jit`
+  took 17.5 s where the last quiet one without took 24.5.
