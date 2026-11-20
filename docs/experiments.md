@@ -8520,3 +8520,80 @@ the front's kinds, not nine tenths, and the runs are under four instructions lon
 
 **Next.** The JIT's first task (`docs/jit64.md`): the kinds that cut the runs, in the
 short front, each tested as interpreted; then the count again.
+
+## E117: where QEMU is (a measurement; 2026-11-20)
+
+The owner's aim, from today: to get past QEMU, and to see how near an old technique,
+written in a language an AI made, built by an AI, can come. QEMU's user-mode emulator is
+what Docker hands an x86_64 program to on an arm64 host that is not a Mac, which is the
+place M11 means g86m to take. So its speed is the number to be measured against, on the
+same host and the same programs.
+
+- **Hypothesis**: **on this host QEMU runs the integer primitives some tens of times
+  faster than g86m (62 million guest instructions a second), and floating point by less,
+  since it computes that in software.**
+- **What changed since last time**: g86m's numbers have been compared only with its own.
+- **Next move for each result**:
+  - Tens of times on integers, less on floating point → the JIT's order stands (integers
+    first), and each of its steps is reported as a distance from QEMU on these programs
+  - Hundreds of times → QEMU's translation is far better than the 32-bit JIT's was, and
+    the design is to be read against QEMU's before it is built
+  - Under ten → the interpreter is nearer than thought; measure longer programs before
+    believing it
+- **Cut-off**: the 23 primitives, run twenty times each in a container (Alpine for arm64
+  with its package `qemu-x86_64`), and three times on g86m. No longer programs, no system
+  emulation.
+
+**Result: 6 to 200 times on the integer primitives, 6 to 14 on double and float, 3 on
+long double, and level on filling and copying.** Million guest instructions a second,
+Apple M1, each program's count of instructions (E112) over the time of a run; g86m's
+time less the 0.09 s it takes to start (it clears 256 MB and the decode cache):
+
+| Primitive | QEMU 11.0.3 | Docker's own | g86m | g86m behind QEMU |
+|---|---:|---:|---:|---:|
+| `p_shift` | 8,200 | 11,354 | 42 | 195 times |
+| `p_bitfield` | 5,878 | 7,511 | 38 | 155 times |
+| `p_ternary` | 4,925 | 7,164 | 43 | 115 times |
+| `p_pixel` | 4,077 | 5,889 | 40 | 102 times |
+| `p_sha` | 2,800 | 4,800 | 42 | 67 times |
+| `p_bytes` | 2,768 | 5,767 | 44 | 62 times |
+| `p_rotate` | 2,594 | 3,978 | 47 | 56 times |
+| `p_index` | 1,993 | 6,644 | 41 | 48 times |
+| `p_bignum` | 1,596 | 4,257 | 35 | 45 times |
+| `p_loop` | 2,000 | 5,000 | 45 | 44 times |
+| `p_pointer` | 2,000 | 5,077 | 47 | 43 times |
+| `p_simd` | 851 | 4,150 | 24 | 36 times |
+| `p_if` | 1,394 | 3,538 | 45 | 31 times |
+| `p_recursion` | 841 | 1,743 | 46 | 18 times |
+| `p_muldiv` | 832 | 4,400 | 46 | 18 times |
+| `p_dbl_cmp` | 620 | 5,357 | 43 | 14 times |
+| `p_switch` | 511 | 1,290 | 40 | 13 times |
+| `p_dbl_arith` | 369 | 1,394 | 37 | 10 times |
+| `p_float` | 376 | 1,650 | 37 | 10 times |
+| `p_funcptr` | 292 | 1,020 | 46 | 6 times |
+| `p_dbl_conv` | 207 | 5,200 | 37 | 6 times |
+| `p_ldbl` | 74 | 35 | 26 | 3 times |
+| `p_fill` | 339 | 1,560 | 277 | 1.2 times |
+
+"Docker's own" is what Docker on this host runs an x86_64 program with when nothing is
+said (the same program started in the arm64 container without `qemu-x86_64` in front);
+by its speed and by `p_ldbl` it is Rosetta.
+
+- **QEMU is not one number.** Straight-line integer code runs at 2,000 to 8,000 million
+  instructions a second; where the program jumps through a register (`p_funcptr`,
+  `p_switch`, and every return in `p_recursion`) it falls to 300 to 800, because each
+  such jump is looked up; double and float are 200 to 600, the x87 74. g86m is 24 to 47
+  for everything but the string instructions: it pays the same for every instruction.
+- **Where g86m is already level**: `p_fill`, 272 against 339, since E113 moves a
+  stretch in memory. And on `p_ldbl` it is within three of QEMU, and of Rosetta, which
+  is slower than QEMU there.
+- **What it says for the JIT**: to pass QEMU on straight-line integer code a guest
+  instruction must cost about two host instructions; the 32-bit JIT's boot cost 22, with
+  the interpreter's share and the TLB in it. On jumps through a register and on floating
+  point QEMU is five to twenty times slower than its best, and that is where a
+  translator that keeps the guest's registers in the host's, links what it can and uses
+  the host's floating point has the most room.
+- **How rough it is**: a run under QEMU takes 6 to 190 ms, its start included, read on a
+  clock of 10 ms over twenty runs; the short ones are good to a fifth at best. g86m was
+  timed while another g86m was using one core. Longer programs are for a later entry.
+- `tools/prim64_qemu.sh` does the measurement.

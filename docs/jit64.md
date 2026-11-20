@@ -17,6 +17,42 @@ NetHack is built by GCC in 71 seconds on the real machine (an Ivy Bridge) and in
 half an hour by the guest's GCC on g86m. Everything left in the interpreter's plan
 ([primitives64.md](primitives64.md)) is a factor of two at best.
 
+## The yardstick: QEMU on the same host (E117)
+
+The aim is to get past QEMU's user-mode emulator, which is what Docker runs an x86_64
+program with on an arm64 host that has no Rosetta. Million guest instructions a second on
+the primitives, Apple M1 (`tools/prim64_qemu.sh`; rough, the programs are short):
+
+| Primitive | QEMU 11.0.3 | Docker's own | g86m | g86m behind QEMU |
+|---|---:|---:|---:|---:|
+| `p_shift` | 8,200 | 11,354 | 42 | 195 times |
+| `p_bitfield` | 5,878 | 7,511 | 38 | 155 times |
+| `p_ternary` | 4,925 | 7,164 | 43 | 115 times |
+| `p_pixel` | 4,077 | 5,889 | 40 | 102 times |
+| `p_sha` | 2,800 | 4,800 | 42 | 67 times |
+| `p_bytes` | 2,768 | 5,767 | 44 | 62 times |
+| `p_rotate` | 2,594 | 3,978 | 47 | 56 times |
+| `p_index` | 1,993 | 6,644 | 41 | 48 times |
+| `p_bignum` | 1,596 | 4,257 | 35 | 45 times |
+| `p_loop` | 2,000 | 5,000 | 45 | 44 times |
+| `p_pointer` | 2,000 | 5,077 | 47 | 43 times |
+| `p_simd` | 851 | 4,150 | 24 | 36 times |
+| `p_if` | 1,394 | 3,538 | 45 | 31 times |
+| `p_recursion` | 841 | 1,743 | 46 | 18 times |
+| `p_muldiv` | 832 | 4,400 | 46 | 18 times |
+| `p_dbl_cmp` | 620 | 5,357 | 43 | 14 times |
+| `p_switch` | 511 | 1,290 | 40 | 13 times |
+| `p_dbl_arith` | 369 | 1,394 | 37 | 10 times |
+| `p_float` | 376 | 1,650 | 37 | 10 times |
+| `p_funcptr` | 292 | 1,020 | 46 | 6 times |
+| `p_dbl_conv` | 207 | 5,200 | 37 | 6 times |
+| `p_ldbl` | 74 | 35 | 26 | 3 times |
+| `p_fill` | 339 | 1,560 | 277 | 1.2 times |
+
+QEMU runs straight-line integer code at 2,000 to 8,000, jumps through a register at 300 to
+800, double and float at 200 to 600, the x87 at 74. g86m interpreted is 24 to 47 whatever
+the instruction. Each task below is reported as this table again.
+
 ## What the guest's code looks like to a translator (the boot, 1,524 million instructions)
 
 Counted with the kinds the short front has now (E110: ALU with ModRM, MOV, the group
