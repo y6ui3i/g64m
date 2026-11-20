@@ -9025,3 +9025,16 @@ part of the figure.)
   one. `p_switch` and `p_funcptr`, which are not, come to about 250 million guest
   instructions a second, where QEMU had 511 and 292 (E117). The primitives need a
   count of rounds before the rest can be compared.
+- **Wrong builds of the linking: 9 of 10 caught.** Eight at once: a record left waiting
+  when a block that reads RFLAGS is entered (by a trace program run with `--jit`), the
+  time not tested (by where a run cut short stops), RIP not set, an entry behind the
+  checks, a count one too many. A write to a page of blocks that drops none passed:
+  `j_mem`'s stores are made by the interpreter, after the block is left, and nothing
+  then called the changed function through a link. It does now (a CALL inside a block,
+  and the result compared before the exit code). Not held: an exit that waits for one
+  address made into a branch to a block at another, which takes two addresses sharing
+  an entry of the decode cache, one of them waited for.
+
+**Next.** The far way: RET and the jumps through an operand looked up in generated
+code. Then the kinds still missing (ADC and SBB, byte operations), and the primitives
+given a count of rounds, so that they can be timed against QEMU.
