@@ -8183,3 +8183,108 @@ first one after a jump guessed wrong, collects the samples of what stands behind
    not from the copy. Measured in cycles, since the count will hardly move.
 2. Then by count again, where the samples and the count agree: `main`'s loop (31
    instructions, 11% of the time) and `modrm` (29, 9%).
+
+## E112: the primitives (a survey; 2026-11-20)
+
+The owner's proposal: not benchmarks, which measure a mixture, but the things a program
+is made of, one small C program for each, built with GCC as real programs are. What is
+made faster for a primitive is faster in every program that has it. The list (23, in
+`tests/prim64/`): loop, if, the conditional operator, pointer, recursion, pointer to a
+function, switch, arrays and structures, multiply and divide, bytes; double (arithmetic,
+comparison, conversion), float, long double; shifts, rotating and bit searching, bit
+fields; filling and copying, pixels one at a time, pixels several at a time; a hash,
+large numbers.
+
+All 23 print on g86m what they print on the real CPU (they were run there, natively, for
+the expected text). That was not known before this entry for the last three groups.
+
+- **Hypothesis**: **the primitives differ by more than a factor of two in host
+  instructions for a guest instruction, and the expensive ones are those whose
+  instructions the short front does not run: the pointer to a function and the switch
+  (an indirect CALL and JMP), the conditional operator (CMOV, SETcc), the shifts, and
+  everything in XMM registers.**
+- **What changed since last time**: the boot was the only measure (one number, 289).
+  This is one number for each primitive, and for each the list of instructions that go
+  to the rest of the CPU.
+- **Next move for each result**:
+  - As the hypothesis says → the instructions that keep a primitive out of the front go
+    into it, in the order of (their share in the primitive) × (how common the primitive
+    is in the boot and the user programs, E104); one entry for each group
+  - All within a factor of 1.3 → the front is not what tells them apart; the cost is in
+    what all share (the lookup, the run loop, `modrm`), and E111's list stands
+  - A primitive is expensive with all its instructions in the front → its cost is in the
+    front's helpers (`alu`, `rm_get`, memory): that function's entry comes first
+- **Cut-off**: the programs as written, each run once in user mode (no paging), counted
+  once. No change to how instructions are run in this entry.
+
+**Result: the primitives lie between 291 and 477 host instructions for a guest instruction,
+a factor of 1.6 and not the two the card said; and the short front is not what tells the
+integer ones apart. The expensive ones are four groups: the string instructions with a
+repeat count, division, everything in XMM registers, and the x87.**
+
+Each program run once in user mode (`tools/prim64_table.py`; the counts of what the front
+does not run come from a counting copy of the sources it makes):
+
+| Primitive | Guest instructions | Host instructions for each | Cycles for each | Run by the front | What the front does not run (share of the program's instructions) |
+|---|---:|---:|---:|---:|---|
+| `p_if` | 23.0 million | 291 | 51.2 | 100% |  |
+| `p_switch` | 25.8 million | 291 | 54.0 | 84% | CMP A, imm 10%, JMP-indirect 4%, NOP 1%, SHR 1% |
+| `p_rotate` | 89.5 million | 293 | 47.3 | 91% | SHR 3%, MOVSXD 1%, ROL 1%, SHL 1%, MOV r, imm 1% |
+| `p_funcptr` | 20.9 million | 303 | 54.5 | 85% | CALL-indirect 12%, NOT 1%, SHR 1% |
+| `p_recursion` | 12.2 million | 303 | 56.1 | 99% | MOV r, imm 1% |
+| `p_bytes` | 34.6 million | 309 | 52.8 | 89% | SETcc 7%, CMOVcc 4% |
+| `p_pointer` | 33.0 million | 311 | 49.9 | 100% |  |
+| `p_shift` | 73.8 million | 312 | 51.6 | 75% | SHR 8%, SHL 6%, SAR 6%, NOT 3%, NEG 3% |
+| `p_ternary` | 39.4 million | 313 | 52.5 | 63% | CMOVcc 21%, MOV r, imm 4%, MOV imm 4%, SETcc 4%, NEG 4% |
+| `p_loop` | 15.0 million | 318 | 56.0 | 100% |  |
+| `p_sha` | 16.8 million | 320 | 61.1 | 83% | ROR 7%, ROL 6%, SHR 2%, NOT 1% |
+| `p_dbl_cmp` | 37.5 million | 321 | 53.9 | 36% | SSE MOVAPS 22%, SSE COMISS/SD 11%, SSE MOVUPS/SS/SD 5%, MOV r, imm 5%, CMP A, imm 5% |
+| `p_bignum` | 44.7 million | 325 | 57.2 | 91% | MUL 5%, MOV imm 3%, MOV r, imm 1% |
+| `p_bitfield` | 67.6 million | 330 | 55.5 | 66% | SHL 11%, SHR 7%, SAR 5%, AND A, imm 2%, MOVSXD 2% |
+| `p_index` | 29.9 million | 338 | 56.1 | 95% | SHL 2%, SHR 2%, NOP 1% |
+| `p_pixel` | 26.5 million | 339 | 58.0 | 55% | IMUL 18%, SHR 14%, SHL 7%, MOV r, imm 4%, CMOVcc 2% |
+| `p_muldiv` | 30.8 million | 369 | 75.1 | 73% | CDQ/CQO 7%, DIV 7%, IDIV 7%, MOVSXD 3%, IMUL 3% |
+| `p_fill` | 7.8 million | 369 | 71.4 | 7% | MOVSB 47%, STOSB 39%, MOVS 2%, STOS 2%, MOV r, imm 2% |
+| `p_dbl_conv` | 33.8 million | 373 | 62.6 | 36% | SSE CVTTSS/SD2SI 14%, SSE CVTSI2SS/SD 9%, SSE MUL 9%, SSE CVT ss/sd 9%, SSE PXOR 9% |
+| `p_float` | 23.1 million | 379 | 62.8 | 20% | SSE MOVUPS/SS/SD 20%, SSE ADD 20%, SSE MOVAPS 7%, SSE MUL 7%, CMP A, imm 7% |
+| `p_dbl_arith` | 21.6 million | 385 | 64.4 | 14% | SSE MOVUPS/SS/SD 21%, SSE ADD 21%, SSE MUL 14%, CMP A, imm 7%, SSE MOVAPS 7% |
+| `p_simd` | 16.6 million | 471 | 98.1 | 9% | SSE MOVDQA/U 18%, SSE/MMX 0F F4 14%, SSE/MMX 0F 70 12%, SSE/MMX 0F 72 9%, SSE/MMX 0F 73 9% |
+| `p_ldbl` | 13.9 million | 477 | 97.6 | 17% | x87 78%, CMP A, imm 6% |
+
+- **The integer primitives are all alike: 291 to 339.** `p_if` and `p_pointer` are run
+  wholly by the front and take 291 and 311; `p_ternary` has 37% of its instructions in the
+  rest of the CPU (CMOV, SETcc, NEG) and takes 313, `p_shift` 25% and 312. Going through
+  the rest costs about 60 host instructions more for an instruction that does (22 more
+  for 37%). So a kind taken into the front is worth 60 times its share, no more: for
+  shifts in `p_bitfield`, a third of its instructions, that is 20 of 330. The hypothesis
+  named the indirect CALL and JMP, CMOV and the shifts as what would be expensive. They
+  are not.
+- **What is expensive:**
+  - `p_fill`, 369 for each *repetition*: a REP MOVSB of a thousand bytes is a thousand
+    instructions through the whole of `exec64`, one byte each. A copy of the same bytes
+    by a loop in the CPU would be a few host instructions a byte.
+  - `p_muldiv`, 369, with 14% DIV and IDIV: the division is done bit by bit.
+  - The XMM registers: 373 to 385 for double and float, where four fifths of the
+    instructions are SSE, and 471 for the pixels several at a time (98 cycles). Stepped
+    in `p_dbl_arith`: `sse64_op` 76 and the rest of `exec64` 64 for each instruction, with
+    `farith64` 25.
+  - `p_ldbl`, 477: the x87, 78% of its instructions.
+- **The numbers are user mode's, and its run loop costs twice the machine's**: `main` is
+  61 host instructions for a guest instruction here (stepped in `p_dbl_arith`), 31 in the
+  machine, whose loop E106 shortened. The primitives are compared with each other on equal
+  terms, but their numbers are not to be set beside the boot's 289.
+- **Six programs did nothing at first.** Their work was a function of numbers that never
+  changed, called in a loop, and GCC called it once. They printed the right result and
+  ran 0.1 million instructions. Each round now changes what the next works on. Seen only
+  because the table has the count of guest instructions in it.
+- **Held to the real CPU**: all 23 print what they print when run on the real CPU itself
+  (`tools/prim64.sh`). The programs are kept built (`tests/prim64/p_*.elf`, GCC 15.2).
+- **Not measured**: the primitives inside the machine, with paging (their memory accesses
+  then go through the TLB); how common each primitive is in real programs (E104 has the
+  boot's and three user programs' opcodes, and that is what the order below leans on).
+
+**Next: the plan is `docs/primitives64.md`**, one entry for each group, in this order: the
+string instructions with a repeat count; division; the front's missing integer kinds
+(shifts, CMOV and SETcc, MOV of a constant, the indirect CALL and JMP) as one entry, worth
+less than was thought; double and float; then the pixels several at a time and the x87.
+Each entry is measured on its primitives and on the boot.
