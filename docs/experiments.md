@@ -9166,3 +9166,66 @@ instructions for a guest instruction, `p_index` 39 → 22, `p_switch` 79 → 41,
 
 **Next.** Rotations (their flags looked ahead for), MUL and DIV with one operand, byte
 shifts. Then the primitives with a count of rounds, timed against QEMU.
+
+## E125: rotations, MUL and DIV with one operand, byte shifts in blocks (2026-11-20)
+
+The rest of what the counter of E124 showed the interpreter running under `--jit`.
+
+- **Hypothesis**: **with ROL and ROR translated where the flags they set are overwritten
+  before anything reads them (a look ahead in the block's page, which is nearly always
+  so: an ADD or XOR follows), MUL, IMUL, DIV and IDIV with one operand (the divisions
+  leaving the block before a fault or a quotient that needs more than 64 bits of
+  dividend), and the byte shifts by a constant, `p_sha` (111), `p_rotate` (71),
+  `p_muldiv` (108), `p_bitfield` (61) and `p_bignum` (56) run 99% of their instructions
+  in blocks and come under 40.**
+- **What changed since last time**: the first instruction translated without its
+  flags, on the strength of what follows it; and ways out that test something other
+  than an address.
+- **Next move for each result**:
+  - Under 40 → the same look ahead for every flag-setting instruction (the record is
+    three host instructions each, most of them for nothing), and the primitives with a
+    count of rounds, timed against QEMU
+  - Still leaving → the counter again
+- **Cut-off**: those five primitives; the suites; wrong builds.
+
+**Result: two of the five under 40. `p_bignum` 56 → 16 host instructions for a guest
+instruction and `p_muldiv` 108 → 16; `p_bitfield` 61 → 45, `p_sha` 111 → 47, `p_rotate`
+71 → 71.**
+
+| | Interpreted | E124 | Now | In blocks | Instructions for each entry |
+|---|---:|---:|---:|---:|---:|
+| `p_bignum` | 334 | 56 | 16 | 100% | 1719216 |
+| `p_muldiv` | 307 | 108 | 17 | 100% | 2366561 |
+| `p_bitfield` | 324 | 61 | 45 | 95% | 21 |
+| `p_sha` | 322 | 111 | 47 | 98% | 22 |
+| `p_rotate` | 301 | 71 | 71 | 81% | 142 |
+| `p_pixel` | 323 | 43 | 18 | 100% | 2206335 |
+| `p_index` | 347 | 22 | 21 | 100% | 14437 |
+| `p_switch` | 298 | 41 | 39 | 100% | 24 |
+| `p_funcptr` | 308 | 40 | 40 | 99% | 67 |
+
+(The first five are the card's.)
+
+- **MUL and DIV with one operand** were what held `p_bignum` and `p_muldiv`. A division
+  leaves the block, before anything is changed, where the interpreter would fault (a
+  divisor of zero, a quotient that does not fit) or where the dividend's upper half
+  holds something a 64-bit division cannot take; otherwise it is one host division and
+  one multiply-and-subtract.
+- **Rotations: the look ahead is not enough for `p_rotate`.** Where an ADD or XOR
+  follows (`p_sha`), a rotation is one host instruction and no record. In `p_rotate`
+  the rotated value is returned or stored, and the next thing is a RET or a jump: the
+  flags cannot be shown dead, and with a record waiting the rotation still ends the
+  block. What that needs is a second record for an instruction that sets only some
+  flags (so do INC and DEC, which are held to the first place in a block for the same
+  reason). Not done here.
+- **What the counter found beside the card's list**: a NOP with the prefix 66h, which
+  is the compiler's padding in front of a loop, was refused with every other
+  instruction of 16 bits, and each loop so padded left generated code once a round
+  (`p_index` 14 thousand instructions an entry, from 746; `p_switch` 41 → 39); and
+  MOVZX from AH, BH, CH or DH, which is how a pixel's second byte is taken (`p_pixel`
+  43 → 18).
+- **Still outside**: operations of 16 bits (`p_bitfield`'s other 5%), the rotations
+  above, and whatever makes `p_switch` and `p_funcptr` leave every 24 and 67
+  instructions with all their instructions in blocks: not an instruction that is not
+  translated, so a block that will not be entered from another (it reads RFLAGS with a
+  record waiting) or a look-up that misses. To be counted.
