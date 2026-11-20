@@ -274,7 +274,8 @@ var so_n = 0;
 var so_pos: i64[SO_MAX] = [0; SO_MAX];
 var so_off: u64[SO_MAX] = [0; SO_MAX];
 var so_cnt: u64[SO_MAX] = [0; SO_MAX];
-var so_op: u32[SO_MAX] = [0; SO_MAX];        // the branch itself: cbnz or cbz, and its register
+var so_op: u32[SO_MAX] = [0; SO_MAX];        // the branch itself: cbnz or cbz and its register, or b.cond
+var so_link: bool[SO_MAX] = [false; SO_MAX]; // it is a jump taken, to be linked, and not an instruction to interpret
 
 // The entry of the instruction at physical address q, into je and jk. False if there is none.
 fn j_entry(q: u64) -> bool {
@@ -472,6 +473,7 @@ fn j_leave(r: u32, zero: bool) {
     so_off[so_n] = j_off;
     so_cnt[so_n] = j_cnt;
     so_op[so_n] = (if zero { 0xB4000000 } else { 0xB5000000 }) | r;
+    so_link[so_n] = false;
     so_n += 1;
     e(0);
 }
@@ -500,9 +502,11 @@ fn j_flags_dead(q: u64, page_end: u64) -> bool {
             K_GRP1 => { full = f != 2 && f != 3; },
             K_TEST, K_TESTA, K_IMUL2, K_IMUL3 => { full = true; },
             K_GRP3 => { full = f != 2 && f < 6; neutral = f == 2; },
-            K_SHIFTI => { full = f >= 4 && mem_rd(at + len - 1, 8) & 0x1F != 0 && (je.osz != 64 || op == 0xC0 || mem_rd(at + len - 1, 8) & 0x3F != 0); },
-            K_SHIFT => { full = f >= 4 && op < 0xD2; },
+            K_SHIFTI => { neutral = f < 2; full = f >= 4 && mem_rd(at + len - 1, 8) & 0x1F != 0 && (je.osz != 64 || op == 0xC0 || mem_rd(at + len - 1, 8) & 0x3F != 0); },
+            K_SHIFT => { neutral = f < 2 || op >= 0xD2 && f >= 4; full = f >= 4 && op < 0xD2; },
             K_MOV, K_LEA, K_MOVZX8, K_MOVZX16, K_MOVSX8, K_MOVSX16, K_MOVSXD, K_MOVI, K_MOVMI, K_PUSH, K_POP, K_PUSHI, K_NOP, K_NOPM, K_CONV => { neutral = true; },
+            // INC and DEC read no flag and set some: what is looked for comes behind them.
+            K_GRP5 => { neutral = f < 2; },
             _ => {},
         }
         if full { dead = true; break; }
@@ -622,6 +626,18 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         let c = j_cond(if k == K_JCC8 { op & 15 } else { k & 15 });
         if c == C_NONE { return 0; }
         let d = if k == K_JCC8 { j_const(q + len - 1, 1) } else { j_const(q + len - 4, 4) };
+        if jit_no >> 61 & 1 == 0 {
+            // The block goes on through the side not taken (E127): taken, the jump leaves
+            // by a way out behind the block, which is a link like any exit's.
+            so_pos[so_n] = jc.len;
+            so_off[so_n] = off + len + d;
+            so_cnt[so_n] = cnt + 1;
+            so_op[so_n] = 0x54000000 | c;
+            so_link[so_n] = true;
+            so_n += 1;
+            e(0);
+            return len;
+        }
         let at = jc.len;
         e(0);
         j_exit(off + len, cnt + 1, true);
@@ -670,8 +686,13 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
             let v = if op == 0x81 { j_const(q + len - 4, 4) } else { j_const(q + len - 1, 1) };
             if !wide {
-                if regs {
-                    if !j_byte_ok(je.rm) { return 0; }
+                if regs && !j_byte_ok(je.rm) {
+                    // AH, CH, DH, BH: the register's second byte out, and the result back.
+                    let whole = hg(je.rm - 4);
+                    e(0x53083C00 | whole << 5 | S3);                 // ubfx w3, w, #8, #8
+                    j_alu8(ak, false, S3, ZR, v);
+                    if ak != 7 { e(0xB3781C00 | S4 << 5 | whole); }  // bfi x, x4, #8, #8
+                } else if regs {
                     j_alu8(ak, false, m, ZR, v);
                     if ak != 7 { e(0xB3401C00 | S4 << 5 | m); }
                 } else {
@@ -940,8 +961,15 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 j_stop = field == 4;
                 return len;
             }
-            // INC and DEC leave CF as it was: only as the block's first to set flags.
-            if !regs || !wide || field > 1 || j_set { return 0; }
+            if !regs || !wide || field > 1 { return 0; }
+            // INC and DEC leave CF as it was. Where their flags are dead, nothing is made
+            // of them (and the host's flags stay the last setter's); else only as the
+            // block's first to set flags.
+            if j_flags_dead(q + len, q + room) {
+                a_addi(if field == 0 { 0x11 } else { 0x51 }, sf, m, m, 1);
+                return len;
+            }
+            if j_set { return 0; }
             j_needs = true;
             j_rec(16 + (field as u32), m, ZR);
             a_addi(if field == 0 { 0x31 } else { 0x71 }, sf, m, m, 1);
@@ -1073,7 +1101,7 @@ fn jit_translate(ph: u64) {
             for i in so_n {
                 let at = so_pos[i];
                 e_at(at, so_op[i] | (((jc.len - at) >> 2) as! u32) << 5);
-                j_exit(so_off[i], so_cnt[i], false);
+                j_exit(so_off[i], so_cnt[i], so_link[i]);
             }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
             e_at(0, 0xF100001F | (n as! u32) << 10);         // cmp x0, #n
