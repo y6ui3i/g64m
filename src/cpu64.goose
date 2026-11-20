@@ -30,6 +30,7 @@ import os;
 import x64;
 import sse64;
 import sys64;
+import jit64;
 import fpu;
 
 let MEM_SIZE = 268435456;       // 256 MB
@@ -243,6 +244,14 @@ var dc: Entry[DC_SIZE] = [Entry { tag: 0xFFFFFFFFFFFFFFFF, ins: Ins { op: 0, rex
 var dc_mark: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];      // 1: holds entries; 2: given up
 var dc_drops: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
 
+// Beside each entry of the decode cache, for the JIT (jit64.goose). (Here, behind the
+// memory, so that they do not push the CPU's own state away from the front of the globals.)
+var dc_heat: u8[DC_SIZE] = [0; DC_SIZE];     // arrivals counted
+var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
+var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
+var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
+
+
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
 
 // A marked page was written to: its entries go.
@@ -347,6 +356,8 @@ fn code_fill() {
     code_cpl = cpl;
     code_end = start + 0x1000;
     code_delta = start - p;
+    // The first instruction run on a page is where a jump from another page arrived.
+    if jit_on { jit_arrive(); }
 }
 
 inline fn fb() -> u64 {
@@ -1146,6 +1157,12 @@ fn exec64_miss() -> bool {
     return run_kind();
 }
 
+// A jump has gone somewhere: with the JIT on, the arrival is counted.
+inline fn went() -> bool {
+    if jit_on { jit_arrive(); }
+    return true;
+}
+
 // The short front's arms. Every instruction of these kinds is run here, met for the first
 // time or not: exec64_rest has no arms for them.
 inline fn run_kind() -> bool {
@@ -1183,10 +1200,10 @@ inline fn run_kind() -> bool {
         },
         K_PUSH => { let low: u8 = op & 7 | (ins.rex & 1) << 3; push(gr(low, ssz()), ssz()); },
         K_POP => { let low: u8 = op & 7 | (ins.rex & 1) << 3; let v = pop(ssz()); sr(low, ssz(), v); },
-        K_CALL => { let d = fs32(); push(ip, 64); rip = ip + d; return true; },
-        K_RET => { rip = pop(64); return true; },
-        K_JMP8 => { let d = fs8(); rip = ip + d; return true; },
-        K_JMP32 => { let d = fs32(); rip = ip + d; return true; },
+        K_CALL => { let d = fs32(); push(ip, 64); rip = ip + d; return went(); },
+        K_RET => { rip = pop(64); return went(); },
+        K_JMP8 => { let d = fs8(); rip = ip + d; return went(); },
+        K_JMP32 => { let d = fs32(); rip = ip + d; return went(); },
         K_MOVZX8 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, rm_get(8)); },
         K_MOVZX16 => { ip += 1; modrm(0); sr(ins.reg, ins.osz, rm_get(16)); },
         K_SHIFTI => {
@@ -1216,8 +1233,8 @@ inline fn run_kind() -> bool {
             match ins.reg & 7 {
                 0 => { rm_set(w, incdec(false, rm_get(w), w)); },
                 1 => { rm_set(w, incdec(true, rm_get(w), w)); },
-                2 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 2); } let to = rm_get(64); push(ip, 64); rip = to; return true; },
-                4 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 4); } rip = rm_get(64); return true; },
+                2 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 2); } let to = rm_get(64); push(ip, 64); rip = to; return went(); },
+                4 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 4); } rip = rm_get(64); return went(); },
                 6 => { if op == 0xFE { stop64("an instruction not written yet, FE field", 6); } push(rm_get(ssz()), ssz()); },
                 _ => { stop64("an instruction not written yet, FF field", ins.reg); },
             }
@@ -1280,10 +1297,10 @@ inline fn run_kind() -> bool {
             } else if ins.kind & K_JCC32 != 0 {
                 ip += 1;
                 let d = fs32();
-                if cond(ins.kind & 15) { rip = ip + d; return true; }
+                if cond(ins.kind & 15) { rip = ip + d; return went(); }
             } else {
                 let d = fs8();
-                if cond(op & 15) { rip = ip + d; return true; }
+                if cond(op & 15) { rip = ip + d; return went(); }
             }
         },
     }
@@ -1329,6 +1346,8 @@ fn decode() {
         if ip <= code_end && ip - rip <= 15 && dc_mark[page] != 2 {
             dc[dc_cur].tag = ph;
             dc[dc_cur].ins = ins;
+            dc_heat[dc_cur] = 0;
+            dc_n[dc_cur] = 0;
             dc_mark[page] = 1;
         } else { dc_cur = -1; }
     }
@@ -1337,6 +1356,15 @@ fn decode() {
 // The rest of the CPU: every instruction the front has no kind for. `ins` holds its
 // prefixes and opcode.
 fn exec64_rest() -> bool {
+    // The first instruction of a translated block (jit64.goose) is kept without a kind, so
+    // that it comes here and the front's path has nothing of the JIT in it: the block is
+    // run, or the instruction as its own kind.
+    if dc_cur >= 0 && dc_n[dc_cur] != 0 {
+        rflags &= ~RF;
+        if jit_enter() { return true; }
+        ins.kind = dc_k0[dc_cur];
+        return run_kind();
+    }
     if machine { save_start(); }
     let op = ins.op;
     ip = rip + ins.plen;

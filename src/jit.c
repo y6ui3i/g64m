@@ -68,3 +68,11 @@ int64_t jit_addr8(jit_bytes a) { return (int64_t)a.data; }
 int64_t jit_addr32(jit_words a) { return (int64_t)a.data; }
 typedef struct { const int64_t *data; int64_t len; } jit_quads;
 int64_t jit_addr64(jit_quads a) { return (int64_t)a.data; }
+
+// For the 64-bit CPU's JIT (jit64.goose): where an array of 64-bit values is, and a call
+// into generated code with four values.
+typedef struct { const uint64_t *data; int64_t len; } jit_uquads;
+int64_t jit_addr_u64(jit_uquads a) { return (int64_t)a.data; }
+int64_t jit_call4(int64_t enter, int64_t a, int64_t b, int64_t c, int64_t d) {
+    return ((int64_t (*)(int64_t, int64_t, int64_t, int64_t))enter)(a, b, c, d);
+}

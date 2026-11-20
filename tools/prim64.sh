@@ -54,7 +54,12 @@ fail=0
 for src in $list; do
     name=$(basename "$src" .c)
     if [ ! -f "tests/prim64/$name.elf" ] || [ ! -f "tests/prim64/$name.out" ]; then fail=1; echo "FAIL  $name: not built"; continue; fi
-    if build/x64 "tests/prim64/$name.elf" 2> "build/$name.err" | cmp -s - "tests/prim64/$name.out"; then
+    # With options (X64, the JIT's), the count of instructions must be the plain run's too.
+    count() { build/x64 $1 --jit-stats "tests/prim64/$name.elf" 2>&1 >/dev/null | sed -n 's/.* of \([0-9]*\) instructions in blocks.*/\1/p'; }
+    if [ -n "${X64:-}" ] && [ "$(count "$X64")" != "$(count "")" ]; then
+        fail=1
+        echo "FAIL  $name: $(count "$X64") instructions with $X64, $(count "") without"
+    elif build/x64 ${X64:-} "tests/prim64/$name.elf" 2> "build/$name.err" | cmp -s - "tests/prim64/$name.out"; then
         echo "ok    $name"
     else
         fail=1

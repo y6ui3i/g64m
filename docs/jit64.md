@@ -178,7 +178,7 @@ without `--jit`.
 | # | Task | Measured on |
 |---|---|---|
 | 1 (done, E118) | The kinds that cut the runs: shifts and rotations, `F6`/`F7`, NOP and ENDBR64, MOVSXD, MOV of a constant, the constant-and-A forms, CMOV and SETcc, the indirect CALL and JMP. In the short front first, so that each is tested as interpreted before it is translated | the count above, again |
-| 2 | An emitter for arm64 with 64-bit operands (`src/jit64.goose`), the way in and out, and a block of instructions without memory operands, entered from the front; `--jit` on `build/x64` | `p_loop`, `p_if`, `p_shift` |
+| 2 (done, E120: `p_shift` 309 → 27, the boot 276 → 201; an entry into a block costs 300 to 500 host instructions, which tasks 4 to 6 take away) | An emitter for arm64 with 64-bit operands (`src/jit64.goose`), the way in and out, and a block of instructions without memory operands, entered from the front; `--jit` on `build/x64` | `p_loop`, `p_if`, `p_shift` |
 | 3 | The flags' record for four widths, and the jump that reads it | `p_ternary`, `p_switch`, the trace tests with `--jit` |
 | 4 | Memory operands for a program without a kernel, with the way out | `p_pointer`, `p_index`, `p_bytes`, all the primitives |
 | 5 | Memory operands through the TLB, and the stack (PUSH, POP, CALL, RET) | the system tests, the boot |
