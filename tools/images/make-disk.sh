@@ -15,6 +15,10 @@
 #   ARCH=64 MODLOOP=images/modloop64-lts tools/images/make-disk.sh
 #   build/x64 --disk images/disk64.img --initrd images/initramfs64-disk images/vmlinuz64-lts
 #
+# EXTRA names a directory whose contents go into the disk's root as well (a program to run
+# in the guest, say), SIZE the disk's size (32M), and OUT the image's name:
+#   ARCH=64 MODLOOP=images/modloop64-lts EXTRA=build/nh SIZE=64M OUT=images/disk64-nh.img tools/images/make-disk.sh
+#
 # The kernel (Alpine's linux-lts) has the drivers only as modules. They are taken from
 # Alpine's modloop-lts of the same kernel version, a squashfs of all its modules, so that
 # they load; busybox and the C library are taken from images/initramfs-mini. Neither is in
@@ -29,7 +33,7 @@ if [ ! -f /.dockerenv ]; then
     [ -f "${MODLOOP:-}" ] || { echo "make-disk: set MODLOOP to Alpine's modloop-lts" >&2; exit 1; }
     [ -f "images/initramfs$sfx-mini" ] || { echo "make-disk: images/initramfs$sfx-mini is not there" >&2; exit 1; }
     modloop=$(cd "$(dirname "$MODLOOP")" && pwd)/$(basename "$MODLOOP")
-    exec docker run --rm -e ARCH="${ARCH:-}" -v "$PWD:/w" -v "$modloop:/modloop:ro" -w /w "${IMGTOOLS:-rustx86-imgtools}" sh tools/images/make-disk.sh
+    exec docker run --rm -e ARCH="${ARCH:-}" -e EXTRA="${EXTRA:-}" -e SIZE="${SIZE:-}" -e OUT="${OUT:-}" -v "$PWD:/w" -v "$modloop:/modloop:ro" -w /w "${IMGTOOLS:-rustx86-imgtools}" sh tools/images/make-disk.sh
 fi
 
 work=$(mktemp -d)
@@ -64,7 +68,9 @@ n=$(ls "$work/ram/lib/modules" | wc -l)
 
 tree "$work/disk"
 touch "$work/disk/.g86m-disk"
-rm -f "images/disk$sfx.img"
-mke2fs -q -t ext2 -L g86m -E root_owner=0:0 -d "$work/disk" "images/disk$sfx.img" 32M
+if [ -n "${EXTRA:-}" ]; then cp -a "$EXTRA/." "$work/disk/"; fi
+img="${OUT:-images/disk$sfx.img}"
+rm -f "$img"
+mke2fs -q -t ext2 -L g86m -E root_owner=0:0 -d "$work/disk" "$img" "${SIZE:-32M}"
 
-ls -l "images/initramfs$sfx-disk" "images/disk$sfx.img"
+ls -l "images/initramfs$sfx-disk" "$img"
