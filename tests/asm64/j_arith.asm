@@ -68,6 +68,58 @@ top:
     mov r14d, eax
     shr al, 2                           ; and without: 123Ch
     mov esi, eax
+    jmp .i1
+.i1:
+    mov ebx, 10
+    inc ebx                             ; INC and DEC with their flags dead (E127): an ADD follows
+    dec ebx
+    dec ebx
+    add ebx, 1
+    jmp .i2
+.i2:
+    mov eax, 0xFFFFFFFF
+    xor ecx, ecx
+    xor edx, edx
+    inc eax                             ; ZF, which the jump reads past a shift by zero: not dead
+    shl edx, cl
+    jnz bad
+    mov eax, 0x80000000
+    xor edx, edx
+    rol eax, 1                          ; CF, which RCL reads: not dead
+    rcl edx, 1
+    cmp edx, 1
+    jne bad
+    mov eax, 0x80000000
+    xor edx, edx
+    rol eax, 1                          ; and RCL by a constant
+    rcl edx, 2
+    cmp edx, 2
+    jne bad
+    lea rax, [.j1]
+    cmp r15d, 14
+    jne .jgo
+    lea rax, [.j0]                      ; the first time round, through the ADD
+.jgo:
+    mov ebx, 0xFFFFFFFF
+    inc ebx                             ; ZF, read where the jump through RAX goes: the ADD
+    jmp rax                             ; behind the jump is not where it goes after the
+.j0:                                    ; first round, and does not make the flags dead
+    add ebx, 0
+.j1:
+    jnz bad
+    mov eax, 0x1234
+    or ah, 1                            ; the second byte of a register: 1334h
+    add ah, 0x10                        ; 2334h
+    cmp ah, 0x23
+    jne bad
+    cmp eax, 0x2334
+    jne bad
+    mov eax, 5
+    cmp eax, 9
+    je bad                              ; two jumps on one comparison: the second in the
+    jae bad                             ; same block, on the host's flags
+    jmp .i3
+.i3:
     dec r15d
     jnz top
     EXIT

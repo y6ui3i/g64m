@@ -9377,8 +9377,14 @@ a row (`p_sha`), an operation on AH (`p_funcptr`). E126 put those three primitiv
 - **`p_sha`** still hands back every 268 instructions, and 2% of its instructions are
   not in blocks: to be counted. `p_rotate` and `p_bitfield` are as they were (the
   second record, 16 bits).
-- **The real CPU could not be reached** (the VPN to the host that has it was down), so
-  the test for this entry's wrong builds, an extension of `j_arith`, is not in the
-  repository: its trace has to be taken there first. It was run here three ways, plain,
-  with `--jit` and with `--jit-check`, and ends without a jump to `bad`; the wrong
-  builds were tried against it.
+- **Wrong builds: 11 of 11 caught, with `j_arith` extended.** Nine by the first
+  extension (INC and DEC with their flags dead, an INC whose ZF is read past a shift by
+  zero, a rotation's carry read by RCL, the group `80` on AH, two jumps on one
+  comparison). The two that passed were in the look ahead: RCL by a constant taken for
+  an instruction that reads no flag, and a jump through a register passed as if what
+  lies behind it were run next. The second needed the instruction behind the jump to
+  have been run once, since the look ahead reads only what the decode cache knows; the
+  test goes through it the first time round.
+- **The real CPU was out of reach for part of this entry** (the VPN to its host was
+  down): the test was first run here only, three ways, and its trace taken when the
+  host was back.
