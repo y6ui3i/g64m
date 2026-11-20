@@ -8926,3 +8926,23 @@ runs, the program's start included.)
   sees), so under `--jit` less was translated than under `--jit-check`: `p_if` ran 79%
   in blocks one way and 100% the other. They are counted now.
 - **Not timed**: the wrong builds were running.
+- **Wrong builds of the memory translation: 29 of 33 caught, after a test was written
+  for them.** 16 were caught at first. `j_mem` (a trace test, expected from the real
+  CPU) has what the rest needed: operations that are not the same both ways round (SUB
+  and CMP with the operand in memory on either side), a displacement below the base,
+  constants that must be sign-extended, one byte loaded into a register, POP into RSP,
+  CMOV from memory, and stores into a page of instructions from a block that is already
+  translated, one as the block's first instruction and one in its middle. That last
+  took three attempts: stores made by the interpreter before the blocks are translated
+  make the page given up, so the stores go to data until the blocks are there; and
+  `--jit-check` interprets every store again, which puts the decode cache right behind
+  a wrong block, so the test ends with an exit code that a run with `--jit` alone is
+  held by (`tools/difftest64.sh` runs each program that way too). Of the four left,
+  three change nothing a program can see: a displacement cut to 32 bits is caught by
+  the bounds check and interpreted (slower, not wrong), where translating goes on
+  behind a CALL through an operand, and a 64-bit load for MOVSXD. One is not held: a
+  load or store with no check that it is inside memory. Nothing in the tests reaches
+  outside memory, and a real CPU has no such edge to compare with.
+
+**Next.** Links between blocks (task 6), for a program without a kernel first; and the
+time against QEMU on a quiet host.
