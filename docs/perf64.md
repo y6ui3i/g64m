@@ -159,5 +159,5 @@ project. What the survey does not say is how much of 3 and 4 overlap: a decode c
 most of `exec64`'s beginning unnecessary, so 3 may be worth doing only in part before 4.
 
 The tests that hold each step to the real CPU are there already: 19 programs compared
-instruction by instruction (`tools/difftest64.sh`) and 8 system tests with a kernel booted
+instruction by instruction (`tools/difftest64.sh`) and 9 system tests with a kernel booted
 four ways (`tools/systest64.sh`).
