@@ -8758,26 +8758,26 @@ by the interpreter's own functions (task 3 makes it cheaper).
   host is quiet.
 
 **Result: generated code runs, and every block agrees with the interpreter; the
-hypothesis's number holds for one of its three primitives. `p_shift` 309 → 60 host
+hypothesis's number holds for one of its three primitives. `p_shift` 309 → 27 host
 instructions for a guest instruction, `p_loop` 326 → 102, `p_if` 301 → 233. The boot:
-276 → 207, with 48% of its instructions run in blocks.** (Whole runs, the program's
+276 → 201, with 49% of its instructions run in blocks.** (Whole runs, the program's
 start included, so a little above the table's figures.)
 
 | | Host instructions for a guest instruction, interpreted | With `--jit` | Instructions run in blocks | Instructions for each entry into a block |
 |---|---:|---:|---:|---:|
+| `p_shift` | 309 | 27 | 97% | 34.9 |
 | `p_ternary` | 297 | 40 | 96% | 22.9 |
-| `p_shift` | 309 | 60 | 97% | 8.7 |
-| `p_pixel` | 319 | 79 | 89% | 10.0 |
+| `p_pixel` | 318 | 79 | 89% | 10.0 |
 | `p_bitfield` | 321 | 99 | 82% | 9.0 |
 | `p_loop` | 326 | 102 | 100% | 5.0 |
-| `p_muldiv` | 304 | 136 | 80% | 4.8 |
-| `p_sha` | 321 | 145 | 76% | 6.4 |
-| `p_switch` | 297 | 219 | 65% | 2.5 |
+| `p_muldiv` | 303 | 136 | 80% | 4.8 |
+| `p_sha` | 320 | 145 | 76% | 6.4 |
+| `p_switch` | 296 | 218 | 65% | 2.5 |
 | `p_if` | 301 | 233 | 64% | 2.3 |
 | `p_pointer` | 321 | 247 | 50% | 2.7 |
 | `p_funcptr` | 306 | 252 | 44% | 2.7 |
 | `p_dbl_arith` | 399 | 403 | 0% |  |
-| The boot | 276 | 207 | 48% | 3.2 |
+| The boot | 276 | 201 | 49% | 3.5 |
 
 - **What a block costs is the way in and out, not its instructions.** Stepped one host
   instruction at a time through a shell's loop in the guest: an entry into a block is
@@ -8804,9 +8804,10 @@ start included, so a little above the table's figures.)
   `shift`, `incdec` or `imul2` is called on them: right by construction. A jump on a
   condition right after a CMP, SUB, ADD, AND, OR, XOR or TEST in the same block uses
   the host's flags; one with no flag-setting instruction before it in the block tests
-  RFLAGS in memory; anything else ends the block before it. INC, DEC and a shift by CL
-  leave some flags as they were, and are translated only as the first to set flags in
-  their block.
+  RFLAGS in memory; anything else ends the block before it. INC and DEC leave CF as it
+  was, and are translated only as the first to set flags in their block. A shift by CL
+  may be by zero, which changes no flag: the record is replaced only if the count is
+  not zero.
 - **`--jit-check`** runs every block and then, from the same state, the same
   instructions interpreted, and compares the registers, RFLAGS and RIP. It is what
   the suites are run with: the 23 primitives, the 9 system tests and the six Linux
@@ -8820,5 +8821,28 @@ start included, so a little above the table's figures.)
   register, RIP or the flags was two host instructions longer (E110 found the same
   rule). They are declared behind the guest's memory now, in `cpu64.goose`, and the
   boot without `--jit` is 276 again (420.1 billion). The numbers above are after that.
-- **Not timed against QEMU**: the wrong builds were running. One boot with `--jit`
-  took 17.5 s where the last quiet one without took 24.5.
+- **Wrong builds of the translator: 48 of 49 caught, after the tests were made to reach
+  it.** Of 50 prepared, 29 were caught by the primitives and the system tests under
+  `--jit-check` and `--jit`. The 21 that passed said three things. The tests had no
+  short run of register-only instructions made hot on purpose: `j_blocks` is one (jumps
+  on every regime of the host's flags and on RFLAGS in memory, 32-bit results whose
+  upper half must go, the flags one block leaves for the next), and `j_slot` has two
+  instructions that share an entry of the decode cache, the first a block's head. A
+  trace test said nothing about the JIT: `tools/difftest64.sh` now runs every program
+  once more with `--jit-check`. Nothing compared the count of instructions with and
+  without the JIT (a block that counts itself one too many, or runs past the time the
+  run loop gave it): `tools/prim64.sh` and the Linux boot in `tools/systest64.sh` do,
+  when given options. One wrong build was no wrong build: a shift by CL translated
+  after another flag-setting instruction is right, because its record is conditional,
+  and the rule that forbade it was taken out (`p_shift` went from 60 to 27 by it). The
+  one not held: RF cleared at a block's first instruction; no test resumes with RF set
+  at a block's head.
+- **Against QEMU, roughly**: the host was not quiet (load 4.7) and the programs run a
+  tenth of a second, most of it start-up. `p_shift` about 1,200 million guest
+  instructions a second (E117: g86m 42, QEMU 8,200), `p_loop` about 360 (45; 2,000).
+  From 200 and 44 times slower than QEMU to something like 7 and 6. To be taken again
+  with `tools/prim64_qemu.sh` on a quiet host, with longer programs.
+
+**Next.** Task 4, memory operands for a program without a kernel, then 5 (the TLB, the
+stack) and 6 (links): in that order by the count above. Before them, the time against
+QEMU on a quiet host.

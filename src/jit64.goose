@@ -25,9 +25,9 @@
 // instructions it executes is known before it is entered. The flags are not made in
 // generated code at all: the record is settled afterwards by the interpreter's own
 // functions (alu, shift, imul2), so they are right by construction where the record is.
-// An instruction that leaves some flags as they were (INC, DEC, a shift by CL, which may
-// be by zero) is translated only as the first to set flags in its block: what it leaves
-// is then RFLAGS in memory.
+// INC and DEC leave CF as it was, and are translated only as the first to set flags in
+// their block: what they leave is then RFLAGS in memory. A shift by CL may be by zero,
+// which changes no flag: the record is replaced only if the count is not zero.
 
 import std;
 import cpu64;
@@ -411,8 +411,8 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
             if !regs || !wide || which < 4 { return 0; }
             let top: u64 = if sf == 1 { 63 } else { 31 };
             if op == 0xD3 {
-                // By CL: by zero it changes no flag, so the record is set only if not.
-                if j_set { return 0; }
+                // By CL: by zero it changes no flag, so the record is set only if not, and
+                // what was there (this block's, or none: RFLAGS in memory) stays.
                 e((if sf == 1 { 0x92401400 } else { 0x12001000 }) | hg(1) << 5 | S1);    // and x1, xCL, #63 or #31
                 a_addi(0x71, 1, ZR, S1, 0);                  // cmp x1, #0
                 a_csel(1, FA, m, FA, C_NE);

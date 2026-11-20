@@ -70,6 +70,12 @@ for asm in $list; do
         fail=1
         echo "FAIL  $name: release build differs from the expected trace"
     fi
+    # And with the JIT, each block compared with the same instructions interpreted (E120).
+    # A trace runs no block, so this is a run without one: what it says is its exit code.
+    if ! build/x64 --jit-check "build/t64/$name" > /dev/null 2> "build/t64/$name.jit"; then
+        fail=1
+        echo "FAIL  $name: with --jit-check: $(head -c 400 "build/t64/$name.jit" | tr '\n' ' ')"
+    fi
     if cmp -s "build/t64/$name.trace" "build/t64/$name.expected"; then
         echo "ok    $name ($(wc -l < "build/t64/$name.trace" | tr -d ' ') lines)"
     else

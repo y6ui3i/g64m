@@ -83,7 +83,18 @@ if [ $# -eq 0 ]; then
         out=$(build/x64 ${X64:-} --initrd images/initramfs64-mini --wait "~ # " \
             --type 'uname -m; echo $((6*7)) > /tmp/a; cat /tmp/a; grep -c processor /proc/cpuinfo; echo end-$?\n' --wait "end-0" \
             images/vmlinuz64-lts 2>build/s64/linux.err | tr -d '\r' | sed -n '/^x86_64$/,$p' | tr '\n' ' ' | sed 's/ *$//')
-        if [ "$out" = "x86_64 42 1 end-0" ]; then
+        n1=$(sed -n 's/^x64: \([0-9]*\) instructions.*/\1/p' build/s64/linux.err)
+        n0=$n1
+        # With options (X64, the JIT's), the boot must take the plain boot's instructions.
+        if [ -n "${X64:-}" ]; then
+            n0=$(build/x64 --initrd images/initramfs64-mini --wait "~ # " \
+                --type 'uname -m; echo $((6*7)) > /tmp/a; cat /tmp/a; grep -c processor /proc/cpuinfo; echo end-$?\n' --wait "end-0" \
+                images/vmlinuz64-lts 2>&1 >/dev/null | sed -n 's/^x64: \([0-9]*\) instructions.*/\1/p')
+        fi
+        if [ "$n0" != "$n1" ]; then
+            fail=1
+            echo "FAIL  linux64 shell: $n1 instructions with $X64, $n0 without"
+        elif [ "$out" = "x86_64 42 1 end-0" ]; then
             echo "ok    linux64 shell: $(sed -n 's/^x64: \([0-9]*\) instructions.*/\1/p' build/s64/linux.err) instructions to the end of the script"
         else
             fail=1
