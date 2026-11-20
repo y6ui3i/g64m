@@ -141,6 +141,9 @@ by a jump on a kind kept in the cache's entry, without the save of the registers
 them changes a register before the last point it can fault at. There is one
 implementation of each: the rest of the CPU has no arms for them.
 
+**The plan from here is [primitives64.md](primitives64.md)** (E112): one small C program for
+each thing a program is made of, measured one by one.
+
 **Where the cycles go (E111).** The boot takes 289 host instructions and 50.3 cycles for a
 guest instruction, 5.7 instructions a cycle. Stopped 6,000 times and its program counter
 read, the time lies where the instructions are (`exec64` 48%, `main` 11%, `modrm` 9%),
