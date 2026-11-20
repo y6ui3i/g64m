@@ -115,6 +115,25 @@ if [ $# -eq 0 ]; then
     else
         echo "skip  linux64 disk (images/disk64.img and images/initramfs64-disk are not there; tools/images/make-disk.sh makes them)"
     fi
+
+    # A program built on a real x86_64 Linux host, run as it is (E115): NetHack, statically
+    # linked there, started in the guest, a character taken, the first level drawn and the
+    # inventory opened.
+    if [ -f images/disk64-nh.img ] && [ -f images/initramfs64-disk ]; then
+        cp images/disk64-nh.img build/s64/disk64-nh.img
+        build/x64 --disk build/s64/disk64-nh.img --initrd images/initramfs64-disk --wait "root on /dev/sda" --wait "~ # " \
+            --type '/nh/nethack -u g86m\n' --wait "pick" --type 'y' --wait "Is this ok" --type 'y' --wait "Dlvl" \
+            --type ' ' --type 'i' --wait "(end)" --max 12000000000 images/vmlinuz64-lts > build/s64/nh.out 2>build/s64/nh.err
+        if grep -q "the script done" build/s64/nh.err && grep -a -q "Dlvl:1" build/s64/nh.out && grep -a -q "Weapons" build/s64/nh.out; then
+            echo "ok    linux64 NetHack: built on a real x86_64 host, run in the guest to its first level and the inventory"
+        else
+            fail=1
+            echo "FAIL  linux64 NetHack"
+            tail -2 build/s64/nh.err | sed 's/^/  /'
+        fi
+    else
+        echo "skip  linux64 NetHack (images/disk64-nh.img is not there; tools/images/make-nethack.sh makes it)"
+    fi
     # On a network (E102): the card found on PCI, an address by DHCP, the gateway pinged.
     # Nothing leaves the host: the gateway is libslirp's.
     if [ -f images/initramfs64-net ] && build/x64 --net build/s64/y_first >/dev/null 2>&1; then

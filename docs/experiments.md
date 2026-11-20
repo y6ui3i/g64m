@@ -8413,3 +8413,44 @@ the same count of instructions). Kept.**
 **Next.** The plan's third line, the widest: the integer instructions the front does not
 run. With division out of the way `p_muldiv`'s 311 against `p_if`'s 291 is that line
 (CQO, MOVSXD, IMUL: 27% of its instructions go to the rest of the CPU).
+
+## E115: a program built on the real machine, run as it is: NetHack (2026-11-20)
+
+The owner's aim: what is built on the real x86_64 machine (the oracle's host, an Ivy
+Bridge) runs on g86m as it is. The primitives were written for g86m; NetHack 3.6.7 was
+not: 110 files of C from 1987 onward, a curses library, a terminal driven by escape
+sequences, files read and written.
+
+- **Hypothesis**: **NetHack built on the real machine with its GCC, linked statically,
+  runs in g86m's Linux guest from a disk, to the first level drawn and the inventory
+  opened, with no change to g86m.**
+- **What changed since last time**: nothing in `src/`. The disk's script takes a
+  directory to add to the root.
+- **Next move for each result**:
+  - It runs → kept as a system test; then the same NetHack built inside the guest, by
+    the guest's own GCC, which is a long real program to count instructions in
+  - It stops on an instruction not written → that instruction, with a test from the
+    real CPU, before anything else
+  - It runs wrong (a screen that is not NetHack's) → the first wrong byte found by
+    running the same keys on the real machine
+- **Cut-off**: the keys of a first minute (a character taken, the level, the
+  inventory). Not a game played.
+
+**Result: it runs, with no change to g86m.** 1,933 million instructions from the kernel's
+entry to the inventory on the screen; the level is drawn, the pet beside the player, the
+status lines under it.
+
+- **Two things stopped it first, and neither was g86m's**: both are what a statically
+  linked program still takes from the system it runs on, and the disk had neither.
+  "Unknown terminal type: xterm": the curses library reads the terminal's description
+  from a file. Then a fault at address 0 after the banner: the user's entry in
+  `/etc/passwd` is asked for and what comes back is used unlooked-at. The disk has four
+  terminal descriptions and a `passwd` now.
+- **Not compared with the real machine key for key.** The character is drawn by lot from
+  the time, so two runs differ; what the test checks is that the first level and the
+  inventory come up.
+- `tools/images/make-nethack.sh` builds it on the host named and makes
+  `images/disk64-nh.img`; `tools/systest64.sh` runs it when the image is there. Neither
+  NetHack nor the image is in the repository.
+
+**Next.** NetHack built inside the guest, with the instructions counted while it builds.
