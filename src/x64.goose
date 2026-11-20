@@ -556,6 +556,11 @@ fn main() {
     var quit = false;
     var net_next: u64 = 0;
     if net_on { pace_t0 = clock_ns(); }
+    // A string instruction goes on by itself (E113) in a program run without a trace, to the
+    // end of the run; in a machine only inside the run below, which says how far. With a
+    // trace, and in a machine outside that run, every repetition may be followed by a line
+    // of trace or a single step.
+    rep_until = if machine || trace { 0 } else { max };
     while !stopped && steps < max {
         // The devices' time is the instruction count. Only when the timer is due, the
         // machine is asleep or a request is waiting is there anything to do between two
@@ -598,6 +603,7 @@ fn main() {
             if timer_on && (timer_at as! u64) < stop_at { stop_at = timer_at as! u64; }
             replan = false;
             if !(attn || halted || sti_shadow || rflags & 0x100 != 0 || (irq_line && rflags & IF != 0)) {
+                rep_until = stop_at;
                 while steps < stop_at {
                     exec64();
                     steps += 1;
@@ -609,6 +615,7 @@ fn main() {
                     }
                 }
             }
+            rep_until = 0;
             attn = false;
         }
     }

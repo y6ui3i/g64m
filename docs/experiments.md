@@ -8288,3 +8288,85 @@ string instructions with a repeat count; division; the front's missing integer k
 (shifts, CMOV and SETcc, MOV of a constant, the indirect CALL and JMP) as one entry, worth
 less than was thought; double and float; then the pixels several at a time and the x87.
 Each entry is measured on its primitives and on the boot.
+
+## E113: all the repetitions of a string instruction in one go (2026-11-20)
+
+The first line of the plan (`docs/primitives64.md`). `p_fill` takes 369 host instructions
+for every repetition of REP MOVS and REP STOS: each repetition is a whole instruction to
+the run loop (found in the cache, sent to the rest of the CPU, the registers saved, one
+element moved, back to the loop). That is how the real CPU looks from outside too, one
+repetition for each single step, which is why it was written so.
+
+- **Hypothesis**: **REP MOVS and REP STOS can run as many repetitions inside one call of
+  `exec64` as there are instructions left before the run loop's next timed thing, with
+  the instruction count and the saved start moved on after each, so that nothing outside
+  can tell: the count of instructions, the time, where a fault or an interrupt falls and
+  what it finds are the same. `p_fill` takes under 120 host instructions for a
+  repetition (369 now), and the boot loses 3 or 4 of its 289 (1.7% of its instructions
+  are repetitions).**
+- **What changed since last time**: the first entry measured on a primitive. The change
+  is to one function, `string_op`, and to what the run loop tells it.
+- **Next move for each result**:
+  - Under 120 and the boot's count of instructions unchanged → kept; then whether the
+    elements can be moved a page at a time and not one by one (a second step, measured
+    the same way), then the plan's second line
+  - `p_fill` no better than 250 → the cost is in `rd` and `wr` for each element, not in
+    the way round the loop: the page-at-a-time move comes first
+  - The boot's count of instructions differs → something outside can tell: find what
+    (a fault in the middle, the timer) and make a system test of it
+  - A trace differs → the tracing run must stay one repetition for each step; it is
+    told so by the run loop
+- **Cut-off**: MOVS and STOS with a repeat count. CMPS, SCAS, LODS and the port's string
+  instructions stay as they are, and so does a run with a trace, a single step or
+  anything waiting.
+
+**Result: `p_fill` takes 84 host instructions for a repetition (369 before) and 24.7
+cycles (71.4); the boot 284 for an instruction (289), with its count of instructions
+unchanged, 1,523,597,312. Kept.**
+
+| | Host instructions for each | Cycles for each |
+|---|---:|---:|
+| `p_fill`, before | 369 | 71.4 |
+| … the repetitions in one call, an element at a time through `rd` and `wr` | 159 | 36.7 |
+| … a stretch that stays on its pages moved in memory | 84 | 24.7 |
+| The boot, before | 289 (440 thousand million) | 76.6 to 76.8 thousand million |
+| The boot, after | 284 (432) | 75.7 to 76.1 |
+
+- **The first step was the card's middle (159, predicted under 120)**, so the second
+  followed at once: the pages are found once for a stretch that stays on them at both
+  ends, and the bytes are moved in the memory array. What is left of the 84 is mostly
+  not the repetitions: `p_fill` has 160,000 short string instructions (13 and 5 bytes),
+  each of which is an instruction through the rest of the CPU before its first byte
+  moves, and the loop round them.
+- **Nothing outside can tell**, and that is checked three ways. The boot runs the same
+  number of instructions to its prompt. A run with a trace does one repetition for each
+  step as before (the 19 traces from the real CPU). And a fault in the middle finds RCX,
+  RSI and RDI as the repetitions before it left them: the start saved for a fault is
+  moved on after every stretch.
+- **One case is not as before, and is not tested**: a REP STOS or MOVS that writes over
+  its own bytes went on, before, as whatever the new bytes said from the next repetition;
+  now it finishes the stretch first.
+- **When a stretch is not moved in memory**: going down (DF set); an element that lies
+  across a page's end; a destination page that holds remembered code, or is not plain
+  memory; a source that begins less than one element below the destination, where a byte
+  at a time is not an element at a time. Those go an element at a time as before.
+- **Held to the real CPU.** A new system test, `y_string` (64 lines from KVM): fills and
+  copies of each width over several pages beginning anywhere, the source one byte, three
+  bytes, one element below the destination and above it, going down, addresses and a
+  count of 32 bits, a source in FS's segment, a fill and a copy that meet a page that is
+  not there (the handler prints what it found and maps the page), an element across the
+  end of the last page that is there, and a copy over code that has run. It passed at
+  its first run. 19 programs, 9 system tests, the 23 primitives and the kernel's four
+  boots pass.
+- **Wrong builds: 18 of 18 caught**, 17 at first; the one that passed (FS's base left out
+  of the source of a stretch) had no test, and has the case above now. Three of them
+  (the count of instructions not moved on, moved on by one too many, a stretch past the
+  run loop's limit) are caught only by the boot's count of instructions, which the
+  script now checks for them.
+- **A line added to the run loop cost every other primitive 6 host instructions** (the
+  limit was set before each instruction in user mode). Seen in the table for `p_bytes`
+  and `p_pointer`, which have no string instruction; it is set once now.
+
+**Next.** The plan's second line: division. And for the string instructions, what is left
+is the first repetition's way through the rest of the CPU (a short REP is an instruction
+like any other); that belongs to the plan's third line.
