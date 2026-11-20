@@ -59,6 +59,11 @@ for src in $list; do
     if [ -n "${X64:-}" ] && [ "$(count "$X64")" != "$(count "")" ]; then
         fail=1
         echo "FAIL  $name: $(count "$X64") instructions with $X64, $(count "") without"
+    elif [ -n "${X64:-}" ] && [ "$(count "$X64 --max 1000003")" != "$(count "--max 1000003")" ]; then
+        # And a run cut short stops at the same instruction: blocks run into one another
+        # only as far as the time left (E122).
+        fail=1
+        echo "FAIL  $name: stopped by --max after $(count "$X64 --max 1000003") instructions with $X64, $(count "--max 1000003") without"
     elif build/x64 ${X64:-} "tests/prim64/$name.elf" 2> "build/$name.err" | cmp -s - "tests/prim64/$name.out"; then
         echo "ok    $name"
     else

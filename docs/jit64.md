@@ -182,6 +182,6 @@ without `--jit`.
 | 3 | The flags' record for four widths, and the jump that reads it | `p_ternary`, `p_switch`, the trace tests with `--jit` |
 | 4 (done, E121, with the stack and the jumps through an operand: `p_pointer` 247 → 92, `p_index` 247 → 79; a program of branches is still at 190, an entry for every 2.3 instructions, so links come next) | Memory operands for a program without a kernel, with the way out | `p_pointer`, `p_index`, `p_bytes`, all the primitives |
 | 5 | Memory operands through the TLB, and the stack (PUSH, POP, CALL, RET) | the system tests, the boot |
-| 6 | Links inside a page and the far way | the boot, NetHack |
+| 6 (links done for a program without a kernel, E122: `p_if` 192 → 23, `p_loop` 107 → 28; the far way, for RET and jumps through an operand, is not) | Links inside a page and the far way | the boot, NetHack |
 | 7 | What is left by count: the string instructions, MUL and DIV, the rest | the boot, NetHack built in the guest |
 | 8 | The scalar SSE instructions | `p_dbl_arith`, `p_float` |

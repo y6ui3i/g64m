@@ -8946,3 +8946,82 @@ runs, the program's start included.)
 
 **Next.** Links between blocks (task 6), for a program without a kernel first; and the
 time against QEMU on a quiet host.
+
+## E122: links between blocks, for a program without a kernel (the JIT's sixth task; 2026-11-20)
+
+E121 left every instruction of `p_if` in a block and the program at 192 host
+instructions for a guest instruction: it enters a block for every 2.3 instructions, and
+an entry costs 440. A block that ends at a jump to a known address can go on into the
+block there without leaving generated code.
+
+- **Hypothesis**: **with a block's static exits (both sides of a Jcc, JMP, CALL, the
+  instruction after a block's end) branching straight into the block at the target, the
+  primitives that are all in blocks (`p_if`, `p_loop`, `p_pointer`, `p_recursion`,
+  `p_shift`, `p_ternary`, `p_index`) run 50 or more instructions for each entry from
+  the interpreter and come under 30 host instructions for a guest instruction; what
+  stays above is what leaves by a jump through an operand or a RET (`p_funcptr`,
+  `p_switch`).**
+- **What changed since last time**: generated code runs more than one block at a time.
+  The time a run may take is counted down in a register and tested where a block is
+  entered from another; the flags' record crosses from block to block, so a block that
+  reads RFLAGS in memory is entered from another only when no record is waiting; a
+  write to a page that holds blocks drops every block.
+- **Next move for each result**:
+  - Under 30 → the time against QEMU on a quiet host, then what the listing of a block
+    says is wasted (the record made for flags nothing reads, constants built in four
+    instructions)
+  - Linked, but over 30 → the listing of the commonest blocks is read for what each
+    instruction costs
+  - RET and jumps through an operand hold the rest back → a look-up of the target in
+    generated code (the far way)
+  - A run with `--jit` differs from a run without → the link that did it, found by
+    turning links off (`--jit-off` bit 63), with a test
+- **Cut-off**: those primitives; the suites; wrong builds of the linking.
+
+**Result: the hypothesis holds for five of its seven primitives. `p_if` 192 → 23 host
+instructions for a guest instruction, `p_loop` 107 → 28, `p_pointer` 92 → 18,
+`p_ternary` 28 → 12, `p_shift` 20 → 8; they enter generated code a few thousand times
+in the whole run. `p_index` is at 39 and `p_recursion` at 60.**
+
+| | Interpreted | E121 | Now | In blocks | Instructions for each entry |
+|---|---:|---:|---:|---:|---:|
+| `p_shift` | 312 | 20 | 8 | 100% | 18455 |
+| `p_ternary` | 299 | 28 | 12 | 100% | 49361 |
+| `p_pointer` | 323 | 92 | 18 | 100% | 10957 |
+| `p_if` | 304 | 192 | 23 | 100% | 38028 |
+| `p_loop` | 329 | 107 | 28 | 100% | 5001 |
+| `p_index` | 347 | 79 | 39 | 97% | 44 |
+| `p_recursion` | 314 | 129 | 60 | 100% | 17 |
+| `p_switch` | 298 | 193 | 114 | 86% | 6 |
+| `p_funcptr` | 309 | 167 | 121 | 96% | 4 |
+| `p_bignum` | 334 | 192 | 172 | 64% | 8 |
+| `p_bytes` | 311 | 203 | 204 | 57% | 4 |
+
+(Whole runs, the program's start included: for the fastest that start is now a large
+part of the figure.)
+
+- **What still leaves**: `p_recursion` comes back to the interpreter every 17
+  instructions, at each RET; `p_switch` (6) and `p_funcptr` (4) at each jump through an
+  operand. `p_index` has 3% of its instructions outside blocks, and they are a third of
+  its cost. `p_bignum` and `p_bytes` are held by ADC, SBB and byte operations, which
+  are not translated. The card's third branch, then, for these: a look-up of the
+  target in generated code (the far way), and the kinds that are missing.
+- **How a link is made.** A block begins with what an entry from another block needs:
+  the time left is enough for the whole block, no flags' record is waiting if the
+  block reads RFLAGS in memory (or builds on it: INC, DEC), and RIP is set; the
+  interpreter enters behind that. An exit to a known address is a branch to the block
+  there if there is one; if not, it is remembered by the address it waits for, and
+  made into a branch when that block is translated. The time left is in a register,
+  and every way out takes off what its block ran.
+- **When blocks die.** A write to a page that holds a block drops every block: a link
+  is a branch with nothing looked up, so nothing else is safe. A program that writes
+  to its code's pages often will be slow by it.
+- **`--jit-check` makes no links**: it checks one block at a time. Links are held by
+  runs with `--jit`: what a program prints, its exit code, and the count of
+  instructions, which the suites compare with a plain run's, now for a run cut short
+  by `--max` too (blocks may run into one another only as far as the time left).
+- **Too short to time.** With `--jit` these programs take 0.065 s, and that is the
+  start of the emulator: the cycles of a whole run are within the noise of an empty
+  one. `p_switch` and `p_funcptr`, which are not, come to about 250 million guest
+  instructions a second, where QEMU had 511 and 292 (E117). The primitives need a
+  count of rounds before the rest can be compared.
