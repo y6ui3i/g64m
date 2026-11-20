@@ -634,7 +634,7 @@ fn main() {
     }
     if jit_stats {
         var msg: u8[>..] = [];
-        format(msg, "x64: jit: ", j_blocks, " blocks, ", j_used, " bytes, entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes\n");
+        format(msg, "x64: jit: ", j_blocks, " blocks, ", j_used, " bytes, entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links\n");
         write_stderr(msg);
     }
     if screen_on { screen_close(); }

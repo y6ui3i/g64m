@@ -250,6 +250,14 @@ var dc_heat: u8[DC_SIZE] = [0; DC_SIZE];     // arrivals counted
 var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
 var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
 var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
+// Links (E122): the exits that wait for a block at an address, chained from the entry that
+// address has; and which pages hold blocks.
+let LK_MAX = 65536;
+var dc_wait: u32[DC_SIZE] = [0; DC_SIZE];
+var lk_site: i64[LK_MAX] = [0; LK_MAX];
+var lk_to: u64[LK_MAX] = [0; LK_MAX];
+var lk_next: u32[LK_MAX] = [0; LK_MAX];
+var jit_page: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
 
 
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
@@ -263,6 +271,8 @@ inline fn dc_drop(page: i64) {
         let slot = dc_slot(at);
         if dc[slot].tag == at { dc[slot].tag = DC_NONE; }
     }
+    // Blocks run into one another without looking (E122): if any is on this page, all go.
+    if jit_page[page] != 0 { jit_flush(); }
     if dc_drops[page] < 255 { dc_drops[page] += 1; }
     dc_mark[page] = if dc_drops[page] >= DC_GIVE_UP { 2 } else { 0 };
 }

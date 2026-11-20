@@ -10,7 +10,8 @@
 // memory.
 //
 // Host registers in generated code:
-//   x0          the address of the guest's registers (cpu64's reg)
+//   x0          the time left: how many instructions may still be run before control
+//               goes back (each way out of a block takes off what the block ran)
 //   x8..x17     RAX RCX RDX RBX RSP RBP RSI RDI R8 R9
 //   x19..x24    R10 to R15              (x18 is the platform's)
 //   x1..x4      scratch; x1 holds the next RIP on the way out
@@ -66,7 +67,8 @@ let J_MIN = 2;               // and at least
 
 // What a block is given and gives back: [0] RFLAGS in, [1] [2] [3] the flags' record,
 // [4] the next RIP, [5] where the memory is, [6] where dc_mark is, [7] how many stores
-// are in the log and [8] where the log is.
+// are in the log and [8] where the log is, [9] the time left, in and out, [10] where the
+// guest's registers are.
 var jx: u64[16] = [0; 16];
 // --jit-check: each store's address and the eight bytes that were there.
 var jlog: u64[256] = [0; 256];
@@ -147,6 +149,7 @@ fn jit64_init() -> bool {
     jx[5] = jit_addr8(mem[..]) as! u64;
     jx[6] = jit_addr8(dc_mark[..]) as! u64;
     jx[8] = jit_addr_u64(jlog[..]) as! u64;
+    jx[10] = j_regs as! u64;
     jc = [];
     // The way in: x0 the registers, x1 jx, x2 the block, x3 RIP.
     e(0xA9BA7BFD);                       // stp x29, x30, [sp, #-96]!
@@ -161,15 +164,17 @@ fn jit64_init() -> bool {
     a_mov(1, RIPB, 3);
     for i in 8 { a_ldp(hg((i * 2) as! u8), hg((i * 2 + 1) as! u8), 0, (i as! u32) * 16); }
     a_imm(FK, 0);
+    a_ldr(0, CTX, 72);
     e(0xD61F0040);                       // br x2
-    // The way out: x1 the next RIP, x2 how many instructions were run.
+    // The way out: x1 the next RIP.
     j_out_at = jc.len;
-    for i in 8 { a_stp(hg((i * 2) as! u8), hg((i * 2 + 1) as! u8), 0, (i as! u32) * 16); }
+    a_ldr(S3, CTX, 80);
+    for i in 8 { a_stp(hg((i * 2) as! u8), hg((i * 2 + 1) as! u8), S3, (i as! u32) * 16); }
+    a_str(0, CTX, 72);
     a_str(FA, CTX, 8);
     a_str(FB, CTX, 16);
     a_str(FK, CTX, 24);
     a_str(1, CTX, 32);
-    a_mov(1, 0, 2);                      // what comes back: the instructions run
     a_ldp(27, 28, 31, 80);
     a_ldp(19, 20, 31, 16);
     a_ldp(21, 22, 31, 32);
@@ -197,6 +202,31 @@ var j_stop = false;          // and nothing follows it (JMP, RET)
 var j_off: u64 = 0;          // the instruction being translated: how far from the block's first,
 var j_cnt: u64 = 0;          // how many are before it,
 var j_ilen: u64 = 0;         // and how long it is
+var j_head: u64 = 0;         // the block's first instruction's physical address
+var j_needs = false;         // the block reads RFLAGS in memory, or builds on it (INC, DEC)
+var jit_links: u64 = 0;      // exits made into branches to a block
+var lk_n = 0;
+// The exits of the block being translated that could be linked later: where, and to what.
+let TP_MAX = 128;
+var tp_n = 0;
+var tp_pos: i64[TP_MAX] = [0; TP_MAX];
+var tp_to: u64[TP_MAX] = [0; TP_MAX];
+var jp: u8[>..];
+// A block begins with what an entry from another block needs (BODY_AT bytes), and the
+// interpreter enters behind it.
+let BODY_AT = 24;
+
+// Makes the branch at `site` in the mapping go to `to`.
+fn j_patch(site: i64, to: i64) {
+    let w: u32 = 0x14000000 | (((to - site) >> 2) as! u32) & 0x3FFFFFF;
+    jp = [];
+    jp.push(w as! u8);
+    jp.push((w >> 8) as! u8);
+    jp.push((w >> 16) as! u8);
+    jp.push((w >> 24) as! u8);
+    jit_write(j_mem + site, jp[..]);
+    jit_links += 1;
+}
 // The branches to ways out, to be filled in behind the block: where each is, and the
 // instruction it leaves before.
 let SO_MAX = 240;
@@ -275,6 +305,7 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
 // of the block having set them, the code to test RFLAGS in memory is generated here.
 fn j_cond(cc: u8) -> u32 {
     if !j_set {
+        j_needs = true;
         a_ldr(S1, CTX, 0);
         let masks: u64[6] = [0x800, 1, 0x40, 0x41, 0x80, 4];
         let which = cc >> 1 & 7;
@@ -321,17 +352,27 @@ fn j_rip(rd: u32, off: u64) {
 }
 
 // The way out to the instruction off bytes from the block's first, cnt instructions run.
-fn j_exit(off: u64, cnt: u64) {
+// With link, it goes into the block there if there is one, or will when there is: in a
+// program without a kernel, where an address is the same wherever it is jumped to from.
+fn j_exit(off: u64, cnt: u64, link: bool) {
     j_rip(S1, off);
-    a_imm(S2, cnt);
-    let d: u32 = ((j_out_at - (j_used + jc.len)) >> 2) as! u32;
+    a_addi(0x51, 1, 0, 0, cnt as! u32);
+    var to = j_out_at;
+    if link && !machine && !jit_check && jit_no >> 63 == 0 {
+        let t = j_head + off;
+        let slot = dc_slot(t);
+        if t == j_head { to = j_used; jit_links += 1; }
+        else if dc[slot].tag == t && dc_n[slot] != 0 { to = dc_code[slot]; jit_links += 1; }
+        else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; }
+    }
+    let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
 }
 
 // The way out to the address in host register r.
 fn j_exit_to(r: u32, cnt: u64) {
     a_mov(1, S1, r);
-    a_imm(S2, cnt);
+    a_addi(0x51, 1, 0, 0, cnt as! u32);
     let d: u32 = ((j_out_at - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
 }
@@ -456,9 +497,9 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         let d = if k == K_JCC8 { j_const(q + len - 1, 1) } else { j_const(q + len - 4, 4) };
         let at = jc.len;
         e(0);
-        j_exit(off + len, cnt + 1);
+        j_exit(off + len, cnt + 1, true);
         e_at(at, 0x54000000 | (((jc.len - at) >> 2) as! u32) << 5 | c);      // b.c over the way out
-        j_exit(off + len + d, cnt + 1);
+        j_exit(off + len + d, cnt + 1, true);
         j_end = true;
         return len;
     }
@@ -637,6 +678,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             }
             // INC and DEC leave CF as it was: only as the block's first to set flags.
             if !regs || !wide || field > 1 || j_set { return 0; }
+            j_needs = true;
             j_rec(16 + (field as u32), m, ZR);
             a_addi(if field == 0 { 0x31 } else { 0x71 }, sf, m, m, 1);
             j_hf = HF_INCDEC;
@@ -680,7 +722,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             j_rip(S3, off + len);
             j_store(64, S3);
             a_mov(1, hg(4), S1);
-            j_exit(off + len + j_const(q + len - 4, 4), cnt + 1);
+            j_exit(off + len + j_const(q + len - 4, 4), cnt + 1, true);
             j_end = true;
         },
         K_RET => {
@@ -700,7 +742,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         K_NOP, K_NOPM => {},
         K_JMP8, K_JMP32 => {
             let d = if k == K_JMP8 { j_const(q + len - 1, 1) } else { j_const(q + len - 4, 4) };
-            j_exit(off + len + d, cnt + 1);
+            j_exit(off + len + d, cnt + 1, true);
             j_end = true;
             j_stop = true;
         },
@@ -713,7 +755,10 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
 fn jit_flush() {
     for slot in DC_SIZE {
         if dc_n[slot] != 0 { dc[slot].ins.kind = dc_k0[slot]; dc_n[slot] = 0; }
+        dc_wait[slot] = 0;
     }
+    for i in MEM_SIZE >> 12 { jit_page[i] = 0; }
+    lk_n = 0;
     j_used = j_keep;
     j_flushes += 1;
 }
@@ -737,6 +782,17 @@ fn jit_translate(ph: u64) {
         j_end = false;
         j_stop = false;
         so_n = 0;
+        tp_n = 0;
+        j_head = head;
+        j_needs = false;
+        // What an entry from another block needs: time for the whole block, no record
+        // waiting if the block reads RFLAGS in memory, and RIP.
+        e(0);                                // cmp x0, #n: filled in below
+        e(0x54000083);                       // b.lo to the branch out
+        e(0xD503201F);                       // nop, or cbnz x7 to the branch out
+        a_mov(1, RIPB, S1);
+        e(0x14000002);                       // b the body
+        e(0x14000000 | (((j_out_at - (j_used + jc.len)) >> 2) as! u32) & 0x3FFFFFF);
         var n = 0;
         while n < J_MAX {
             if !j_entry(q) { break; }
@@ -747,15 +803,36 @@ fn jit_translate(ph: u64) {
             if j_end { break; }
         }
         if n >= J_MIN {
-            if !j_end { j_exit(q - head, n as! u64); }
+            if !j_end { j_exit(q - head, n as! u64, true); }
             // The ways out, behind the block.
             for i in so_n {
                 let at = so_pos[i];
                 e_at(at, 0xB5000000 | (((jc.len - at) >> 2) as! u32) << 5 | S2);
-                j_exit(so_off[i], so_cnt[i]);
+                j_exit(so_off[i], so_cnt[i], false);
             }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
+            e_at(0, 0xF100001F | (n as! u32) << 10);         // cmp x0, #n
+            if j_needs { e_at(8, 0xB5000067); }              // cbnz x7, three on
             jit_write(j_mem + j_used, jc[..]);
+            // The exits that wait for a block, by the address they wait for; and the ones
+            // that waited for this.
+            for i in tp_n {
+                if lk_n + 1 >= LK_MAX { break; }
+                let ws = dc_slot(tp_to[i]);
+                lk_site[lk_n] = j_used + tp_pos[i];
+                lk_to[lk_n] = tp_to[i];
+                lk_next[lk_n] = dc_wait[ws];
+                lk_n += 1;
+                dc_wait[ws] = lk_n as! u32;
+            }
+            var w = dc_wait[head_slot];
+            dc_wait[head_slot] = 0;
+            while w != 0 {
+                let i = (w - 1) as! i64;
+                if lk_to[i] == head { j_patch(lk_site[i], j_used); }
+                w = lk_next[i];
+            }
+            jit_page[(head >> 12) as! i64] = 1;
             dc_code[head_slot] = j_used as! u32;
             dc_n[head_slot] = n as! u8;
             dc_k0[head_slot] = dc[head_slot].ins.kind;
@@ -806,7 +883,10 @@ fn jit_enter() -> bool {
     if jit_hold || steps + n > rep_until { return false; }
     if jit_check { return jit_both(slot, n); }
     jx[0] = rflags;
-    let ran = jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot], rip as! i64) as! u64;
+    let time = rep_until - steps;
+    jx[9] = time;
+    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + BODY_AT, rip as! i64);
+    let ran = time - jx[9];
     // Left before its first instruction: that one is interpreted.
     if ran == 0 { return false; }
     rip = jx[4];
@@ -839,7 +919,9 @@ fn jit_both(slot: i64, n: u64) -> bool {
     let f0 = rflags;
     jx[0] = rflags;
     jx[7] = 0;
-    let ran = jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot], rip as! i64) as! u64;
+    jx[9] = n;
+    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + BODY_AT, rip as! i64);
+    let ran = n - jx[9];
     if ran == 0 { return false; }
     j_settle();
     // What the block stored is kept and taken back, last store first.

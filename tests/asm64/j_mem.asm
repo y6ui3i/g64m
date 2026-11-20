@@ -12,7 +12,11 @@ top:                                    ; their blocks are translated before the
     jne .go
     lea rsi, [other + 2]
 .go:
+    mov r12d, 1                         ; (with the CALL, a block: its exit is a link)
     call other                          ; its page holds remembered instructions again
+    mov eax, [other + 2]                ; a block that was linked to must not outlive a
+    cmp r10d, eax                       ; write to its page (E122)
+    jne bad
     mov [rsi], r15d                     ; a block that begins with a store into such a page:
     mov r13d, r10d                      ; left before its first instruction. (The store
     call other                          ; changes the constant of other's MOV.)
