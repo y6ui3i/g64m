@@ -9325,3 +9325,60 @@ more, and far behind where it was expected to be.** Million guest instructions a
   timed again without it, and the script now lifts the limit.
 
 **Next.** As planned (E125's next), then the scalar SSE instructions.
+
+## E127: a block goes on through a conditional jump that is not taken (2026-11-21)
+
+E125 counted where blocks hand back to the interpreter with a record waiting: a second
+jump on one comparison (`cmp; je; jbe`, a million times in `p_switch`), two rotations in
+a row (`p_sha`), an operation on AH (`p_funcptr`). E126 put those three primitives at
+0.70, 0.11 and 1.54 of QEMU.
+
+- **Hypothesis**: **with a conditional jump no longer ending its block (the taken side
+  leaves by a branch to a way out behind the block, the other side is translated on, so
+  a second jump uses the host's flags), the look ahead for dead flags passing every
+  instruction that reads none (rotations, INC, DEC) and used for INC and DEC as for
+  rotations, and the group `80` on AH, BH, CH and DH, `p_switch` and `p_sha` run a
+  thousand instructions or more for each entry and `p_switch` (39 host instructions for
+  a guest instruction), `p_sha` (47) and `p_funcptr` (40) come under 30; nothing else
+  gets worse.**
+- **What changed since last time**: a block is no longer a run between two jumps. It
+  has ways out in its middle that are links.
+- **Next move for each result**:
+  - Under 30 → the record made only where something can read it (the same look ahead,
+    for every flag-setting instruction), then against QEMU again
+  - A primitive gets worse → blocks have grown past what is run of them: the count of
+    instructions in a block against those run for each entry
+  - Still leaving → the counter of E125 again
+- **Cut-off**: the primitives' table; the suites; wrong builds.
+
+**Result: `p_switch` 39 → 21 host instructions for a guest instruction and `p_funcptr`
+40 → 29, both under 30 and entered from the interpreter a few hundred times in all;
+`p_sha` 47 → 31, just over. Nothing got worse.**
+
+| | Interpreted | E125 | Now | In blocks | Instructions for each entry |
+|---|---:|---:|---:|---:|---:|
+| `p_switch` | 298 | 39 | 21 | 100% | 162120 |
+| `p_funcptr` | 309 | 40 | 29 | 100% | 215895 |
+| `p_sha` | 323 | 47 | 31 | 98% | 268 |
+| `p_if` | 304 | 23 | 22 | 100% | 676739 |
+| `p_index` | 347 | 21 | 21 | 100% | 14416 |
+| `p_pointer` | 323 | 18 | 18 | 100% | 824310 |
+| `p_loop` | 329 | 28 | 28 | 100% | 1251997 |
+| `p_recursion` | 314 | 38 | 37 | 100% | 276602 |
+| `p_bitfield` | 324 | 45 | 46 | 95% | 21 |
+| `p_rotate` | 301 | 71 | 71 | 81% | 142 |
+
+- **A conditional jump no longer ends its block.** Taken, it leaves by a branch to a way
+  out behind the block, which is a link like any other exit; not taken, the block goes
+  on, and a second jump on the same comparison uses the host's flags.
+- **The look ahead for dead flags** passes the instructions that read no flag (ROL and
+  ROR, INC and DEC, a shift by CL), and INC and DEC are translated without a record
+  where their flags are dead, as the rotations are.
+- **`p_sha`** still hands back every 268 instructions, and 2% of its instructions are
+  not in blocks: to be counted. `p_rotate` and `p_bitfield` are as they were (the
+  second record, 16 bits).
+- **The real CPU could not be reached** (the VPN to the host that has it was down), so
+  the test for this entry's wrong builds, an extension of `j_arith`, is not in the
+  repository: its trace has to be taken there first. It was run here three ways, plain,
+  with `--jit` and with `--jit-check`, and ends without a jump to `bad`; the wrong
+  builds were tried against it.
