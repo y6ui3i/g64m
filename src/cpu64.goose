@@ -827,11 +827,102 @@ inline fn ssz() -> u8 { return if ins.p66 { 16 } else { 64 }; }
 // the last one RF is set, as it is in what such an interruption saves; and the flags of a
 // repeated CMPS or SCAS are not to be seen until the last one either: between two
 // repetitions the CPU shows the flags the instruction began with.
+// How far the run loop lets a string instruction go on by itself (E113): the instruction
+// count before which nothing outside is due. 0 when every repetition is to be an
+// instruction of its own to the run loop (a trace, a single step, something waiting).
+var rep_until: u64 = 0;
+
+// REP MOVS and REP STOS, as many repetitions in one call as the run loop allows (E113).
+// To everything outside it is as if each had been an instruction: the count goes on by
+// one for each, and the start saved for a fault is moved on, so that a fault in a later
+// repetition finds the registers as the repetitions before it left them. False if there
+// is no room for more than one, and the caller does one in the old way.
+fn string_run(op: u8, w: u8, am: u64) -> bool {
+    var k = reg[RCX] & am;
+    if rep_until <= steps + 1 { return false; }
+    if rep_until - steps < k { k = rep_until - steps; }
+    let n: u64 = w / 8;
+    let up = !flag(DF);
+    let step = if up { n } else { 0 - n };
+    let moves = op & 0xFE == 0xA4;
+    let base = seg_base();
+    let v = reg[RAX];
+    var done: u64 = 0;
+    while done < k {
+        let di = reg[RDI] & am;
+        let si = reg[RSI] & am;
+        // A stretch that lies on one page at each end is moved in memory itself.
+        var m: u64 = 0;
+        if up { m = string_block(moves, di, si + base, n, k - done, v); }
+        if m == 0 {
+            if moves { wr(di, w, rd(si + base, w)); } else { wr(di, w, v); }
+            m = 1;
+        }
+        if moves { reg[RSI] = (si + step * m) & am; }
+        reg[RDI] = (di + step * m) & am;
+        if ins.asz32 { reg[RCX] = (reg[RCX] - m) & am; } else { reg[RCX] -= m; }
+        done += m;
+        // That many more instructions done, as far as anything outside can tell.
+        steps += m;
+        if machine {
+            saved_reg[RSI] = reg[RSI];
+            saved_reg[RDI] = reg[RDI];
+            saved_reg[RCX] = reg[RCX];
+        }
+    }
+    // The last of them is the one the run loop counts.
+    steps -= 1;
+    return true;
+}
+
+// Moves, or fills, up to `most` elements of n bytes going up from di (and si), as far as
+// both stay on the page they begin on: the pages are found once, and the bytes moved in
+// memory. Gives how many it did; 0 if it is not a case for it (an element across a page's
+// end, a page that is not plain memory or holds remembered code, a source that begins
+// inside the element being written), and then nothing has been done. Finding a page can
+// fault, as moving the first element would have.
+fn string_block(moves: bool, di: u64, si: u64, n: u64, most: u64, v: u64) -> u64 {
+    var m = (0x1000 - (di & 0xFFF)) / n;
+    if moves {
+        let ms = (0x1000 - (si & 0xFFF)) / n;
+        if ms < m { m = ms; }
+    }
+    if most < m { m = most; }
+    if m == 0 { return 0; }
+    var pd = di;
+    var ps = si;
+    if machine {
+        if moves { ps = xlate(si, 0); }
+        pd = xlate(di, ACC_WRITE);
+    }
+    let bytes = m * n;
+    if pd >= MEM_SIZE - 0x2000 || dc_mark[(pd >> 12) as! i64] != 0 { return 0; }
+    let d = pd as! i64;
+    if moves {
+        if ps >= MEM_SIZE - 0x2000 { return 0; }
+        // Going up a byte at a time is going up an element at a time, unless the source
+        // begins less than an element below the destination.
+        if pd > ps && pd - ps < n { return 0; }
+        let f = ps as! i64;
+        for i in bytes as! i64 { mem[d + i] = mem[f + i]; }
+    } else if n == 1 {
+        for i in bytes as! i64 { mem[d + i] = v as! u8; }
+    } else {
+        for j in m as! i64 { mem_put(d + j * (n as! i64), (n * 8) as! u8, v); }
+    }
+    return m;
+}
+
 fn string_op(op: u8) -> u64 {
     let w: u8 = if op & 1 == 0 { 8 } else { ins.osz };
     let n: u64 = w / 8;
     let am: u64 = if ins.asz32 { 0xFFFFFFFF } else { 0xFFFFFFFFFFFFFFFF };
     if ins.rep != 0 && reg[RCX] & am == 0 { return ip; }
+    if ins.rep != 0 && (op & 0xFE == 0xA4 || op & 0xFE == 0xAA) && string_run(op, w, am) {
+        if reg[RCX] & am == 0 { return ip; }
+        rflags |= RF;
+        return rip;
+    }
     let began = rflags;
     let step = if flag(DF) { 0 - n } else { n };
     let si = reg[RSI] & am;

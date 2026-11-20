@@ -122,6 +122,7 @@ The numbers give each a ceiling. None has been tried.
 | | E108: memory a word at a time | 378 | 29.4 to 30.3 s |
 | 3 | E109: the decoded instruction in one place | 333 | 27.5 to 27.8 s |
 | 3 | E110: a short front for the commonest instructions | 289 | 24.4 to 24.7 s |
+| | E113: a string instruction's repetitions in one go | 284 | 24.5 to 24.7 s |
 
 The decode cache finds 97% of instructions and saves 48 host instructions each, but its
 upkeep (the watch in every store, the index kept for `modrm`) costs 31, and a found entry
@@ -158,5 +159,5 @@ project. What the survey does not say is how much of 3 and 4 overlap: a decode c
 most of `exec64`'s beginning unnecessary, so 3 may be worth doing only in part before 4.
 
 The tests that hold each step to the real CPU are there already: 19 programs compared
-instruction by instruction (`tools/difftest64.sh`) and 8 system tests with a kernel booted
+instruction by instruction (`tools/difftest64.sh`) and 9 system tests with a kernel booted
 four ways (`tools/systest64.sh`).
