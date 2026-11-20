@@ -9248,3 +9248,80 @@ instruction and `p_muldiv` 108 → 16; `p_bitfield` 61 → 45, `p_sha` 111 → 4
 that the second jump uses the host's flags); the look ahead passing instructions that
 read no flag, and used for INC and DEC too; the second bytes. Then the primitives with
 a count of rounds, timed against QEMU.
+
+## E126: against QEMU, with programs long enough to time (a measurement; 2026-11-20)
+
+The primitives run a tenth of a second or less, and with `--jit` the fast ones are lost
+in the emulator's start (E122). A first try at timing them as they are, forty runs each
+less the time of a program that does nothing, gave times of a few thousandths of a
+second and some below zero, for QEMU as for g86m: not kept. `tools/prim64_long.sh`
+builds each primitive again on the real machine with its `main` called thirty times,
+and times it under QEMU's user mode (11.0.3, in a container for arm64), under Docker's
+own emulator (Rosetta) and under g86m with `--jit`, each less a program that does
+nothing. Same host as E117, an Apple M1; its load was between 1.6 and 4.6.
+
+- **Hypothesis**: **after E120 to E125 the integer primitives that run in blocks are
+  within a factor of three of QEMU; the ones known to leave generated code (16-bit
+  operations, rotations whose flags cannot be shown dead) and the floating point are
+  ten times or more behind.**
+- **What changed since last time**: E117 measured the interpreter (24 to 47 million
+  guest instructions a second, QEMU 6 to 200 times faster), with programs too short for
+  what there is now.
+- **Next move for each result**:
+  - Within three → the plan stands: the blocks through a jump not taken, the second
+    record, 16 bits; then the floating point, where the distance is
+  - An integer primitive in blocks more than three behind → its hot block's listing
+    against what QEMU makes of the same loop
+  - Ahead of QEMU somewhere → said so, with the same care about how rough it is
+- **Cut-off**: one run of the script.
+
+**Result: g86m is ahead of QEMU on five primitives, within a factor of three on nine
+more, and far behind where it was expected to be.** Million guest instructions a second:
+
+| | Guest instructions (millions) | QEMU | Docker's own (Rosetta) | g86m `--jit` | g86m / QEMU |
+|---|---:|---:|---:|---:|---:|
+| `p_muldiv` | 923 | 1405 | 9515 | 5698 | 4.06 |
+| `p_recursion` | 365 | 1567 | 3319 | 2745 | 1.75 |
+| `p_funcptr` | 629 | 455 | 1486 | 699 | 1.54 |
+| `p_loop` | 451 | 3988 | 15023 | 5778 | 1.45 |
+| `p_fill` | 234 | 536 | 3211 | 593 | 1.11 |
+| `p_pointer` | 989 | 3495 | 9245 | 3319 | 0.95 |
+| `p_bignum` | 1341 | 3412 | 10083 | 3097 | 0.91 |
+| `p_if` | 690 | 2439 | 4827 | 2001 | 0.82 |
+| `p_index` | 898 | 3494 | 14254 | 2833 | 0.81 |
+| `p_ternary` | 1182 | 10743 | 16881 | 8206 | 0.76 |
+| `p_bytes` | 1038 | 5112 | 11531 | 3858 | 0.75 |
+| `p_switch` | 773 | 834 | 1840 | 584 | 0.70 |
+| `p_pixel` | 794 | 10316 | 13935 | 6157 | 0.60 |
+| `p_shift` | 2213 | 16598 | 21417 | 7041 | 0.42 |
+| `p_ldbl` | 416 | 115 | 47 | 35 | 0.31 |
+| `p_dbl_conv` | 1015 | 298 | 7251 | 53 | 0.18 |
+| `p_sha` | 505 | 7534 | 13643 | 840 | 0.11 |
+| `p_dbl_arith` | 647 | 505 | 2134 | 52 | 0.10 |
+| `p_float` | 693 | 589 | 2501 | 52 | 0.09 |
+| `p_dbl_cmp` | 1124 | 885 | 9365 | 59 | 0.07 |
+| `p_rotate` | 2673 | 4091 | 5939 | 270 | 0.07 |
+| `p_bitfield` | 2029 | 11936 | 14847 | 524 | 0.04 |
+| `p_simd` | 498 | 1477 | 8735 | 36 | 0.02 |
+
+- **Ahead** (1.1 to 4 times): `p_muldiv`, `p_recursion`, `p_funcptr`, `p_loop`,
+  `p_fill`. These are where E117 found QEMU slowest: division, RET, jumps through an
+  operand. g86m's look-up for a RET's target and its division with a way out are
+  cheaper than what QEMU does there.
+- **Within three** (0.4 to 0.95): `p_pointer`, `p_bignum`, `p_if`, `p_index`,
+  `p_ternary`, `p_bytes`, `p_switch`, `p_pixel`, `p_shift`. QEMU is at 2,400 to 16,600
+  on these and g86m at 600 to 8,200. What g86m pays that QEMU does not is known: the
+  flags' record made at every flag-setting instruction, constants built in up to four
+  instructions, and a block ended at every conditional jump.
+- **Far behind**: the floating point (0.02 to 0.3: nothing of SSE or the x87 is
+  translated), `p_sha` and `p_rotate` (rotations), `p_bitfield` (16-bit operations).
+  All three were named before the measurement (E125).
+- **Rosetta** is 1.3 to 25 times faster than QEMU and is not the yardstick; g86m passes
+  it nowhere but on `p_ldbl`'s neighbourhood, where both are slow.
+- **How rough**: three runs of each, the fastest for g86m and the mean for the two in
+  the container, whose clock reads hundredths of a second: a run of 0.13 s is known to
+  a tenth. g86m's start (0.067 s) is taken off. The first run of this script stopped
+  g86m at its default limit of two billion instructions on three programs; they were
+  timed again without it, and the script now lifts the limit.
+
+**Next.** As planned (E125's next), then the scalar SSE instructions.
