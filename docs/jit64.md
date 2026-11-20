@@ -180,7 +180,7 @@ without `--jit`.
 | 1 (done, E118) | The kinds that cut the runs: shifts and rotations, `F6`/`F7`, NOP and ENDBR64, MOVSXD, MOV of a constant, the constant-and-A forms, CMOV and SETcc, the indirect CALL and JMP. In the short front first, so that each is tested as interpreted before it is translated | the count above, again |
 | 2 (done, E120: `p_shift` 309 → 27, the boot 276 → 201; an entry into a block costs 300 to 500 host instructions, which tasks 4 to 6 take away) | An emitter for arm64 with 64-bit operands (`src/jit64.goose`), the way in and out, and a block of instructions without memory operands, entered from the front; `--jit` on `build/x64` | `p_loop`, `p_if`, `p_shift` |
 | 3 | The flags' record for four widths, and the jump that reads it | `p_ternary`, `p_switch`, the trace tests with `--jit` |
-| 4 | Memory operands for a program without a kernel, with the way out | `p_pointer`, `p_index`, `p_bytes`, all the primitives |
+| 4 (done, E121, with the stack and the jumps through an operand: `p_pointer` 247 → 92, `p_index` 247 → 79; a program of branches is still at 190, an entry for every 2.3 instructions, so links come next) | Memory operands for a program without a kernel, with the way out | `p_pointer`, `p_index`, `p_bytes`, all the primitives |
 | 5 | Memory operands through the TLB, and the stack (PUSH, POP, CALL, RET) | the system tests, the boot |
 | 6 | Links inside a page and the far way | the boot, NetHack |
 | 7 | What is left by count: the string instructions, MUL and DIV, the rest | the boot, NetHack built in the guest |

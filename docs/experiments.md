@@ -8846,3 +8846,83 @@ start included, so a little above the table's figures.)
 **Next.** Task 4, memory operands for a program without a kernel, then 5 (the TLB, the
 stack) and 6 (links): in that order by the count above. Before them, the time against
 QEMU on a quiet host.
+
+## E121: memory operands and the stack, for a program without a kernel (the JIT's fourth task; 2026-11-20)
+
+E120's blocks end at every instruction that touches memory: 2 to 3 instructions an entry
+in a program that uses the stack, and an entry costs 300 to 500 host instructions. In a
+program run without a kernel a guest address is an index into the memory array, so a
+load or a store is one host instruction and two checks. This entry translates them:
+MOV, the ALU instructions, MOVZX and MOVSX, CMOV and IMUL with an operand in memory;
+PUSH, POP, CALL and RET; CALL and JMP through an operand. In a machine (a kernel booted)
+they still end the block: that is task 5, the TLB.
+
+- **Hypothesis**: **with loads, stores and the stack in the blocks, the primitives that
+  were at 220 to 260 host instructions for a guest instruction (`p_if`, `p_switch`,
+  `p_pointer`, `p_funcptr`, `p_recursion`, `p_index`, `p_bytes`, `p_bignum`) run more
+  than nine tenths of their instructions in blocks, 5 or more for each entry, and come
+  under 100.**
+- **What changed since last time**: a block can now leave before its end (an address
+  outside memory, a store into a page that holds remembered instructions), so a block
+  gives back how many instructions it ran; and `--jit-check` has to take back what a
+  block stored before the same instructions are interpreted.
+- **Next move for each result**:
+  - Under 100 → links (task 6) for programs without a kernel, since every entry that is
+    left is a jump; measured against QEMU on a quiet host first
+  - In blocks, but still over 100 → the entry's cost is counted part by part and the
+    cheap parts taken (the registers not loaded and stored each time, the flags'
+    record settled only when read)
+  - Not in blocks → what still ends them is counted and translated (byte operations,
+    the string instructions, SSE moves)
+  - `--jit-check` finds a difference → that translation, with a test, first
+- **Cut-off**: those eight primitives; the suites with `--jit` and `--jit-check`; wrong
+  builds.
+
+**Result: the instructions are in the blocks now, and the hypothesis's number holds for
+two of its eight primitives. `p_index` 247 → 79 host instructions for a guest
+instruction and `p_pointer` 247 → 92; the other six are between 129 and 203, because a
+block still ends at every jump and they jump every two to five instructions.**
+
+| | Interpreted | E120 | Now | In blocks | Instructions for each entry |
+|---|---:|---:|---:|---:|---:|
+| `p_index` | 348 | 247 | 79 | 97% | 8.1 |
+| `p_pointer` | 324 | 247 | 92 | 100% | 5.3 |
+| `p_recursion` | 314 | 232 | 129 | 100% | 4.2 |
+| `p_funcptr` | 309 | 252 | 167 | 96% | 2.8 |
+| `p_bignum` | 333 | 253 | 192 | 64% | 5.0 |
+| `p_if` | 304 | 233 | 192 | 100% | 2.3 |
+| `p_switch` | 299 | 218 | 193 | 86% | 2.5 |
+| `p_bytes` | 311 | 227 | 203 | 57% | 4.0 |
+| `p_loop` | 328 | 102 | 107 | 100% | 5.0 |
+| `p_shift` | 312 | 27 | 20 | 100% | 35.9 |
+| `p_ternary` | 299 | 40 | 28 | 100% | 24.0 |
+| `p_pixel` | 322 | 79 | 54 | 96% | 14.9 |
+| `p_sha` | 323 | 145 | 121 | 83% | 7.8 |
+
+(The first eight are the card's; the rest are there to show nothing was lost. Whole
+runs, the program's start included.)
+
+- **In blocks: yes.** Six of the eight run 96% or more of their instructions in blocks
+  (`p_bytes` 57% and `p_bignum` 64% are held back by byte operations and by ADC and SBB,
+  which are not translated yet).
+- **Five or more for each entry: no, and that is the whole of what is left.** `p_if`
+  runs every instruction in a block and still costs 192, because it enters a block for
+  every 2.3 instructions: 192 × 2.3 is the 440 host instructions an entry costs. A run
+  between two jumps is that short in a program that is mostly branches, and no kind of
+  operand changes it. Only a block that goes on into the next without leaving does:
+  links (task 6). So the card's first and second branches both: links next, for a
+  program without a kernel first, and the entry's own cost while at it.
+- **How a block leaves before its end.** Each load and store checks its address (eight
+  bytes from it inside memory; for a store, neither page holding remembered
+  instructions) with instructions that leave the host's flags alone, before anything is
+  changed, and branches to a way out behind the block that gives the address of that
+  instruction and how many were run before it. A block left before its first
+  instruction runs nothing, and the interpreter runs the instruction.
+- **`--jit-check` with stores**: a block translated under it logs each store's address
+  and the eight bytes that were there; after the block, what it left is kept, the
+  stores are taken back last first, and the same instructions are interpreted and
+  compared, memory included.
+- **Arrivals were not counted after a block** (a block's exit is a jump the front never
+  sees), so under `--jit` less was translated than under `--jit-check`: `p_if` ran 79%
+  in blocks one way and 100% the other. They are counted now.
+- **Not timed**: the wrong builds were running.

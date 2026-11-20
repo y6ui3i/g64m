@@ -20,9 +20,15 @@
 //   x25         RIP at the block's first instruction (a block is found by its physical
 //               address, so the same code serves wherever the page is mapped)
 //   x26         the address of jx: RFLAGS as the block found it, and what it gives back
+//   x27         the address of the guest's memory (a program without a kernel: a guest
+//               address is an index into it)
+//   x28         the address of dc_mark: which pages hold remembered instructions
+//   x29 x30     scratch for --jit-check's log of stores
 //
-// Generated code never faults and calls nothing. Every block runs to its end, so how many
-// instructions it executes is known before it is entered. The flags are not made in
+// Generated code never faults and calls nothing. What it cannot do (an address outside
+// memory, a store into a page that holds remembered instructions) leaves by a way out
+// placed behind the block, before the instruction has changed anything: a block gives back
+// how many instructions it ran, and the interpreter runs the next. The flags are not made in
 // generated code at all: the record is settled afterwards by the interpreter's own
 // functions (alu, shift, imul2), so they are right by construction where the record is.
 // INC and DEC leave CF as it was, and are translated only as the first to set flags in
@@ -35,6 +41,7 @@ import cpu64;
 extern fn jit_alloc(size: i64) -> i64;
 extern fn jit_write(at: i64, code: const u8[:]);
 extern fn jit_addr_u64(a: const u64[:]) -> i64;
+extern fn jit_addr8(a: const u8[:]) -> i64;
 extern fn jit_call4(enter: i64, a: i64, b: i64, c: i64, d: i64) -> i64;
 
 var jit_on = false;
@@ -58,8 +65,11 @@ let J_MAX = 60;              // instructions in a block at most
 let J_MIN = 2;               // and at least
 
 // What a block is given and gives back: [0] RFLAGS in, [1] [2] [3] the flags' record,
-// [4] the next RIP.
-var jx: u64[8] = [0; 8];
+// [4] the next RIP, [5] where the memory is, [6] where dc_mark is, [7] how many stores
+// are in the log and [8] where the log is.
+var jx: u64[16] = [0; 16];
+// --jit-check: each store's address and the eight bytes that were there.
+var jlog: u64[256] = [0; 256];
 
 var jc: u8[>..];             // the code being generated
 
@@ -67,7 +77,7 @@ var jc: u8[>..];             // the code being generated
 
 let S1 = 1; let S2 = 2; let S3 = 3; let S4 = 4;
 let FA = 5; let FB = 6; let FK = 7;
-let RIPB = 25; let CTX = 26; let ZR = 31;
+let RIPB = 25; let CTX = 26; let MEMR = 27; let MARK = 28; let ZR = 31;
 
 let A_ADD = 0x0B000000; let A_ADDS = 0x2B000000; let A_SUB = 0x4B000000; let A_SUBS = 0x6B000000;
 let A_AND = 0x0A000000; let A_ORR = 0x2A000000; let A_EOR = 0x4A000000; let A_ANDS = 0x6A000000;
@@ -134,6 +144,9 @@ fn jit64_init() -> bool {
     if j_mem == 0 { return false; }
     j_regs = jit_addr_u64(reg[..]);
     j_ctx = jit_addr_u64(jx[..]);
+    jx[5] = jit_addr8(mem[..]) as! u64;
+    jx[6] = jit_addr8(dc_mark[..]) as! u64;
+    jx[8] = jit_addr_u64(jlog[..]) as! u64;
     jc = [];
     // The way in: x0 the registers, x1 jx, x2 the block, x3 RIP.
     e(0xA9BA7BFD);                       // stp x29, x30, [sp, #-96]!
@@ -141,18 +154,23 @@ fn jit64_init() -> bool {
     a_stp(21, 22, 31, 32);
     a_stp(23, 24, 31, 48);
     a_stp(25, 26, 31, 64);
+    a_stp(27, 28, 31, 80);
     a_mov(1, CTX, 1);
+    a_ldr(MEMR, 1, 40);
+    a_ldr(MARK, 1, 48);
     a_mov(1, RIPB, 3);
     for i in 8 { a_ldp(hg((i * 2) as! u8), hg((i * 2 + 1) as! u8), 0, (i as! u32) * 16); }
     a_imm(FK, 0);
     e(0xD61F0040);                       // br x2
-    // The way out: x1 the next RIP.
+    // The way out: x1 the next RIP, x2 how many instructions were run.
     j_out_at = jc.len;
     for i in 8 { a_stp(hg((i * 2) as! u8), hg((i * 2 + 1) as! u8), 0, (i as! u32) * 16); }
     a_str(FA, CTX, 8);
     a_str(FB, CTX, 16);
     a_str(FK, CTX, 24);
     a_str(1, CTX, 32);
+    a_mov(1, 0, 2);                      // what comes back: the instructions run
+    a_ldp(27, 28, 31, 80);
     a_ldp(19, 20, 31, 16);
     a_ldp(21, 22, 31, 32);
     a_ldp(23, 24, 31, 48);
@@ -175,7 +193,17 @@ let HF_SUB = 1; let HF_ADD = 2; let HF_LOGIC = 3; let HF_INCDEC = 4;
 var j_set = false;           // an instruction of this block has set the flags' record
 var j_dyn = false;           // and whether it did was decided as it ran (a shift by CL)
 var j_end = false;           // the block ended at a jump
-var j_stop = false;          // and nothing follows it (JMP)
+var j_stop = false;          // and nothing follows it (JMP, RET)
+var j_off: u64 = 0;          // the instruction being translated: how far from the block's first,
+var j_cnt: u64 = 0;          // how many are before it,
+var j_ilen: u64 = 0;         // and how long it is
+// The branches to ways out, to be filled in behind the block: where each is, and the
+// instruction it leaves before.
+let SO_MAX = 240;
+var so_n = 0;
+var so_pos: i64[SO_MAX] = [0; SO_MAX];
+var so_off: u64[SO_MAX] = [0; SO_MAX];
+var so_cnt: u64[SO_MAX] = [0; SO_MAX];
 
 // The entry of the instruction at physical address q, into je and jk. False if there is none.
 fn j_entry(q: u64) -> bool {
@@ -267,6 +295,14 @@ fn j_cond(cc: u8) -> u32 {
         }
         return if cc & 1 == 0 { C_NE } else { C_EQ };
     }
+    return j_cond_host(cc);
+}
+
+// Whether j_cond will give a condition.
+fn j_cond_ok(cc: u8) -> bool { return !j_set || j_cond_host(cc) != C_NONE; }
+
+// The host's condition for the guest's cc from the host's own flags, or C_NONE.
+fn j_cond_host(cc: u8) -> u32 {
     if j_dyn || j_hf == 0 { return C_NONE; }
     // The guest's conditions 0 to 15: O NO B AE E NE BE A S NS P NP L GE LE G.
     let sub: u8[16] = [6, 7, 3, 2, 0, 1, 9, 8, 4, 5, 255, 255, 11, 10, 13, 12];
@@ -277,13 +313,98 @@ fn j_cond(cc: u8) -> u32 {
     return c;
 }
 
-// The way out to the instruction off bytes from the block's first.
-fn j_exit(off: u64) {
-    if off < 4096 { a_addi(0x11, 1, S1, RIPB, off as! u32); }
-    else if 0 - off < 4096 { a_addi(0x51, 1, S1, RIPB, (0 - off) as! u32); }
-    else { a_imm(S2, off); a_rrr(A_ADD, 1, S1, RIPB, S2); }
+// The address off bytes from the block's first instruction, into rd (S2 is used).
+fn j_rip(rd: u32, off: u64) {
+    if off < 4096 { a_addi(0x11, 1, rd, RIPB, off as! u32); }
+    else if 0 - off < 4096 { a_addi(0x51, 1, rd, RIPB, (0 - off) as! u32); }
+    else { a_imm(S2, off); a_rrr(A_ADD, 1, rd, RIPB, S2); }
+}
+
+// The way out to the instruction off bytes from the block's first, cnt instructions run.
+fn j_exit(off: u64, cnt: u64) {
+    j_rip(S1, off);
+    a_imm(S2, cnt);
     let d: u32 = ((j_out_at - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
+}
+
+// The way out to the address in host register r.
+fn j_exit_to(r: u32, cnt: u64) {
+    a_mov(1, S1, r);
+    a_imm(S2, cnt);
+    let d: u32 = ((j_out_at - (j_used + jc.len)) >> 2) as! u32;
+    e(0x14000000 | d & 0x3FFFFFF);
+}
+
+// ---- Memory, for a program without a kernel ----
+
+// cbnz x2 to the way out before the instruction being translated.
+fn j_leave_if() {
+    so_pos[so_n] = jc.len;
+    so_off[so_n] = j_off;
+    so_cnt[so_n] = j_cnt;
+    so_n += 1;
+    e(0xB5000000 | S2);
+}
+
+// The address of je's operand in memory, into S1.
+fn j_addr() {
+    if je.base == 17 {
+        a_imm(S2, j_off + j_ilen + je.disp);
+        a_rrr(A_ADD, 1, S1, RIPB, S2);
+    } else if je.base < 16 {
+        a_mov(1, S1, hg(je.base));
+        if je.disp != 0 { a_imm(S2, je.disp); a_rrr(A_ADD, 1, S1, S1, S2); }
+    } else { a_imm(S1, je.disp); }
+    if je.index < 16 { e(0x8B000000 | hg(je.index) << 16 | (je.scale as u32) << 10 | S1 << 5 | S1); }
+}
+
+// The checks on the address in S1 (rd and wr, cpu64.goose): eight bytes from it are inside
+// memory, and for a store neither page it may touch holds remembered instructions. None
+// changes the host's flags. S2 and S3 are used.
+fn j_chk(write: bool) {
+    a_addi(0x11, 1, S2, S1, 8);
+    a_rrr(A_ORR, 1, S2, S2, S1);
+    a_shifti(5, 1, S2, S2, 28);
+    j_leave_if();
+    if write {
+        a_shifti(5, 1, S2, S1, 12);
+        e(0x38606800 | S2 << 16 | MARK << 5 | S2);           // ldrb w2, [x28, x2]
+        a_addi(0x11, 1, S3, S1, 7);
+        a_shifti(5, 1, S3, S3, 12);
+        e(0x38606800 | S3 << 16 | MARK << 5 | S3);
+        a_rrr(A_ORR, 0, S2, S2, S3);
+        j_leave_if();
+    }
+}
+
+// A load of n bits at the guest address in S1 into rt, zero-extended; a store of rt's low
+// n bits there. With --jit-check a store is logged first: the address and what was there.
+fn j_load(n: u8, rt: u32) {
+    let op: u32 = if n == 64 { 0xF8606800 } else if n == 32 { 0xB8606800 } else if n == 16 { 0x78606800 } else { 0x38606800 };
+    e(op | S1 << 16 | MEMR << 5 | rt);
+}
+fn j_store(n: u8, rt: u32) {
+    if jit_check {
+        a_ldr(29, CTX, 56);
+        a_ldr(30, CTX, 64);
+        e(0x8B000000 | 29 << 16 | 4 << 10 | 30 << 5 | 30);   // add x30, x30, x29, lsl #4
+        a_str(S1, 30, 0);
+        a_addi(0x11, 1, 29, 29, 1);
+        a_str(29, CTX, 56);
+        e(0xF8606800 | S1 << 16 | MEMR << 5 | 29);           // ldr x29, [x27, x1]
+        a_str(29, 30, 8);
+    }
+    let op: u32 = if n == 64 { 0xF8206800 } else if n == 32 { 0xB8206800 } else if n == 16 { 0x78206800 } else { 0x38206800 };
+    e(op | S1 << 16 | MEMR << 5 | rt);
+}
+
+// A push of the value in rt (not S1 or S2): the store, and then RSP.
+fn j_push(rt: u32) {
+    a_addi(0x51, 1, S1, hg(4), 8);
+    j_chk(true);
+    j_store(64, rt);
+    a_mov(1, hg(4), S1);
 }
 
 // A register that is a byte: false for AH, CH, DH and BH, which are not translated.
@@ -292,9 +413,12 @@ fn j_byte_ok(i: u8) -> bool { return je.rex != 0 || i < 4 || i >= 8; }
 // Translates the instruction in je, which is at q and off bytes from the block's first,
 // with room bytes left on the page. Returns its length, or 0 with nothing generated if it
 // is not one this translator takes, or not as the flags stand.
-fn j_one(q: u64, off: u64, room: u64) -> u64 {
+fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     let len = j_len();
-    if len == 0 || len > room { return 0; }
+    if len == 0 || len > room || so_n + 4 > SO_MAX { return 0; }
+    j_off = off;
+    j_cnt = cnt;
+    j_ilen = len;
     let op = je.op;
     let k = jk;
     if je.asz32 || je.p66 || je.sg != 0 { return 0; }
@@ -305,6 +429,10 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
     let m = hg(je.rm);
     let regs = je.mod == 3;
     let wide = op & 1 == 1;              // not a byte, for the opcodes whose low bit says so
+    // An operand in memory, a push or a pop: only in a program without a kernel.
+    let inmem = !regs && !machine;
+    let stack = !machine;
+    let wb: u8 = if wide { je.osz } else { 8 };
 
     if k >= K_SETCC {
         if !regs || !j_byte_ok(je.rm) { return 0; }
@@ -315,10 +443,11 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
         return len;
     }
     if k >= K_CMOV {
-        if !regs { return 0; }
+        if !(regs || inmem) || !j_cond_ok(k & 15) { return 0; }
+        // The operand is read whether it is moved or not.
+        if inmem { j_addr(); j_chk(false); j_load(je.osz, S4); }
         let c = j_cond(k & 15);
-        if c == C_NONE { return 0; }
-        a_csel(sf, r, m, r, c);
+        a_csel(sf, r, if regs { m } else { S4 }, r, c);
         return len;
     }
     if k == K_JCC8 || k >= K_JCC32 {
@@ -327,23 +456,43 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
         let d = if k == K_JCC8 { j_const(q + len - 1, 1) } else { j_const(q + len - 4, 4) };
         let at = jc.len;
         e(0);
-        j_exit(off + len);
+        j_exit(off + len, cnt + 1);
         e_at(at, 0x54000000 | (((jc.len - at) >> 2) as! u32) << 5 | c);      // b.c over the way out
-        j_exit(off + len + d);
+        j_exit(off + len + d, cnt + 1);
         j_end = true;
         return len;
     }
     match k {
         K_ALU => {
             let ak = op >> 3;
-            if !regs || !wide || ak == 2 || ak == 3 { return 0; }
-            if op & 2 == 0 { j_alu(ak, false, m, m, r); } else { j_alu(ak, false, r, r, m); }
+            if !(regs || inmem) || !wide || ak == 2 || ak == 3 { return 0; }
+            if regs {
+                if op & 2 == 0 { j_alu(ak, false, m, m, r); } else { j_alu(ak, false, r, r, m); }
+            } else if op & 2 != 0 {
+                j_addr(); j_chk(false); j_load(wb, S3);
+                j_alu(ak, false, r, r, S3);
+            } else if ak == 7 {
+                j_addr(); j_chk(false); j_load(wb, S3);
+                j_alu(ak, false, 0, S3, r);
+            } else {
+                j_addr(); j_chk(true); j_load(wb, S3);
+                j_alu(ak, false, S4, S3, r);
+                j_store(wb, S4);
+            }
         },
         K_GRP1 => {
             let ak = je.reg & 7;
-            if !regs || !wide || ak == 2 || ak == 3 { return 0; }
-            a_imm(S1, if op == 0x81 { j_const(q + len - 4, 4) } else { j_const(q + len - 1, 1) });
-            j_alu(ak, false, m, m, S1);
+            if !(regs || inmem) || !wide || ak == 2 || ak == 3 { return 0; }
+            let v = if op == 0x81 { j_const(q + len - 4, 4) } else { j_const(q + len - 1, 1) };
+            if regs {
+                a_imm(S1, v);
+                j_alu(ak, false, m, m, S1);
+            } else {
+                j_addr(); j_chk(ak != 7); j_load(wb, S3);
+                a_imm(S2, v);
+                j_alu(ak, false, S4, S3, S2);
+                if ak != 7 { j_store(wb, S4); }
+            }
         },
         K_ALUA => {
             let ak = op >> 3;
@@ -352,8 +501,9 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
             j_alu(ak, false, hg(0), hg(0), S1);
         },
         K_TEST => {
-            if !regs || !wide { return 0; }
-            j_alu(4, true, 0, m, r);
+            if !(regs || inmem) || !wide { return 0; }
+            if regs { j_alu(4, true, 0, m, r); }
+            else { j_addr(); j_chk(false); j_load(wb, S3); j_alu(4, true, 0, S3, r); }
         },
         K_TESTA => {
             if !wide { return 0; }
@@ -361,8 +511,18 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
             j_alu(4, true, 0, hg(0), S1);
         },
         K_MOV => {
-            if !regs || !wide { return 0; }
-            if op & 2 == 0 { a_mov(sf, m, r); } else { a_mov(sf, r, m); }
+            if regs {
+                if !wide { return 0; }
+                if op & 2 == 0 { a_mov(sf, m, r); } else { a_mov(sf, r, m); }
+            } else {
+                if !inmem || (!wide && !j_byte_ok(je.reg)) { return 0; }
+                if op & 2 == 0 { j_addr(); j_chk(true); j_store(wb, r); }
+                else {
+                    j_addr(); j_chk(false);
+                    if wide { j_load(wb, r); }
+                    else { j_load(8, S3); e(0xB3401C00 | S3 << 5 | r); }      // bfi xr, x3, #0, #8
+                }
+            }
         },
         K_LEA => {
             if regs { return 0; }
@@ -377,24 +537,28 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
             a_mov(sf, r, S1);
         },
         K_MOVZX8 => {
-            if !regs || !j_byte_ok(je.rm) { return 0; }
-            e(0x12001C00 | m << 5 | r);                      // and wr, wm, #0xFF
+            if regs { if !j_byte_ok(je.rm) { return 0; } e(0x12001C00 | m << 5 | r); }      // and wr, wm, #0xFF
+            else { if !inmem { return 0; } j_addr(); j_chk(false); j_load(8, r); }
         },
         K_MOVZX16 => {
-            if !regs { return 0; }
-            e(0x12003C00 | m << 5 | r);                      // and wr, wm, #0xFFFF
+            if regs { e(0x12003C00 | m << 5 | r); }          // and wr, wm, #0xFFFF
+            else { if !inmem { return 0; } j_addr(); j_chk(false); j_load(16, r); }
         },
         K_MOVSX8 => {
-            if !regs || !j_byte_ok(je.rm) { return 0; }
-            e((if sf == 1 { 0x93401C00 } else { 0x13001C00 }) | m << 5 | r);     // sxtb
+            var from = m;
+            if regs { if !j_byte_ok(je.rm) { return 0; } }
+            else { if !inmem { return 0; } j_addr(); j_chk(false); j_load(8, S3); from = S3; }
+            e((if sf == 1 { 0x93401C00 } else { 0x13001C00 }) | from << 5 | r);  // sxtb
         },
         K_MOVSX16 => {
-            if !regs { return 0; }
-            e((if sf == 1 { 0x93403C00 } else { 0x13003C00 }) | m << 5 | r);     // sxth
+            var from = m;
+            if !regs { if !inmem { return 0; } j_addr(); j_chk(false); j_load(16, S3); from = S3; }
+            e((if sf == 1 { 0x93403C00 } else { 0x13003C00 }) | from << 5 | r);  // sxth
         },
         K_MOVSXD => {
-            if !regs { return 0; }
-            if sf == 1 { e(0x93407C00 | m << 5 | r); } else { a_mov(0, r, m); }  // sxtw
+            var from = m;
+            if !regs { if !inmem { return 0; } j_addr(); j_chk(false); j_load(32, S3); from = S3; }
+            if sf == 1 { e(0x93407C00 | from << 5 | r); } else { a_mov(0, r, from); }    // sxtw
         },
         K_MOVI => {
             if op < 0xB8 { return 0; }
@@ -402,9 +566,17 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
             a_imm(hg(low), if sf == 1 { mem_rd(q + len - 8, 64) } else { mem_rd(q + len - 4, 32) });
         },
         K_MOVMI => {
-            if !regs || !wide || je.reg & 7 != 0 { return 0; }
-            let v = j_const(q + len - 4, 4);
-            a_imm(m, if sf == 1 { v } else { v & 0xFFFFFFFF });
+            if je.reg & 7 != 0 { return 0; }
+            if regs {
+                if !wide { return 0; }
+                let v = j_const(q + len - 4, 4);
+                a_imm(m, if sf == 1 { v } else { v & 0xFFFFFFFF });
+            } else {
+                if !inmem { return 0; }
+                j_addr(); j_chk(true);
+                a_imm(S4, if wide { j_const(q + len - 4, 4) } else { mem_rd(q + len - 1, 8) });
+                j_store(wb, S4);
+            }
         },
         K_SHIFTI, K_SHIFT => {
             let which = je.reg & 7;
@@ -447,6 +619,22 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
         },
         K_GRP5 => {
             let field = je.reg & 7;
+            if field == 2 || field == 4 {
+                // CALL and JMP through an operand: the operand is read before anything is pushed.
+                if op != 0xFF || !stack || !(regs || inmem) { return 0; }
+                if regs { a_mov(1, S4, m); } else { j_addr(); j_chk(false); j_load(64, S4); }
+                if field == 2 {
+                    a_addi(0x51, 1, S1, hg(4), 8);
+                    j_chk(true);
+                    j_rip(S3, off + len);
+                    j_store(64, S3);
+                    a_mov(1, hg(4), S1);
+                }
+                j_exit_to(S4, cnt + 1);
+                j_end = true;
+                j_stop = field == 4;
+                return len;
+            }
             // INC and DEC leave CF as it was: only as the block's first to set flags.
             if !regs || !wide || field > 1 || j_set { return 0; }
             j_rec(16 + (field as u32), m, ZR);
@@ -454,17 +642,56 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
             j_hf = HF_INCDEC;
         },
         K_IMUL2 => {
-            if !regs { return 0; }
-            j_rec(0x30, r, m);
-            e(0x1B007C00 | sf << 31 | m << 16 | r << 5 | r);     // mul
+            var from = m;
+            if !regs { if !inmem { return 0; } j_addr(); j_chk(false); j_load(je.osz, S3); from = S3; }
+            j_rec(0x30, r, from);
+            e(0x1B007C00 | sf << 31 | from << 16 | r << 5 | r);  // mul
             j_hf = 0;
         },
         K_IMUL3 => {
-            if !regs { return 0; }
-            a_imm(S1, if op == 0x69 { j_const(q + len - 4, 4) } else { j_const(q + len - 1, 1) });
-            j_rec(0x30, m, S1);
-            e(0x1B007C00 | sf << 31 | S1 << 16 | m << 5 | r);
+            var from = m;
+            if !regs { if !inmem { return 0; } j_addr(); j_chk(false); j_load(je.osz, S3); from = S3; }
+            a_imm(S4, if op == 0x69 { j_const(q + len - 4, 4) } else { j_const(q + len - 1, 1) });
+            j_rec(0x30, from, S4);
+            e(0x1B007C00 | sf << 31 | S4 << 16 | from << 5 | r);
             j_hf = 0;
+        },
+        K_PUSH => {
+            if !stack { return 0; }
+            j_push(hg(op & 7 | (je.rex & 1) << 3));
+        },
+        K_PUSHI => {
+            if !stack { return 0; }
+            a_imm(S4, if op == 0x6A { j_const(q + len - 1, 1) } else { j_const(q + len - 4, 4) });
+            j_push(S4);
+        },
+        K_POP => {
+            if !stack { return 0; }
+            a_mov(1, S1, hg(4));
+            j_chk(false);
+            j_load(64, S3);
+            a_addi(0x11, 1, hg(4), hg(4), 8);
+            a_mov(1, hg(op & 7 | (je.rex & 1) << 3), S3);
+        },
+        K_CALL => {
+            if !stack { return 0; }
+            a_addi(0x51, 1, S1, hg(4), 8);
+            j_chk(true);
+            j_rip(S3, off + len);
+            j_store(64, S3);
+            a_mov(1, hg(4), S1);
+            j_exit(off + len + j_const(q + len - 4, 4), cnt + 1);
+            j_end = true;
+        },
+        K_RET => {
+            if !stack { return 0; }
+            a_mov(1, S1, hg(4));
+            j_chk(false);
+            j_load(64, S3);
+            a_addi(0x11, 1, hg(4), hg(4), 8);
+            j_exit_to(S3, cnt + 1);
+            j_end = true;
+            j_stop = true;
         },
         K_CONV => {
             if op == 0x98 { e((if sf == 1 { 0x93407C00 } else { 0x13003C00 }) | hg(0) << 5 | hg(0)); }
@@ -473,7 +700,7 @@ fn j_one(q: u64, off: u64, room: u64) -> u64 {
         K_NOP, K_NOPM => {},
         K_JMP8, K_JMP32 => {
             let d = if k == K_JMP8 { j_const(q + len - 1, 1) } else { j_const(q + len - 4, 4) };
-            j_exit(off + len + d);
+            j_exit(off + len + d, cnt + 1);
             j_end = true;
             j_stop = true;
         },
@@ -509,17 +736,24 @@ fn jit_translate(ph: u64) {
         j_dyn = false;
         j_end = false;
         j_stop = false;
+        so_n = 0;
         var n = 0;
         while n < J_MAX {
             if !j_entry(q) { break; }
-            let len = j_one(q, q - head, page_end - q);
+            let len = j_one(q, q - head, page_end - q, n as! u64);
             if len == 0 { break; }
             q += len;
             n += 1;
             if j_end { break; }
         }
         if n >= J_MIN {
-            if !j_end { j_exit(q - head); }
+            if !j_end { j_exit(q - head, n as! u64); }
+            // The ways out, behind the block.
+            for i in so_n {
+                let at = so_pos[i];
+                e_at(at, 0xB5000000 | (((jc.len - at) >> 2) as! u32) << 5 | S2);
+                j_exit(so_off[i], so_cnt[i]);
+            }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
             jit_write(j_mem + j_used, jc[..]);
             dc_code[head_slot] = j_used as! u32;
@@ -572,12 +806,17 @@ fn jit_enter() -> bool {
     if jit_hold || steps + n > rep_until { return false; }
     if jit_check { return jit_both(slot, n); }
     jx[0] = rflags;
-    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot], rip as! i64);
+    let ran = jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot], rip as! i64) as! u64;
+    // Left before its first instruction: that one is interpreted.
+    if ran == 0 { return false; }
     rip = jx[4];
     j_settle();
-    steps += n - 1;
+    // Where the block went is an arrival like any jump's: counted, or nothing after a
+    // block would ever be translated.
+    jit_arrive();
+    steps += ran - 1;
     j_entered += 1;
-    j_ran += n;
+    j_ran += ran;
     return true;
 }
 
@@ -591,25 +830,36 @@ var jv_ip0: u64 = 0;
 var jv_ip: u64 = 0;
 var jv_flags: u64 = 0;
 var jv_reg: u64[16] = [0; 16];
+var jv_stores = 0;           // how many stores the block made, and what each left
+var jv_new: u64[128] = [0; 128];
 
 fn jit_both(slot: i64, n: u64) -> bool {
     var r0: u64[16] = [0; 16];
     for i in 16 { r0[i] = reg[i]; }
     let f0 = rflags;
     jx[0] = rflags;
-    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot], rip as! i64);
+    jx[7] = 0;
+    let ran = jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot], rip as! i64) as! u64;
+    if ran == 0 { return false; }
     j_settle();
+    // What the block stored is kept and taken back, last store first.
+    jv_stores = jx[7] as! i64;
+    for i in jv_stores { jv_new[i] = mem_rd(jlog[i * 2], 64); }
+    for k in jv_stores {
+        let i = jv_stores - 1 - k;
+        mem_put(jlog[i * 2] as! i64, 64, jlog[i * 2 + 1]);
+    }
     for i in 16 { jv_reg[i] = reg[i]; reg[i] = r0[i]; }
     jv_flags = rflags;
     jv_ip = jx[4];
     jv_ip0 = rip;
-    jv_n = n;
+    jv_n = ran;
     rflags = f0;
     jit_hold = true;
-    jit_left = n;
+    jit_left = ran;
     attn = true;             // the run (E106) stops after this instruction
     j_entered += 1;
-    j_ran += n;
+    j_ran += ran;
     return false;
 }
 
@@ -620,6 +870,10 @@ fn jit_tick() {
     jit_hold = false;
     var bad = rip != jv_ip || rflags != jv_flags;
     for i in 16 { if reg[i] != jv_reg[i] { bad = true; } }
+    var bad_at: u64 = 0;
+    for i in jv_stores {
+        if mem_rd(jlog[i * 2], 64) != jv_new[i] { bad = true; bad_at = jlog[i * 2]; }
+    }
     if !bad { return; }
     var msg: u8[>..] = [];
     format(msg, "x64: --jit-check: a block of ", jv_n as! i64, " at ");
@@ -640,6 +894,7 @@ fn jit_tick() {
             hex64(msg, reg[i]);
         }
     }
+    if bad_at != 0 { format(msg, ", memory at "); hex64(msg, bad_at); }
     format(msg, "\n");
     write_stderr(msg);
     exit(3);
