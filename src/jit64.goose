@@ -313,8 +313,9 @@ fn j_len() -> u64 {
 fn j_const(at: u64, n: u64) -> u64 { return sx(mem_rd(at, (n * 8) as! u8), (n * 8) as! u8); }
 
 // The record: what, at which width, of the values in host registers a and b (b may be ZR).
-fn j_rec(what: u32, a: u32, b: u32) {
-    let w: u32 = je.osz;
+fn j_rec(what: u32, a: u32, b: u32) { j_rec_w(what, je.osz, a, b); }
+
+fn j_rec_w(what: u32, w: u32, a: u32, b: u32) {
     a_mov(1, FA, a);
     a_mov(1, FB, b);
     a_imm(FK, what | w << 8);
@@ -326,6 +327,24 @@ fn j_rec(what: u32, a: u32, b: u32) {
 // test true).
 fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
     let sf: u32 = if je.osz == 64 { 1 } else { 0 };
+    if !test && (k == 2 || k == 3) {
+        // ADC and SBB (j_carry_ok has said the carry can be had): the carry that goes in,
+        // 0 or 1, into x29, from the host's flags or from RFLAGS in memory; kept in the
+        // record, above the width; and put into the host's carry as ADCS and SBCS want it.
+        if !j_set {
+            j_needs = true;
+            a_ldr(29, CTX, 0);
+            e(0x12000000 | 29 << 5 | 29);                    // and w29, w29, #1
+        } else if j_hf == HF_LOGIC { a_mov(0, 29, ZR); }
+        else { e(0x1A9F07E0 | ((if j_hf == HF_ADD { C_HS } else { C_LO }) ^ 1) << 12 | 29); }    // cset w29
+        j_rec(if k == 2 { 3 } else { 4 }, a, b);
+        e(0xAA1D40E7);                                       // orr x7, x7, x29, lsl #16
+        if k == 3 { e(0x52000000 | 29 << 5 | 29); }          // eor w29, w29, #1: SBCS takes the borrow upside down
+        a_addi(0x71, 0, ZR, 29, 1);                          // cmp w29, #1: the host's carry
+        a_rrr(if k == 2 { 0x3A000000 } else { 0x7A000000 }, sf, dst, a, b);      // adcs, sbcs
+        j_hf = if k == 2 { HF_ADD } else { HF_SUB };
+        return;
+    }
     j_rec(if test { 5 } else { (k as u32) + 1 }, a, b);
     if test { a_rrr(A_ANDS, sf, ZR, a, b); j_hf = HF_LOGIC; return; }
     match k {
@@ -339,6 +358,29 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
             j_hf = HF_LOGIC;
         },
     }
+}
+
+// Whether the carry that ADC and SBB take in can be had: RFLAGS in memory is right, or
+// the host's flags are from an instruction whose carry they hold.
+fn j_carry_ok() -> bool { return !j_set || (!j_dyn && (j_hf == HF_ADD || j_hf == HF_SUB || j_hf == HF_LOGIC)); }
+
+// An ALU operation on bytes: k as for j_alu, of the byte in host register a and the byte
+// in b, or the constant v if b is ZR. The result's byte is left in S4, and the host's
+// flags are the byte's: the operands are shifted up 24 bits. S2 and S4 are used.
+fn j_alu8(k: u8, test: bool, a: u32, b: u32, v: u64) {
+    if b == ZR { a_imm(S4, v & 0xFF); } else { a_mov(0, S4, b); }
+    j_rec_w(if test { 5 } else { (k as u32) + 1 }, 8, a, S4);
+    a_shifti(4, 0, S2, a, 24);
+    a_shifti(4, 0, S4, S4, 24);
+    if test || k == 4 { a_rrr(A_ANDS, 0, S4, S2, S4); j_hf = HF_LOGIC; }
+    else if k == 0 { a_rrr(A_ADDS, 0, S4, S2, S4); j_hf = HF_ADD; }
+    else if k == 5 || k == 7 { a_rrr(A_SUBS, 0, S4, S2, S4); j_hf = HF_SUB; }
+    else {
+        a_rrr(if k == 1 { A_ORR } else { A_EOR }, 0, S4, S2, S4);
+        a_rrr(A_ANDS, 0, ZR, S4, S4);
+        j_hf = HF_LOGIC;
+    }
+    a_shifti(5, 0, S4, S4, 24);
 }
 
 // The host's condition for the guest's cc as the flags stand, or C_NONE. With no instruction
@@ -547,8 +589,24 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     match k {
         K_ALU => {
             let ak = op >> 3;
-            if !(regs || inmem) || !wide || ak == 2 || ak == 3 { return 0; }
-            if regs {
+            if !(regs || inmem) { return 0; }
+            if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
+            if !wide {
+                // Bytes: both registers must be ones a byte of which is their low byte.
+                if !j_byte_ok(je.reg) || (regs && !j_byte_ok(je.rm)) { return 0; }
+                if regs {
+                    if op & 2 == 0 { j_alu8(ak, false, m, r, 0); if ak != 7 { e(0xB3401C00 | S4 << 5 | m); } }
+                    else { j_alu8(ak, false, r, m, 0); if ak != 7 { e(0xB3401C00 | S4 << 5 | r); } }
+                } else if op & 2 != 0 {
+                    j_addr(); j_chk(false); j_load(8, S3);
+                    j_alu8(ak, false, r, S3, 0);
+                    if ak != 7 { e(0xB3401C00 | S4 << 5 | r); }
+                } else {
+                    j_addr(); j_chk(ak != 7); j_load(8, S3);
+                    j_alu8(ak, false, S3, r, 0);
+                    if ak != 7 { j_store(8, S4); }
+                }
+            } else if regs {
                 if op & 2 == 0 { j_alu(ak, false, m, m, r); } else { j_alu(ak, false, r, r, m); }
             } else if op & 2 != 0 {
                 j_addr(); j_chk(false); j_load(wb, S3);
@@ -564,9 +622,20 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_GRP1 => {
             let ak = je.reg & 7;
-            if !(regs || inmem) || !wide || ak == 2 || ak == 3 { return 0; }
+            if !(regs || inmem) { return 0; }
+            if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
             let v = if op == 0x81 { j_const(q + len - 4, 4) } else { j_const(q + len - 1, 1) };
-            if regs {
+            if !wide {
+                if regs {
+                    if !j_byte_ok(je.rm) { return 0; }
+                    j_alu8(ak, false, m, ZR, v);
+                    if ak != 7 { e(0xB3401C00 | S4 << 5 | m); }
+                } else {
+                    j_addr(); j_chk(ak != 7); j_load(8, S3);
+                    j_alu8(ak, false, S3, ZR, v);
+                    if ak != 7 { j_store(8, S4); }
+                }
+            } else if regs {
                 a_imm(S1, v);
                 j_alu(ak, false, m, m, S1);
             } else {
@@ -578,19 +647,30 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_ALUA => {
             let ak = op >> 3;
-            if !wide || ak == 2 || ak == 3 { return 0; }
-            a_imm(S1, j_const(q + len - 4, 4));
-            j_alu(ak, false, hg(0), hg(0), S1);
+            if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
+            if !wide {
+                j_alu8(ak, false, hg(0), ZR, mem_rd(q + len - 1, 8));
+                if ak != 7 { e(0xB3401C00 | S4 << 5 | hg(0)); }
+            } else {
+                a_imm(S1, j_const(q + len - 4, 4));
+                j_alu(ak, false, hg(0), hg(0), S1);
+            }
         },
         K_TEST => {
-            if !(regs || inmem) || !wide { return 0; }
-            if regs { j_alu(4, true, 0, m, r); }
+            if !(regs || inmem) { return 0; }
+            if !wide {
+                if !j_byte_ok(je.reg) || (regs && !j_byte_ok(je.rm)) { return 0; }
+                if regs { j_alu8(4, true, m, r, 0); }
+                else { j_addr(); j_chk(false); j_load(8, S3); j_alu8(4, true, S3, r, 0); }
+            } else if regs { j_alu(4, true, 0, m, r); }
             else { j_addr(); j_chk(false); j_load(wb, S3); j_alu(4, true, 0, S3, r); }
         },
         K_TESTA => {
-            if !wide { return 0; }
-            a_imm(S1, j_const(q + len - 4, 4));
-            j_alu(4, true, 0, hg(0), S1);
+            if !wide { j_alu8(4, true, hg(0), ZR, mem_rd(q + len - 1, 8)); }
+            else {
+                a_imm(S1, j_const(q + len - 4, 4));
+                j_alu(4, true, 0, hg(0), S1);
+            }
         },
         K_MOV => {
             if regs {
@@ -643,8 +723,14 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             if sf == 1 { e(0x93407C00 | from << 5 | r); } else { a_mov(0, r, from); }    // sxtw
         },
         K_MOVI => {
-            if op < 0xB8 { return 0; }
             let low: u8 = op & 7 | (je.rex & 1) << 3;
+            if op < 0xB8 {
+                // One byte of a register.
+                if !j_byte_ok(low) { return 0; }
+                a_imm(S4, mem_rd(q + len - 1, 8));
+                e(0xB3401C00 | S4 << 5 | hg(low));           // bfi
+                return len;
+            }
             a_imm(hg(low), if sf == 1 { mem_rd(q + len - 8, 64) } else { mem_rd(q + len - 4, 32) });
         },
         K_MOVMI => {
@@ -910,7 +996,12 @@ fn j_settle() {
     if fk == 0 { return; }
     let w = (fk >> 8) as! u8;
     let what = (fk & 0xFF) as! u8;
-    if what <= 8 { alu(what - 1, jx[1], jx[2], w); }
+    if what == 3 || what == 4 {
+        // ADC and SBB: with the carry that went in.
+        rflags = rflags & ~CF | fk >> 16 & 1;
+        alu(what - 1, jx[1], jx[2], w);
+    }
+    else if what <= 8 { alu(what - 1, jx[1], jx[2], w); }
     else if what == 16 { incdec(false, jx[1], w); }
     else if what == 17 { incdec(true, jx[1], w); }
     else if what == 0x30 { imul2(jx[1], jx[2], w); }
