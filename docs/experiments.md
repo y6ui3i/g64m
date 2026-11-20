@@ -8454,3 +8454,69 @@ status lines under it.
   NetHack nor the image is in the repository.
 
 **Next.** NetHack built inside the guest, with the instructions counted while it builds.
+
+## E116: a JIT for the 64-bit CPU: what it is to be (a survey; 2026-11-20)
+
+NetHack built by the guest's own GCC takes the real machine 71 seconds and g86m more than
+half an hour. g86m runs 62 million guest instructions a second; the plan in
+`docs/primitives64.md` takes host instructions off the 284 each costs, a few tens at a
+time, and all of it together is a factor of two at best. The 32-bit machine's JIT took its
+Linux boot from 88 host instructions for a guest instruction to 22 (E073). The owner's
+decision: the JIT comes first, and the plan's other lines wait behind it.
+
+This entry builds nothing. It reads the 32-bit JIT (`docs/jit.md`, `src/jit.goose`, 1,659
+lines) for what carries over, counts what the 64-bit guest's code looks like to a
+translator, and writes the design down.
+
+- **Hypothesis**: **the 32-bit JIT's design carries over whole (blocks found through the
+  decode cache, guest registers in host registers, the flags as a record, memory by the
+  TLB inline with a way out, links inside a page and a far way between pages), and what
+  is new for 64 bits is small: sixteen registers, operands of 64 bits, addresses relative
+  to RIP. Counted over the boot, nine tenths of the instructions lie in runs of two or
+  more instructions of the short front's kinds that end at a jump, which is what a
+  first translator could take.**
+- **What changed since last time**: the direction. No entry before this was about
+  translating.
+- **Next move for each result**:
+  - Nine tenths or more → the first translator takes the front's kinds as they are: the
+    first step is a block of them without memory operands, run from the front
+    (`p_loop`), then memory, then links
+  - Between a half and nine tenths → the instructions that cut the runs short are
+    counted, and the commonest become kinds before the translator is begun (this is the
+    plan's third line, done for another reason)
+  - Under a half → the runs are too short for blocks as the 32-bit JIT makes them: look
+    at what ends them (jumps every few instructions) and whether a block may go on
+    through a jump not taken
+  - Something in the 64-bit machine that the 32-bit design cannot hold → named, with
+    what would hold it, before anything is built
+- **Cut-off**: the count over the boot and one user program; the design as a document
+  (`docs/jit64.md`). No generated code.
+
+**Result: the design carries over, and the design is written (`docs/jit64.md`); the count
+is the card's middle branch. 79% of the boot's instructions lie in runs of two or more of
+the front's kinds, not nine tenths, and the runs are under four instructions long.**
+
+| The boot, 1,524 million instructions | Share | Runs | Mean length |
+|---|---:|---:|---:|
+| In a run of two or more that ends at a jump | 53.3% | 220 million | 3.7 |
+| In a run of two or more that ends at an instruction of no kind | 25.4% | 92 million | 4.2 |
+| Of a kind, alone | 5.9% | | |
+| Of no kind | 13.7% | | |
+
+- **What cuts the runs is a short list**: shifts and rotations 5.8% of all instructions,
+  the group `F6`/`F7` 2.5%, NOP 1.8%, MOV of a constant 1.3%, MOVSXD 0.7%, ENDBR64 0.5%.
+  With those and a few more the kinds cover 97%. They are the plan's third line
+  ("the front's missing integer kinds"), which E112 found worth little to the
+  interpreter (60 host instructions each): to a translator each one ends a block, so
+  they are its first task.
+- **What the 32-bit design cannot hold as it is, and what holds it**: RIP is not a
+  constant in a block, since a block is found by its physical address and a page of a
+  shared library is at another virtual address in each program: the page's virtual base
+  is kept in a register. And sixteen guest registers with everything else come to 28
+  host registers, all there are.
+- **Not counted**: a user program. The boot is 99.8% the kernel. NetHack's build in the
+  guest is counting as this is written; its numbers go into `docs/jit64.md` when it
+  ends.
+
+**Next.** The JIT's first task (`docs/jit64.md`): the kinds that cut the runs, in the
+short front, each tested as interpreted; then the count again.
