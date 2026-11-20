@@ -76,6 +76,10 @@ for asm in $list; do
         fail=1
         echo "FAIL  $name: with --jit-check: $(head -c 400 "build/t64/$name.jit" | tr '\n' ' ')"
     fi
+    if ! build/x64 --jit "build/t64/$name" > /dev/null 2> "build/t64/$name.jit"; then
+        fail=1
+        echo "FAIL  $name: with --jit: $(head -c 400 "build/t64/$name.jit" | tr '\n' ' ')"
+    fi
     if cmp -s "build/t64/$name.trace" "build/t64/$name.expected"; then
         echo "ok    $name ($(wc -l < "build/t64/$name.trace" | tr -d ' ') lines)"
     else
