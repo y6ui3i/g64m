@@ -8090,3 +8090,96 @@ code page's test (and the level's), and ten registers. What the count no longer 
 where the cycles go: the globals' step took 13 instructions and no time. The next entry
 is to begin from cycles (the jump on the kind, the loads that follow the copy of `ins`),
 not from the instruction count.
+
+## E111: where the cycles go (a survey; 2026-11-20)
+
+E110's step that moved the globals took 13 host instructions from each guest instruction
+and no time. The count has been the measure since E104; it stops being one when what is
+removed ran beside something slower. The boot now takes 289 host instructions and 50.3
+cycles for a guest instruction: 5.7 instructions a cycle, which is near what this CPU
+can retire. So little is waiting on a wrong guess of a branch or on memory that is not in
+the cache, and what sets the time is more likely the longest chain of things that wait
+for each other.
+
+- **Hypothesis**: **the time of a guest instruction is set by one chain through memory:
+  RIP is loaded, the cache's entry found from it and copied to `ins`, fields loaded back
+  from `ins`, the arm jumped to, the registers loaded and stored in the array, RIP stored,
+  and the next instruction begins by loading it. Sampled by host address, more than half
+  of `exec64`'s samples lie on instructions that wait for a load of something stored a
+  moment before (RIP, `ins`, `ip`, a register), and under a tenth just after the jump on
+  the kind.**
+- **What changed since last time**: the measure. Samples of time by host address instead
+  of counted instructions; nothing in the program changes in this entry.
+- **Next move for each result**:
+  - The chain (as the hypothesis says) → the next entry keeps what the chain passes
+    through in locals across the front: RIP and `ip` in registers, the fields used from
+    the entry and not from the copy, one store of RIP at the end
+  - The jump on the kind has a fifth or more → the guess of where it goes is what costs:
+    the next entry is about the jump (one jump for each kind's most frequent successor,
+    or the commonest kinds tested before the table)
+  - Spread evenly, no instruction with more than a few percent → the count is the measure
+    after all and the 13 were a coincidence: go on by count, with `main` (31) and `modrm`
+    (29) next
+  - Elsewhere (`alu`, `modrm`, the memory functions) → that function's entry comes first
+- **Cut-off**: the boot, one sampling run of 20 seconds and one built condition to tell
+  the first two branches apart. A survey: no change to `src/`.
+
+**Result: the hypothesis is rejected as written, and what holds is the card's third branch
+with one exception. The time is where the instructions are; the one place where it is
+not is the load of the decode cache's entry, which takes about a tenth of the boot's
+time.**
+
+How it was measured: the running program stopped 6,000 times, about 3 ms apart, and its
+program counter read (`lldb`; 17 minutes for 18 seconds of running). A stop finds the
+instruction the CPU is waiting to finish, so an instruction that waits for memory, or the
+first one after a jump guessed wrong, collects the samples of what stands behind it.
+
+| Function | Share of the samples (boot) | Share of the host instructions (E110's stepping) |
+|---|---:|---:|
+| `exec64` | 48.3% | 40% |
+| `main` | 10.9% | 11% |
+| `modrm` | 9.2% | 11% |
+| `exec64_rest` | 6.2% | 6% |
+| `alu` | 5.4% | 8% |
+| `rm_get`, `fs8`, `rd`, `wr`, `sr`, the rest | 20% | 24% |
+
+| In `exec64` (2,898 samples) | Samples | Of all the boot's time |
+|---|---:|---:|
+| The entry's tag loaded and compared (two instructions) | 675 | 11.3% |
+| The kind read back from the copy and tested | 382 | 6.4% |
+| The rest of the lookup (hash, the copy's second half) | 74 | 1.2% |
+| First instructions after the jump on the kind, and other targets of jumps | 497 | 8.3% |
+| The code page's test | 262 | 4.4% |
+| Restoring the registers and returning | 187 | 3.1% |
+| The checks for a machine and a waiting fault | 176 | 2.9% |
+
+- **Not a chain of stores read back.** RIP, `ip` and the registers read back after they
+  were stored collect nothing to speak of; the one such load that does is the kind's
+  byte, read from a copy made by a store of sixteen bytes just before (6.4%).
+- **The jump on the kind is under a tenth**, counting every target of a jump in `exec64`
+  as if the guess had been wrong: the card's second branch is out.
+- **The built condition: a loop of five instructions of the front's kinds, two thousand
+  million of them** (`add`, `mov`, `xor`, `sub`, `jnz`; nothing leaves the nearest cache
+  and every jump goes where it went before). 295 host instructions and 45.5 cycles for a
+  guest instruction, where the boot has 289 and 50.3. So nine tenths of the boot's
+  cycles are there when nothing waits: 6.5 host instructions a cycle is what this CPU
+  does with this code, and fewer instructions is still what makes it faster. In the loop
+  the tag's load and compare have 5.6% of the samples, in the boot 11.3%: the difference,
+  about 6% of the boot's time, is the entry not being near. 5,289 addresses make up 90%
+  of the boot's instructions (E104), an entry is 32 bytes and, the globals being packed,
+  begins at an odd address, so half of them lie across two lines of the cache; and the
+  hash keeps an entry for each byte address, so instructions next to each other have
+  entries 100 bytes apart.
+- **Why the globals' step took no time** is not explained by this entry. The
+  instructions it removed (two for each far address) depend on nothing and wait for
+  nothing; that they cost nothing fits, but it was not measured here.
+- **Not measured**: user programs (the boot only); how often the jump on the kind is
+  guessed wrong (no counter was read; the 8.3% is an upper bound from where samples
+  fall). The sampling tool is `build/pcsample.py`, not kept in the repository.
+
+**Next, in this order.**
+1. The decode cache's entry near: the array begun on a line of the cache (64 bytes), so
+   that no entry lies across two; then whether the kind can be tested from the entry and
+   not from the copy. Measured in cycles, since the count will hardly move.
+2. Then by count again, where the samples and the count agree: `main`'s loop (31
+   instructions, 11% of the time) and `modrm` (29, 9%).
