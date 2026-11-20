@@ -723,8 +723,14 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             if sf == 1 { e(0x93407C00 | from << 5 | r); } else { a_mov(0, r, from); }    // sxtw
         },
         K_MOVI => {
-            if op < 0xB8 { return 0; }
             let low: u8 = op & 7 | (je.rex & 1) << 3;
+            if op < 0xB8 {
+                // One byte of a register.
+                if !j_byte_ok(low) { return 0; }
+                a_imm(S4, mem_rd(q + len - 1, 8));
+                e(0xB3401C00 | S4 << 5 | hg(low));           // bfi
+                return len;
+            }
             a_imm(hg(low), if sf == 1 { mem_rd(q + len - 8, 64) } else { mem_rd(q + len - 4, 32) });
         },
         K_MOVMI => {

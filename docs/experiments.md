@@ -9153,3 +9153,16 @@ instructions for a guest instruction, `p_index` 39 → 22, `p_switch` 79 → 41,
 - **What still holds `p_bignum`, `p_switch` and `p_funcptr`**: 1 to 5% of their
   instructions are not translated, and each costs an entry. By the counter: MUL and DIV
   with one operand, rotations, byte shifts.
+- **Wrong builds: 15 of 15 caught, after a test was written.** Seven at first, by the
+  primitives. `j_bytes` (a trace test, expected from the real CPU) has what the other
+  eight needed: a byte operation that is not the same both ways round with memory, a
+  carry out of a byte that is none out of 32 bits read back from the record, the flags
+  after OR on bytes with a comparison's flags stale before it, ADC after a logic
+  instruction, ADC's own flags with the carry that went in, ADC first in its block,
+  ADC after INC (not translated together: INC leaves the host's carry wrong), SBB after
+  a borrow. One stretch of it did nothing at first, because a constant moved into one
+  byte of a register was not translated and cut the block in front of what was to be
+  tested: that MOV is translated now, with a wrong build and a stretch of its own.
+
+**Next.** Rotations (their flags looked ahead for), MUL and DIV with one operand, byte
+shifts. Then the primitives with a count of rounds, timed against QEMU.
