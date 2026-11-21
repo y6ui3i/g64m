@@ -9843,3 +9843,62 @@ the wrong builds are done.**
 so that a Linux booted gets what programs without a kernel have (its boot is 271 → 180
 host instructions for a guest instruction now, 25.3 s → 16.9 s); and the XMM registers
 in host registers.
+
+## E133: memory through the TLB, the stack and links in a machine (the JIT's fifth task; 2026-11-21)
+
+A Linux booted gets little of the JIT: only blocks of register-only instructions (E120),
+the boot 271 → 180 host instructions for a guest instruction, 25.3 s → 16.9 s, 3.9
+instructions for each entry into a block. Everything since (memory, the stack, links,
+the far way, SSE) is for a program without a kernel, where a guest address is an index
+into memory. In a machine an address goes through the page tables, and the interpreter
+keeps a TLB (E096): six tables, by the kind of access and the privilege level, where a
+hit means allowed, with nothing more to check.
+
+The owner's aim for this and what follows: the boot raced against QEMU's.
+
+- **Hypothesis**: **with a load or store in a machine translated as a look-up in that
+  TLB (a miss, an access across two pages, or a page outside memory leaves the block,
+  and the interpreter walks the tables or faults), PUSH, POP, CALL and RET the same way,
+  and links between blocks on one page, the boot runs four fifths of its instructions
+  in blocks, ten or more for each entry, and costs under 100 host instructions for a
+  guest instruction (180 now), under 10 seconds.**
+- **What changed since last time**: a block is translated for the privilege level it was
+  met at, and is not entered at another; FS and GS bases are given to a block.
+- **Next move for each result**:
+  - Under 100 → the far way in a machine (RET and jumps through an operand: the target
+    looked up through the TLB for instructions), then the race against QEMU's machine
+  - In blocks, entries still frequent → what ends the chains is counted (RET, jumps to
+    another page, the string instructions, the kernel's own instructions)
+  - `--jit-check` differs, or Linux does not boot → that, first
+- **Cut-off**: the boot's host instructions and time; the suites with `--jit-check` and
+  `--jit`; wrong builds.
+
+**Result: the hypothesis holds on three of its four counts. The boot costs 89 host
+instructions for a guest instruction (180), takes 8.3 seconds (16.9; 25.3 without the
+JIT), and runs 17.8 instructions for each entry into a block; 78% of its instructions
+are in blocks, just under the four fifths guessed.**
+
+| The boot to the prompt, 1,524 million instructions | No JIT | E120 to E132 | Now |
+|---|---:|---:|---:|
+| Seconds | 25.3 | 16.9 | 8.3 |
+| Host instructions for a guest instruction | 271 | 180 | 89 |
+| Instructions in blocks | | 55% | 78% |
+| Instructions for each entry into a block | | 3.9 | 17.8 |
+
+- **A load or store in a machine** is the TLB's look-up in generated code: the entry
+  for the address's page, in the table for this kind of access at the privilege level
+  the block is translated for; its tag compared; the physical page with the offset put
+  back. It leaves the block on a miss, on an access that may lie across two pages, and
+  on a page not in memory: the interpreter then walks the tables, faults, or answers for
+  what is not there. About eighteen host instructions for a load where a program
+  without a kernel has five.
+- **A block is for one privilege level**: it is not entered at another, and a link is
+  made only between blocks of one level. Nothing in a block changes the level.
+- **Links in a machine stay on the page**: there the target's physical address is known
+  from the block's own. A jump to another page, a RET and a jump through an operand
+  still go back to the interpreter: that is the far way, which needs the TLB for
+  instructions, and is next.
+- **FS's and GS's bases** are given to a block as it is entered; LEA takes none.
+- **Linux boots** under `--jit` and under `--jit-check`, which compares every block of
+  the boot with the same instructions interpreted, memory included; the disk, NetHack,
+  the network and the frame buffer pass both ways.

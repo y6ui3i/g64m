@@ -39,6 +39,7 @@
 import std;
 import cpu64;
 import sse64;
+import sys64;
 
 extern fn jit_alloc(size: i64) -> i64;
 extern fn jit_write(at: i64, code: const u8[:]);
@@ -75,7 +76,8 @@ let J_MIN = 2;               // and at least
 // are in the log and [8] where the log is, [9] the time left, in and out, [10] where the
 // guest's registers are, [11] the decode cache, [12] dc_n, [13] dc_code and [14] the
 // mapping, for the far way, [15] whether the flags are stale (--jit-check), [16] where the
-// XMM registers are.
+// XMM registers are, [17] and [18] the bases of FS and GS, [19] and [20] where the TLB's
+// tags and its physical pages are (a machine's loads and stores).
 var jx: u64[24] = [0; 24];
 // --jit-check: each store's address and the eight bytes that were there.
 var jlog: u64[256] = [0; 256];
@@ -158,6 +160,8 @@ fn jit64_init() -> bool {
     jx[8] = jit_addr_u64(jlog[..]) as! u64;
     jx[10] = j_regs as! u64;
     jx[16] = jit_addr_u64(xmm[..]) as! u64;
+    jx[19] = jit_addr_u64(tlb_tag[..]) as! u64;
+    jx[20] = jit_addr_u64(tlb_phys[..]) as! u64;
     jc = [];
     // The way in: x0 the registers, x1 jx, x2 the block, x3 RIP.
     e(0xA9BA7BFD);                       // stp x29, x30, [sp, #-96]!
@@ -585,7 +589,9 @@ fn j_tell() {
 // program without a kernel, where an address is the same wherever it is jumped to from.
 fn j_exit(off: u64, cnt: u64, link: bool) {
     var to = j_out_at;
-    let linked = link && !machine && !jit_check && jit_no >> 63 == 0;
+    // In a machine a link stays on the page: there an address's page is known to be this
+    // block's. (And blocks are for one privilege level, which nothing in a block changes.)
+    let linked = link && !jit_check && jit_no >> 63 == 0 && (!machine || (j_head + off) >> 12 == j_head >> 12);
     if linked && off == 0 && ss_n < SS_MAX {
         // Back to this block's own first instruction (E129): what it ran taken off the
         // time, and if there is time for another round and the block does not read
@@ -602,7 +608,7 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
         let t = j_head + off;
         let slot = dc_slot(t);
         if t == j_head { to = j_used; jit_links += 1; }
-        else if dc[slot].tag == t && dc_n[slot] != 0 { to = dc_code[slot]; jit_links += 1; }
+        else if dc[slot].tag == t && dc_n[slot] != 0 && dc_cpl[slot] == cpl { to = dc_code[slot]; jit_links += 1; }
         else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; }
     }
     let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
@@ -734,6 +740,16 @@ fn j_flags_dead(q: u64, page_end: u64) -> bool {
 
 // The address of je's operand in memory, into S1.
 fn j_addr() {
+    j_lea();
+    // FS's or GS's base, which a block is given as it is entered.
+    if je.sg != 0 {
+        a_ldr(29, CTX, if je.sg == 1 { 136 } else { 144 });
+        a_rrr(A_ADD, 1, S1, S1, 29);
+    }
+}
+
+// The operand's offset, which is what LEA gives: no segment's base.
+fn j_lea() {
     if je.base == 17 { a_add_const(S1, RIPB, j_off + j_ilen + je.disp); }
     else if je.base < 16 { a_add_const(S1, hg(je.base), je.disp); }
     else { a_imm(S1, je.disp); }
@@ -747,10 +763,43 @@ fn j_chk(write: bool) { j_chk_n(write, 8); }
 
 // The same for n bytes, 8 or 16.
 fn j_chk_n(write: bool, n: u32) {
-    a_addi(0x11, 1, S2, S1, n);
-    a_rrr(A_ORR, 1, S2, S2, S1);
-    a_shifti(5, 1, S2, S2, 28);
-    j_leave_if();
+    if machine {
+        // In a machine (E133) the address in S1 is a linear one: the TLB's entry for its
+        // page, in the table for this kind of access at the privilege level the block is
+        // translated for, gives the physical page, and S1 is made the physical address.
+        // A miss leaves the block (the interpreter walks the tables, or faults); so does
+        // an access that may lie across two pages, and a page not in memory. x29, x30,
+        // S2 and S3 are used; the host's flags are not.
+        let table: u32 = (if write { 2 } else { 0 }) + (if cpl == 3 { 1 } else { 0 });
+        a_shifti(5, 1, S2, S1, 12);
+        e(0x92402C00 | S2 << 5 | S3);                        // and x3, x2, #0xFFF
+        if table != 0 { e(0x91400000 | table << 10 | S3 << 5 | S3); }        // add x3, x3, #table, lsl #12
+        a_ldr(29, CTX, 152);
+        e(0xF8607800 | S3 << 16 | 29 << 5 | 30);             // ldr x30, [x29, x3, lsl #3]
+        a_rrr(A_EOR, 1, S2, S2, 30);
+        j_leave(S2, false);
+        e(0x92402C00 | S1 << 5 | S2);                        // and x2, x1, #0xFFF
+        a_addi(0x11, 1, 30, S2, n - 1);
+        a_shifti(5, 1, 30, 30, 12);
+        j_leave(30, false);
+        a_ldr(29, CTX, 160);
+        e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
+        a_rrr(A_ORR, 1, S1, 30, S2);
+        e(0x91400400 | S1 << 5 | S2);                        // add x2, x1, #1, lsl #12
+        a_shifti(5, 1, S2, S2, 28);
+        j_leave(S2, false);
+    } else {
+        a_addi(0x11, 1, S2, S1, n);
+        a_rrr(A_ORR, 1, S2, S2, S1);
+        a_shifti(5, 1, S2, S2, 28);
+        j_leave_if();
+    }
+    j_chk_mark(write, n);
+}
+
+// For a store to the physical address in S1: neither page it may touch holds remembered
+// instructions.
+fn j_chk_mark(write: bool, n: u32) {
     if write {
         a_shifti(5, 1, S2, S1, 12);
         e(0x38606800 | S2 << 16 | MARK << 5 | S2);           // ldrb w2, [x28, x2]
@@ -792,7 +841,7 @@ fn j_push(rt: u32) {
     a_addi(0x51, 1, S1, hg(4), 8);
     j_chk(true);
     j_store(64, rt);
-    a_mov(1, hg(4), S1);
+    a_addi(0x51, 1, hg(4), hg(4), 8);            // (S1 may be a physical address by now)
 }
 
 // ---- SSE ----
@@ -1051,7 +1100,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         return if j_sse(q, len) { len } else { 0 };
     }
     // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
-    if je.asz32 || (je.p66 && k != K_NOP && k != K_NOPM) || je.sg != 0 { return 0; }
+    if je.asz32 || (je.p66 && k != K_NOP && k != K_NOPM) { return 0; }
     if je.rep != 0 && k != K_NOP && k != K_NOPM { return 0; }
     if k < 64 && jit_no >> k & 1 != 0 { return 0; }
     let sf: u32 = if je.osz == 64 { 1 } else { 0 };
@@ -1059,9 +1108,10 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     let m = hg(je.rm);
     let regs = je.mod == 3;
     let wide = op & 1 == 1;              // not a byte, for the opcodes whose low bit says so
-    // An operand in memory, a push or a pop: only in a program without a kernel.
-    let inmem = !regs && !machine;
-    let stack = !machine;
+    // An operand in memory, a push or a pop: in a machine through the TLB (E133), which
+    // --jit-off's bit 56 leaves to the interpreter as before.
+    let inmem = !regs && (!machine || jit_no >> 56 & 1 == 0);
+    let stack = !machine || jit_no >> 56 & 1 == 0;
     let wb: u8 = if wide { je.osz } else { 8 };
 
     if k >= K_SETCC {
@@ -1229,7 +1279,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_LEA => {
             if regs { return 0; }
-            j_addr();
+            j_lea();
             a_mov(sf, r, S1);
         },
         K_MOVZX8 => {
@@ -1427,7 +1477,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                     j_chk(true);
                     j_rip(S3, off + len);
                     j_store(64, S3);
-                    a_mov(1, hg(4), S1);
+                    a_addi(0x51, 1, hg(4), hg(4), 8);
                 }
                 j_exit_to(S4, cnt + 1);
                 j_end = true;
@@ -1487,7 +1537,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             j_chk(true);
             j_rip(S3, off + len);
             j_store(64, S3);
-            a_mov(1, hg(4), S1);
+            a_addi(0x51, 1, hg(4), hg(4), 8);
             j_exit(off + len + j_const(q + len - 4, 4), cnt + 1, true);
             j_end = true;
         },
@@ -1572,7 +1622,7 @@ fn jit_translate(ph: u64) {
             if j_end { break; }
         }
         // One instruction is worth a block where blocks are entered from one another.
-        if n >= J_MIN || (n == 1 && !machine && !jit_check) {
+        if n >= J_MIN || (n == 1 && !jit_check) {
             if sk_live { j_sink_flush(); }
             if !j_end { j_exit(q - head, n as! u64, true); }
             // The ways out, behind the block.
@@ -1601,6 +1651,7 @@ fn jit_translate(ph: u64) {
                 let ws = dc_slot(tp_to[i]);
                 lk_site[lk_n] = j_used + tp_pos[i];
                 lk_to[lk_n] = tp_to[i];
+                lk_cpl[lk_n] = cpl;
                 lk_next[lk_n] = dc_wait[ws];
                 lk_n += 1;
                 dc_wait[ws] = lk_n as! u32;
@@ -1609,12 +1660,13 @@ fn jit_translate(ph: u64) {
             dc_wait[head_slot] = 0;
             while w != 0 {
                 let i = (w - 1) as! i64;
-                if lk_to[i] == head { j_patch(lk_site[i], j_used); }
+                if lk_to[i] == head && lk_cpl[i] == cpl { j_patch(lk_site[i], j_used); }
                 w = lk_next[i];
             }
             jit_page[(head >> 12) as! i64] = 1;
             dc_code[head_slot] = j_used as! u32;
             dc_n[head_slot] = n as! u8;
+            dc_cpl[head_slot] = cpl;
             dc_k0[head_slot] = dc[head_slot].ins.kind;
             dc[head_slot].ins.kind = 0;
             j_used += jc.len;
@@ -1688,7 +1740,9 @@ fn j_settle() {
 fn jit_enter() -> bool {
     let slot = dc_cur;
     let n: u64 = dc_n[slot];
-    if jit_hold || steps + n > rep_until { return false; }
+    if jit_hold || steps + n > rep_until || dc_cpl[slot] != cpl { return false; }
+    jx[17] = fs_base;
+    jx[18] = gs_base;
     if jit_check { return jit_both(slot, n); }
     jx[0] = rflags;
     let time = rep_until - steps;
