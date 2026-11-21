@@ -59,6 +59,7 @@ var j_mem = 0;               // where the code is mapped
 var j_used = 0;              // how much of it holds code
 var j_keep = 0;              // how much of that is the way in and out
 var j_out_at = 0;
+var j_fark_at: i64[2] = [0; 2];      // the far way in a machine, for privilege levels 0 and 3; 0 if not built
 var j_far_at = 0;            // the far way: to the block at the address in x1, if there is one; 0 if not built
 var j_regs = 0;
 var j_ctx = 0;
@@ -228,6 +229,47 @@ fn jit64_init() -> bool {
         a_ldr(S4, CTX, 112);
         a_rrr(A_ADD, 1, S3, S4, S3);
         e(0xD61F0000 | S3 << 5);                             // br x3
+        // The far way in a machine (E134), one for privilege level 0 and one for 3: the
+        // address in x1 is a linear one. The TLB's entry for fetching instructions at
+        // that level gives its page (a miss goes out, and the interpreter finds it);
+        // then the look-up above by the physical address, and the block must be one
+        // made at this level.
+        jx[21] = jit_addr8(dc_cpl[..]) as! u64;
+        for lv in 2 {
+            let out2 = jc.len;
+            e(0x14000000 | (((j_out_at - jc.len) >> 2) as! u32) & 0x3FFFFFF);
+            j_fark_at[lv] = jc.len;
+            a_shifti(5, 1, S2, S1, 12);
+            e(0x92402C00 | S2 << 5 | S3);                    // and x3, x2, #0xFFF
+            e(0x91400000 | ((4 + lv) as! u32) << 10 | S3 << 5 | S3);         // the table for fetches
+            a_ldr(29, CTX, 152);
+            e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
+            a_rrr(A_SUBS, 1, ZR, 30, S2);
+            e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
+            a_ldr(29, CTX, 160);
+            e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
+            e(0x92402C00 | S1 << 5 | S2);                    // and x2, x1, #0xFFF
+            a_rrr(A_ORR, 1, S2, 30, S2);                     // the physical address
+            e(0xCA404800 | S2 << 16 | S2 << 5 | S3);         // eor x3, x2, x2, lsr #18
+            e(0x92404400 | S3 << 5 | S3);
+            a_ldr(29, CTX, 88);
+            e(0x8B001400 | S3 << 16 | 29 << 5 | 29);         // add x29, x29, x3, lsl #5
+            a_ldr(29, 29, 0);
+            a_rrr(A_SUBS, 1, ZR, 29, S2);
+            e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
+            a_ldr(29, CTX, 96);
+            e(0x38606800 | S3 << 16 | 29 << 5 | 29);         // ldrb w29, [x29, x3]: a block?
+            e(0x34000000 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5 | 29);
+            a_ldr(29, CTX, 168);
+            e(0x38606800 | S3 << 16 | 29 << 5 | 29);         // its level
+            e(0x7100001F | (if lv == 0 { 0 } else { 3 }) << 10 | 29 << 5);
+            e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
+            a_ldr(29, CTX, 104);
+            e(0xB8607800 | S3 << 16 | 29 << 5 | 29);         // ldr w29, [x29, x3, lsl #2]
+            a_ldr(30, CTX, 112);
+            a_rrr(A_ADD, 1, 29, 30, 29);
+            e(0xD61F0000 | 29 << 5);
+        }
     }
     jit_write(j_mem, jc[..]);
     j_keep = jc.len;
@@ -611,8 +653,21 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
         else if dc[slot].tag == t && dc_n[slot] != 0 && dc_cpl[slot] == cpl { to = dc_code[slot]; jit_links += 1; }
         else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; }
     }
+    // In a machine, an address on another page: looked up as it is jumped to.
+    if link && machine && !linked { to = j_far(); }
     let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
+}
+
+// Where an exit to an address not known to be a block's goes: the far way for this kind
+// of run and privilege level, or out.
+fn j_far() -> i64 {
+    if j_far_at == 0 || jit_check || jit_no >> 62 & 1 != 0 { return j_out_at; }
+    if !machine { return j_far_at; }
+    if jit_no >> 55 & 1 != 0 { return j_out_at; }
+    if cpl == 0 { return j_fark_at[0]; }
+    if cpl == 3 { return j_fark_at[1]; }
+    return j_out_at;
 }
 
 // The way out to the address in host register r.
@@ -620,8 +675,7 @@ fn j_exit_to(r: u32, cnt: u64) {
     a_mov(1, S1, r);
     j_tell();
     a_addi(0x51, 1, 0, 0, cnt as! u32);
-    let far = j_far_at != 0 && !machine && !jit_check && jit_no >> 62 & 1 == 0;
-    let d: u32 = (((if far { j_far_at } else { j_out_at }) - (j_used + jc.len)) >> 2) as! u32;
+    let d: u32 = ((j_far() - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
 }
 

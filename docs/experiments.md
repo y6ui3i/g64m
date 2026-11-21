@@ -9928,3 +9928,63 @@ are in blocks, just under the four fifths guessed.**
   1.5 times behind QEMU. Of 31 million entries left, half are jumps to another page
   (RET, CALL, jumps through an operand), which the far way in a machine would keep in
   generated code.
+
+## E134: the boot raced against QEMU: what still sent it back to the interpreter (2026-11-21)
+
+E133's next move, and the owner's race: QEMU's machine boots the same kernel and
+initramfs to the prompt in 2.5 to 2.65 seconds; g86m stood at 3.9. (This card was written
+after the first of its measurements, not before: the work went on from E133's counting
+without a stop. What was guessed at each step is said with it.)
+
+- **Hypothesis**: **half of the 31 million entries into blocks that are left are jumps to
+  another page; with those looked up in generated code (the far way, through the TLB for
+  instructions) the boot comes to QEMU's time.**
+- **What changed since last time**: a jump's target on another page is found without
+  leaving generated code, in a machine too.
+- **Next move for each result**:
+  - At QEMU's time → the wrong builds for everything since E133, with tests; then
+    longer runs than a boot (NetHack's build in the guest)
+  - Not there → what is interpreted is counted by address, not by kind
+- **Cut-off**: `tools/boot_race.py`; the suites.
+
+**Result: the far way alone did not do it (3.9 s → 3.7 s); counting by address found the
+rest, and the boot now takes 2.4 seconds to QEMU's 2.5. Host instructions for a guest
+instruction: 40 → 23; 95.6% of the boot's instructions run in blocks.**
+
+| The boot to the prompt | Seconds | Host instructions for a guest instruction | In blocks | Entries into blocks |
+|---|---:|---:|---:|---:|
+| E133 | 3.9 | 40 | 93.3% | 31 million |
+| The far way in a machine | 3.7 | 35 | 93.3% | 9 million |
+| Only the written page's blocks dropped | 3.7 | 34 | 93.3% | 9 million |
+| A page given up taken back | 2.4 | 23 | 95.6% | 9 million |
+| QEMU 11.1.3, TCG | 2.5 | | | |
+
+- **The far way in a machine**: the target's page through the TLB's table for fetching
+  instructions at the block's privilege level, then the look-up of E123 by the physical
+  address, and the block must be one made at that level. A jump or CALL to a known
+  address on another page goes the same way. Entries fell from 31 to 9 million, and the
+  time hardly moved: an entry costs about 440 host instructions, and 22 million of them
+  are 10 billion of 61.
+- **What the time was in** was the 100 million instructions still interpreted, at 280
+  each. They were of ordinary kinds. Translating at the first arrival instead of the
+  eighth changed nothing, so they were not code too cold to translate.
+- **Dropping every block for a write to one page** (E122) is not needed in a machine,
+  where a link never leaves its page and the far way reads the decode cache: only that
+  page's blocks are forgotten. 166 drops of everything in the boot became none. It was
+  not where the time was either.
+- **Counted by address**, the instructions interpreted most were a RET at one address
+  1.8 million times and three loops of a dozen plain instructions half a million times
+  each: all on pages the decode cache had **given up** (E107: after 32 drops of a page
+  it is not remembered from again, so that a page written and run in turns does not
+  thrash). A kernel patches its own code as it starts, more than 32 times a page for
+  some, and then runs it unchanged; and where the decode cache remembers nothing, no
+  block can be. A page given up is now taken back when it has been run from 4,096 times
+  with no write to it in between. 3.7 s → 2.4 s; the interpreter alone also gains (24.4
+  → 23.2 s).
+- **How rough the race is**: the best of three, the host's load 2.6 to 4; QEMU's time
+  has its firmware loading the kernel in it, g86m's starts at the kernel's entry. 2.42
+  against 2.53 is "the same".
+
+**Next.** The wrong builds for E133 and E134, with `y_jit` extended (code written while
+its blocks are hot; a page given up, taken back, and written again). Then a run longer
+than a boot.

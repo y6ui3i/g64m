@@ -262,12 +262,17 @@ var lk_cpl: u8[LK_MAX] = [0; LK_MAX];
 // that level's tables of the TLB.
 var dc_cpl: u8[DC_SIZE] = [0; DC_SIZE];
 var jit_page: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
+// How often a page that was given up has been run from since the last write to it.
+let DC_CALM = 4096;
+var dc_calm: u16[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
 
 
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
 
 // A marked page was written to: its entries go.
 inline fn dc_drop(page: i64) {
+    // A write to a page that was given up: it is not calm yet (E134).
+    if dc_mark[page] == 2 { dc_calm[page] = 0; return; }
     if dc_mark[page] != 1 { return; }
     let base = (page << 12) as! u64;
     for k in 4096 {
@@ -276,7 +281,12 @@ inline fn dc_drop(page: i64) {
         if dc[slot].tag == at { dc[slot].tag = DC_NONE; }
     }
     // Blocks run into one another without looking (E122): if any is on this page, all go.
-    if jit_page[page] != 0 { jit_flush(); }
+    // But in a machine a link never leaves its page (E133), and the far way looks at the
+    // entries dropped just above: the page's blocks can be reached from nowhere now, and
+    // the others stand (E134).
+    if jit_page[page] != 0 {
+        if machine { jit_page[page] = 0; } else { jit_flush(); }
+    }
     if dc_drops[page] < 255 { dc_drops[page] += 1; }
     dc_mark[page] = if dc_drops[page] >= DC_GIVE_UP { 2 } else { 0 };
 }
@@ -1363,7 +1373,16 @@ fn decode() {
             dc_heat[dc_cur] = 0;
             dc_n[dc_cur] = 0;
             dc_mark[page] = 1;
-        } else { dc_cur = -1; }
+        } else {
+            dc_cur = -1;
+            // A page given up is taken back when it has been run from DC_CALM times with
+            // no write to it in between (E134): a kernel patches its code as it starts,
+            // often enough to be given up, and then runs it for good.
+            if ip <= code_end && dc_mark[page] == 2 {
+                dc_calm[page] += 1;
+                if dc_calm[page] >= DC_CALM { dc_mark[page] = 0; dc_drops[page] = 0; dc_calm[page] = 0; }
+            }
+        }
     }
 }
 

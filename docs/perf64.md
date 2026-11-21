@@ -125,6 +125,7 @@ The numbers give each a ceiling. None has been tried.
 | | E113: a string instruction's repetitions in one go | 284 | 24.5 to 24.7 s |
 | | E118: the kinds that cut the runs (the JIT's first task) | 276 | not timed yet |
 | | with `--jit`, E133: blocks with memory through the TLB and links on a page | 89 | 8.3 s |
+| | with `--jit`, E134: the far way in a machine; a page given up taken back | 23 | 2.4 s (QEMU: 2.5 s) |
 
 The decode cache finds 97% of instructions and saves 48 host instructions each, but its
 upkeep (the watch in every store, the index kept for `modrm`) costs 31, and a found entry
