@@ -5,7 +5,7 @@
 ; left or the chip's answer made: those are here too. A jump to `bad` is never taken.
 %include "elf.inc"
 
-    mov r15d, 14
+    mov r15d, 40
     lea rbp, [data]
 top:
     movsd xmm0, [d_three]               ; a scalar from memory clears the rest
@@ -34,23 +34,56 @@ top:
     movq rax, xmm0
     movd ebx, xmm6
     movq xmm10, rax
-    movd xmm11, ebx
-    movq xmm12, xmm2                    ; the low word, the rest cleared
+    mov rbx, 0x1122334455667788
+    movd xmm11, ebx                     ; 32 bits of the register
+    mov rcx, -1
+    movd ecx, xmm2                      ; 32 bits of the XMM register, the upper half of RCX cleared
+    movaps xmm12, [v_ones]
+    db 0x66, 0x41, 0x0F, 0xD6, 0xD4     ; MOVQ XMM12, XMM2 by its other opcode: the rest cleared
+    movaps xmm13, [v_ones]
+    movq xmm13, xmm0                    ; and by this one
+    movsd xmm14, [rbp + 88]             ; what the round before left
+    addsd xmm14, [d_three]
+    movaps xmm15, [v_ones]
+    movaps [rbp + 80], xmm15            ; sixteen bytes over it
+    movsd [rbp + 88], xmm14             ; and the sum back
     movq [rbp + 48], xmm5
     movd [rbp + 56], xmm7
     jmp .c0
 .c0:
+    ; Each of these leaves its block (the result is not a finite number), and what is
+    ; behind it in the block would be interpreted: so each is a block's last.
     xorpd xmm0, xmm0
     divsd xmm0, xmm0                    ; 0 / 0: not a number, the chip's own
+    jmp .n1
+.n1:
     movsd xmm1, [d_minus]
     sqrtsd xmm1, xmm1                   ; the root of -1
+    jmp .n2
+.n2:
     movsd xmm2, [d_huge]
     mulsd xmm2, xmm2                    ; too large: infinity
+    jmp .n3
+.n3:
     movsd xmm3, [d_nan]
     addsd xmm3, [d_three]               ; an operand that is not a number comes out
+    jmp .n4
+.n4:
     movss xmm4, [s_two]
     xorps xmm13, xmm13
     divss xmm4, xmm13                   ; 2 / 0: infinity
+    jmp .n5
+.n5:
+    xorps xmm14, xmm14
+    divss xmm14, xmm14                  ; 0 / 0 in singles
+    jmp .n6
+.n6:
+    movss xmm15, [s_minus]
+    sqrtss xmm15, xmm15
+    jmp .n7
+.n7:
+    movsd xmm9, [d_three]
+    sqrtsd xmm10, xmm9                  ; the root of the second operand, whatever the first holds
     jmp .c1
 .c1:
     mov eax, -7
@@ -101,6 +134,12 @@ top:
     maxsd xmm5, [d_nan]                 ; not a number: the second
     movsd xmm6, [d_nan]
     maxsd xmm6, [d_half]
+    movsd xmm9, [d_half]
+    minsd xmm9, [d_nan]                 ; not a number: the second, for the smaller too
+    ucomisd xmm9, xmm9                  ; (and it is not a number: a run with --jit alone is held)
+    jnp bad
+    movsd xmm10, [d_nan]
+    minsd xmm10, [d_half]
     xorpd xmm7, xmm7
     movsd xmm8, [d_negzero]
     minsd xmm7, xmm8                    ; zeros of both signs are equal: the second
@@ -135,6 +174,7 @@ d_negzero:  dq 0x8000000000000000
 d_minus_big: dq -2147483648.5
 s_two:      dd 2.0
 s_third:    dd 0.33333334
+s_minus:    dd -1.0
 i_big:      dd 0x7FFFFFFF
     times 0x3000 - ($ - $$) db 0
 data:

@@ -9788,3 +9788,58 @@ the wrong builds are done.**
   XMM register is stored to memory by one instruction and loaded by the next, and a
   sum carried round a loop goes through memory every time. Keeping the XMM registers
   in host registers through a block is the card's first branch.
+
+- **Wrong builds: 28 of 28 caught, after `x_blocks` was extended three times.** Twenty-one
+  at first. The seven that passed, and what each wanted of the test:
+  - A value has to live to the end of its block, or be tested: MIN of a NaN was right in
+    the interpreter and wrong in the block, and the register was loaded again further
+    down the same block, so the check, which compares at a block's end, saw nothing. A
+    comparison and a jump right behind the MIN now hold it, for `--jit` alone as well.
+  - What comes behind a way out in the same block is interpreted. The results that are
+    not finite were one stretch, so only the first was ever run as a block; each is a
+    block's last now.
+  - A stretch reached only by a jump from a block is translated late (its arrivals are
+    counted only when a block hands back to the interpreter), and fourteen rounds were
+    not enough for the later stretches under `--jit`: forty.
+  - Registers and memory whose other half is not zero, for MOVD both ways and MOVQ's
+    other opcode; and a read of what a sixteen-byte store then overwrites, for the
+    check's own log.
+- **Against QEMU** (`tools/prim64_long.sh`, the host's load about 4; million guest
+  instructions a second):
+
+  | | QEMU | Rosetta | g86m `--jit` | g86m / QEMU |
+  |---|---:|---:|---:|---:|
+  | `p_dbl_conv` | 283 | 9228 | 2707 | 9.58 |
+  | `p_muldiv` | 1413 | 9230 | 6640 | 4.70 |
+  | `p_dbl_cmp` | 818 | 9137 | 3139 | 3.84 |
+  | `p_recursion` | 1460 | 3231 | 3884 | 2.66 |
+  | `p_loop` | 3852 | 13658 | 9589 | 2.49 |
+  | `p_funcptr` | 439 | 1406 | 1071 | 2.44 |
+  | `p_dbl_arith` | 449 | 2040 | 886 | 1.97 |
+  | `p_switch` | 831 | 1810 | 1426 | 1.72 |
+  | `p_float` | 587 | 2448 | 985 | 1.68 |
+  | `p_bignum` | 2698 | 8940 | 4515 | 1.67 |
+  | `p_bytes` | 4324 | 11159 | 5702 | 1.32 |
+  | `p_pointer` | 3447 | 8993 | 4416 | 1.28 |
+  | `p_shift` | 16640 | 21486 | 20683 | 1.24 |
+  | `p_fill` | 513 | 3044 | 590 | 1.15 |
+  | `p_index` | 3454 | 13403 | 3973 | 1.15 |
+  | `p_ternary` | 10458 | 16881 | 11473 | 1.10 |
+  | `p_if` | 2405 | 4696 | 2625 | 1.09 |
+  | `p_pixel` | 10316 | 13238 | 10054 | 0.97 |
+  | `p_sha` | 7534 | 12620 | 2439 | 0.32 |
+  | `p_ldbl` | 113 | 46 | 35 | 0.31 |
+  | `p_rotate` | 4007 | 5810 | 279 | 0.07 |
+  | `p_bitfield` | 11087 | 11728 | 598 | 0.05 |
+  | `p_simd` | 1571 | 9394 | 48 | 0.03 |
+
+  The four floating-point primitives went from 0.07 to 0.18 of QEMU to 1.7 to 9.6 times
+  it. QEMU does its floating point in software; `p_dbl_conv`, which is conversions, is
+  where that costs it most. Eighteen of the twenty-three primitives are at QEMU's speed
+  or past it; the five that are not are the ones nothing is translated for (x87,
+  packed SSE, 16 bits, rotations whose flags are needed).
+
+**Next.** The owner's to choose between: the kernel's memory through the TLB (task 5),
+so that a Linux booted gets what programs without a kernel have (its boot is 271 → 180
+host instructions for a guest instruction now, 25.3 s → 16.9 s); and the XMM registers
+in host registers.
