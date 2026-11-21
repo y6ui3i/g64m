@@ -9536,3 +9536,10 @@ quarter to a third.)
   (four) and at a store (eleven). And `p_funcptr` at 12 and `p_switch` at 6 with two
   to three cycles an instruction: the look-up of a jump's target, where the host
   cannot guess the branch.
+- **Wrong builds: 13 of 13 caught.** The one that needed a test was the branch back
+  taken straight to the body of a block that reads RFLAGS in memory: `j_bytes` has a
+  loop that begins with ADC and ends with a SUB and a jump back, and compares the sum.
+
+**Next.** The record in front of a conditional jump, where the flags are dead on both
+sides; then the link to another block and the checks at a load and a store; then the
+time against QEMU again, on a quiet host.
