@@ -1372,8 +1372,11 @@ fn exec64_rest() -> bool {
     if dc_cur >= 0 && dc_n[dc_cur] != 0 {
         rflags &= ~RF;
         if jit_enter() { return true; }
-        ins.kind = dc_k0[dc_cur];
-        return run_kind();
+        // (A block may begin at an instruction of no kind, an SSE one: that goes on below.)
+        if dc_k0[dc_cur] != 0 {
+            ins.kind = dc_k0[dc_cur];
+            return run_kind();
+        }
     }
     if machine { save_start(); }
     let op = ins.op;

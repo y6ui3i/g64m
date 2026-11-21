@@ -116,6 +116,10 @@ fourteen integer primitives that run in blocks.
 | `p_bitfield` | 12448 | 15256 | 612 | 0.05 |
 | `p_simd` | 1495 | 9958 | 37 | 0.02 |
 
+**With the scalar SSE instructions (E132)**: `p_dbl_conv` 9.6 times QEMU, `p_dbl_cmp` 3.8,
+`p_dbl_arith` 2.0, `p_float` 1.7 (they were at 0.07 to 0.18). Eighteen of the
+twenty-three primitives are at QEMU's speed or past it.
+
 **Host instructions for a guest instruction (E129, E130)**, net of the emulator's start
 (`tools/prim64_net.py`): 1.3 (`p_shift`) to 11.7 (`p_funcptr`), `p_loop` 1.5, `p_if`
 4.6, `p_pointer` 4.6. The interpreter is about 280.
@@ -251,4 +255,4 @@ without `--jit`.
 | 5 | Memory operands through the TLB, and the stack (PUSH, POP, CALL, RET) | the system tests, the boot |
 | 6 (links done for a program without a kernel, E122: `p_if` 192 → 23, `p_loop` 107 → 28; the far way for the same, E123: `p_recursion` 60 → 37, `p_funcptr` 121 → 40; neither yet in a machine) | Links inside a page and the far way | the boot, NetHack |
 | 7 | What is left by count: the string instructions, MUL and DIV, the rest | the boot, NetHack built in the guest |
-| 8 | The scalar SSE instructions | `p_dbl_arith`, `p_float` |
+| 8 (done for a program without a kernel, E132, with the XMM registers in memory) | The scalar SSE instructions | `p_dbl_arith`, `p_float` |

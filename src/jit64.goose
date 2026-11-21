@@ -38,6 +38,7 @@
 
 import std;
 import cpu64;
+import sse64;
 
 extern fn jit_alloc(size: i64) -> i64;
 extern fn jit_write(at: i64, code: const u8[:]);
@@ -73,8 +74,9 @@ let J_MIN = 2;               // and at least
 // [4] the next RIP, [5] where the memory is, [6] where dc_mark is, [7] how many stores
 // are in the log and [8] where the log is, [9] the time left, in and out, [10] where the
 // guest's registers are, [11] the decode cache, [12] dc_n, [13] dc_code and [14] the
-// mapping, for the far way.
-var jx: u64[16] = [0; 16];
+// mapping, for the far way, [15] whether the flags are stale (--jit-check), [16] where the
+// XMM registers are.
+var jx: u64[24] = [0; 24];
 // --jit-check: each store's address and the eight bytes that were there.
 var jlog: u64[256] = [0; 256];
 
@@ -155,6 +157,7 @@ fn jit64_init() -> bool {
     jx[6] = jit_addr8(dc_mark[..]) as! u64;
     jx[8] = jit_addr_u64(jlog[..]) as! u64;
     jx[10] = j_regs as! u64;
+    jx[16] = jit_addr_u64(xmm[..]) as! u64;
     jc = [];
     // The way in: x0 the registers, x1 jx, x2 the block, x3 RIP.
     e(0xA9BA7BFD);                       // stp x29, x30, [sp, #-96]!
@@ -232,9 +235,11 @@ fn jit64_init() -> bool {
 
 var je: Ins = Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
                     mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, kind: 0, disp: 0 };
+var j_at: u64 = 0;           // where the instruction in je is
 var jk: u8 = 0;              // its kind, its own where it begins a block
 var j_hf: u8 = 0;            // what the host's flags are from: 0 nothing the guest can use
 let HF_SUB = 1; let HF_ADD = 2; let HF_LOGIC = 3; let HF_INCDEC = 4;
+let HF_FCMP = 5;             // the host's FCMP, for UCOMIS and COMIS
 var j_set = false;           // an instruction of this block has set the flags' record
 var j_dyn = false;           // and whether it did was decided as it ran (a shift by CL)
 var j_end = false;           // the block ended at a jump
@@ -300,6 +305,7 @@ fn j_entry(q: u64) -> bool {
     if dc[slot].tag != q { return false; }
     je = dc[slot].ins;
     jk = if dc_n[slot] != 0 { dc_k0[slot] } else { je.kind };
+    j_at = q;
     return true;
 }
 
@@ -309,6 +315,15 @@ fn j_len() -> u64 {
     let il: u64 = if je.osz == 16 { 2 } else { 4 };
     let m: u64 = je.mlen;
     let p: u64 = je.plen;
+    if jk == 0 {
+        // No kind: an SSE instruction's length is known if its operand's is (all of them
+        // have one but EMMS), with a constant behind it for some.
+        if op != 0x0F || m == 0 { return 0; }
+        let op2 = mem_rd(j_at + p, 8) as! u8;
+        if !sse64_is(op2) || op2 == 0x77 || op2 == 0xAE { return 0; }
+        let has_imm = op2 == 0x70 || op2 == 0x71 || op2 == 0x72 || op2 == 0x73 || (op2 >= 0xC2 && op2 <= 0xC6 && op2 != 0xC3);
+        return if has_imm { m + 1 } else { m };
+    }
     if jk >= K_JCC32 && jk < K_CMOV { return p + 5; }
     if jk >= K_CMOV { return m; }
     match jk {
@@ -544,7 +559,10 @@ fn j_cond_of(hf: u8, cc: u8) -> u32 {
     let add: u8[16] = [6, 7, 2, 3, 0, 1, 255, 255, 4, 5, 255, 255, 11, 10, 13, 12];
     let logic: u8[16] = [255, 255, 255, 255, 0, 1, 0, 1, 4, 5, 255, 255, 4, 5, 13, 12];
     let incdec: u8[16] = [6, 7, 255, 255, 0, 1, 255, 255, 4, 5, 255, 255, 11, 10, 13, 12];
-    let c: u8 = if hf == HF_SUB { sub[cc] } else if hf == HF_ADD { add[cc] } else if hf == HF_LOGIC { logic[cc] } else { incdec[cc] };
+    // After FCMP: below is "less or unordered" (LT), above "greater" (GT), parity
+    // "unordered" (VS); equal is "equal or unordered", which no one condition says.
+    let fcmp: u8[16] = [255, 255, 11, 10, 255, 255, 13, 12, 255, 255, 6, 7, 255, 255, 255, 255];
+    let c: u8 = if hf == HF_SUB { sub[cc] } else if hf == HF_ADD { add[cc] } else if hf == HF_LOGIC { logic[cc] } else if hf == HF_FCMP { fcmp[cc] } else { incdec[cc] };
     return c;
 }
 
@@ -631,6 +649,7 @@ fn j_dead_past_jump(q: u64, page_end: u64, cnt: u64) -> bool {
     if hf == 0 || cnt + 2 > J_MAX || so_n + 12 > SO_MAX || q >= page_end { return false; }
     let keep = je;
     let keep_k = jk;
+    let keep_at = j_at;
     var ok = false;
     var fall: u64 = 0;
     var to: u64 = 0;
@@ -649,6 +668,7 @@ fn j_dead_past_jump(q: u64, page_end: u64, cnt: u64) -> bool {
     }
     je = keep;
     jk = keep_k;
+    j_at = keep_at;
     return ok && j_flags_dead(fall, page_end) && j_flags_dead(to, page_end);
 }
 
@@ -678,6 +698,7 @@ fn j_leave(r: u32, zero: bool) {
 fn j_flags_dead(q: u64, page_end: u64) -> bool {
     let keep = je;
     let keep_k = jk;
+    let keep_at = j_at;
     var at = q;
     var dead = false;
     for i in 12 {
@@ -707,6 +728,7 @@ fn j_flags_dead(q: u64, page_end: u64) -> bool {
     }
     je = keep;
     jk = keep_k;
+    j_at = keep_at;
     return dead;
 }
 
@@ -721,15 +743,18 @@ fn j_addr() {
 // The checks on the address in S1 (rd and wr, cpu64.goose): eight bytes from it are inside
 // memory, and for a store neither page it may touch holds remembered instructions. None
 // changes the host's flags. S2 and S3 are used.
-fn j_chk(write: bool) {
-    a_addi(0x11, 1, S2, S1, 8);
+fn j_chk(write: bool) { j_chk_n(write, 8); }
+
+// The same for n bytes, 8 or 16.
+fn j_chk_n(write: bool, n: u32) {
+    a_addi(0x11, 1, S2, S1, n);
     a_rrr(A_ORR, 1, S2, S2, S1);
     a_shifti(5, 1, S2, S2, 28);
     j_leave_if();
     if write {
         a_shifti(5, 1, S2, S1, 12);
         e(0x38606800 | S2 << 16 | MARK << 5 | S2);           // ldrb w2, [x28, x2]
-        a_addi(0x11, 1, S3, S1, 7);
+        a_addi(0x11, 1, S3, S1, n - 1);
         a_shifti(5, 1, S3, S3, 12);
         e(0x38606800 | S3 << 16 | MARK << 5 | S3);
         a_rrr(A_ORR, 0, S2, S2, S3);
@@ -743,17 +768,21 @@ fn j_load(n: u8, rt: u32) {
     let op: u32 = if n == 64 { 0xF8606800 } else if n == 32 { 0xB8606800 } else if n == 16 { 0x78606800 } else { 0x38606800 };
     e(op | S1 << 16 | MEMR << 5 | rt);
 }
+// With --jit-check: the eight bytes at the guest address in S1 into the log, with the address.
+fn j_log() {
+    if !jit_check { return; }
+    a_ldr(29, CTX, 56);
+    a_ldr(30, CTX, 64);
+    e(0x8B000000 | 29 << 16 | 4 << 10 | 30 << 5 | 30);       // add x30, x30, x29, lsl #4
+    a_str(S1, 30, 0);
+    a_addi(0x11, 1, 29, 29, 1);
+    a_str(29, CTX, 56);
+    e(0xF8606800 | S1 << 16 | MEMR << 5 | 29);               // ldr x29, [x27, x1]
+    a_str(29, 30, 8);
+}
+
 fn j_store(n: u8, rt: u32) {
-    if jit_check {
-        a_ldr(29, CTX, 56);
-        a_ldr(30, CTX, 64);
-        e(0x8B000000 | 29 << 16 | 4 << 10 | 30 << 5 | 30);   // add x30, x30, x29, lsl #4
-        a_str(S1, 30, 0);
-        a_addi(0x11, 1, 29, 29, 1);
-        a_str(29, CTX, 56);
-        e(0xF8606800 | S1 << 16 | MEMR << 5 | 29);           // ldr x29, [x27, x1]
-        a_str(29, 30, 8);
-    }
+    j_log();
     let op: u32 = if n == 64 { 0xF8206800 } else if n == 32 { 0xB8206800 } else if n == 16 { 0x78206800 } else { 0x38206800 };
     e(op | S1 << 16 | MEMR << 5 | rt);
 }
@@ -764,6 +793,227 @@ fn j_push(rt: u32) {
     j_chk(true);
     j_store(64, rt);
     a_mov(1, hg(4), S1);
+}
+
+// ---- SSE ----
+//
+// The XMM registers stay in memory (cpu64's xmm, two words each): an instruction loads
+// what it reads into v0 and v1 and stores what it writes. x29 holds their address for the
+// length of one instruction.
+
+fn x_base() { a_ldr(29, CTX, 128); }
+// A load of n bits (32, 64, 128) of XMM register i into host vector vt, the rest of vt
+// cleared; a store of vt's low n bits there.
+fn x_ld(n: u32, vt: u32, i: u8) {
+    let at: u32 = (i as u32) * 16;
+    e((if n == 64 { 0xFD400000 | (at >> 3) << 10 } else if n == 32 { 0xBD400000 | (at >> 2) << 10 } else { 0x3DC00000 | (at >> 4) << 10 }) | 29 << 5 | vt);
+}
+fn x_st(n: u32, vt: u32, i: u8) {
+    let at: u32 = (i as u32) * 16;
+    e((if n == 64 { 0xFD000000 | (at >> 3) << 10 } else if n == 32 { 0xBD000000 | (at >> 2) << 10 } else { 0x3D800000 | (at >> 4) << 10 }) | 29 << 5 | vt);
+}
+// The same at the guest address in S1.
+fn m_ld(n: u32, vt: u32) {
+    e((if n == 64 { 0xFC606800 } else if n == 32 { 0xBC606800 } else { 0x3CE06800 }) | S1 << 16 | MEMR << 5 | vt);
+}
+fn m_st(n: u32, vt: u32) {
+    j_log();
+    if n == 128 && jit_check { a_addi(0x11, 1, S1, S1, 8); j_log(); a_addi(0x51, 1, S1, S1, 8); }
+    e((if n == 64 { 0xFC206800 } else if n == 32 { 0xBC206800 } else { 0x3CA06800 }) | S1 << 16 | MEMR << 5 | vt);
+}
+// The operand r/m names, n bits of it, into vt.
+fn x_src(n: u32, vt: u32) {
+    if je.mod == 3 { x_base(); x_ld(n, vt, je.rm); }
+    else { j_addr(); j_chk_n(false, if n == 128 { 16 } else { 8 }); m_ld(n, vt); }
+}
+// Leaves the block, before the instruction has changed anything, if the double (or single)
+// in vt is not a finite number: what the chip gives then is the interpreter's to say. The
+// host's flags are left alone. S2 is used.
+fn x_finite(double: bool, vt: u32) {
+    if double {
+        e(0x9E660000 | vt << 5 | S2);                        // fmov x2, d
+        e(0xD3400000 | 52 << 16 | 62 << 10 | S2 << 5 | S2);  // ubfx x2, x2, #52, #11
+        e(0xD2402800 | S2 << 5 | S2);                        // eor x2, x2, #0x7FF
+    } else {
+        e(0x1E260000 | vt << 5 | S2);                        // fmov w2, s
+        e(0x53000000 | 23 << 16 | 30 << 10 | S2 << 5 | S2);  // ubfx w2, w2, #23, #8
+        e(0x52001C00 | S2 << 5 | S2);                        // eor w2, w2, #0xFF
+    }
+    j_leave(S2, true);
+}
+
+// Translates the SSE instruction in je, at q and len bytes long. False with nothing
+// generated if it is not one of those taken.
+fn j_sse(q: u64, len: u64) -> bool {
+    let op2 = mem_rd(q + je.plen, 8) as! u8;
+    // Which prefix chose the instruction: 0 none, 1 66, 2 F3, 3 F2.
+    let p: u8 = if je.rep == 0xF3 { 2 } else if je.rep == 0xF2 { 3 } else if je.p66 { 1 } else { 0 };
+    let r = je.reg;
+    let regs = je.mod == 3;
+    let wide = je.rex & 8 != 0;          // a general register here is 64 bits
+    let gr = hg(je.rm);                  // r/m as a general register
+    match op2 {
+        0x10 => {
+            // To the register. From memory a scalar clears the rest; from a register not.
+            if p < 2 { x_src(128, 0); x_base(); x_st(128, 0, r); }
+            else {
+                let n: u32 = if p == 2 { 32 } else { 64 };
+                x_src(n, 0);
+                x_base();
+                x_st(if regs { n } else { 128 }, 0, r);
+            }
+        },
+        0x11 => {
+            let n: u32 = if p < 2 { 128 } else if p == 2 { 32 } else { 64 };
+            if regs { x_base(); x_ld(n, 0, r); x_st(n, 0, je.rm); }
+            else { j_addr(); j_chk_n(true, if n == 128 { 16 } else { 8 }); x_base(); x_ld(n, 0, r); m_st(n, 0); }
+        },
+        0x28 => { x_src(128, 0); x_base(); x_st(128, 0, r); },
+        0x29 => {
+            if regs { x_base(); x_ld(128, 0, r); x_st(128, 0, je.rm); }
+            else { j_addr(); j_chk_n(true, 16); x_base(); x_ld(128, 0, r); m_st(128, 0); }
+        },
+        0x6F => {
+            if p == 0 || p == 3 { return false; }
+            x_src(128, 0); x_base(); x_st(128, 0, r);
+        },
+        0x7F => {
+            if p == 0 || p == 3 { return false; }
+            if regs { x_base(); x_ld(128, 0, r); x_st(128, 0, je.rm); }
+            else { j_addr(); j_chk_n(true, 16); x_base(); x_ld(128, 0, r); m_st(128, 0); }
+        },
+        0x6E => {
+            // MOVD and MOVQ from a general register or memory: the rest cleared.
+            if p != 1 { return false; }
+            if regs { e((if wide { 0x9E670000 } else { 0x1E270000 }) | gr << 5); }      // fmov d0 or s0
+            else { j_addr(); j_chk(false); m_ld(if wide { 64 } else { 32 }, 0); }
+            x_base();
+            x_st(128, 0, r);
+        },
+        0x7E => {
+            if p == 2 { x_src(64, 0); x_base(); x_st(128, 0, r); }
+            else if p == 1 {
+                // To a general register or memory.
+                if regs {
+                    x_base();
+                    a_ldr(S3, 29, (r as u32) * 16);
+                    a_mov(if wide { 1 } else { 0 }, gr, S3);
+                } else {
+                    j_addr(); j_chk(true);
+                    x_base();
+                    a_ldr(S3, 29, (r as u32) * 16);
+                    j_store(if wide { 64 } else { 32 }, S3);
+                }
+            } else { return false; }
+        },
+        0xD6 => {
+            if p != 1 { return false; }
+            if regs { x_base(); x_ld(64, 0, r); x_st(128, 0, je.rm); }
+            else { j_addr(); j_chk(true); x_base(); x_ld(64, 0, r); m_st(64, 0); }
+        },
+        0x51, 0x58, 0x59, 0x5C, 0x5E => {
+            // The scalar arithmetic: the host's, unless what comes out is not finite.
+            if p < 2 { return false; }
+            let n: u32 = if p == 2 { 32 } else { 64 };
+            let ty: u32 = if p == 2 { 0x1E200000 } else { 0x1E600000 };
+            x_src(n, 1);
+            x_base();
+            if op2 == 0x51 { e(ty | 0x1C000 | 1 << 5 | 2); }                  // fsqrt v2, v1
+            else {
+                x_ld(n, 0, r);
+                let f: u32 = if op2 == 0x58 { 0x2800 } else if op2 == 0x59 { 0x0800 } else if op2 == 0x5C { 0x3800 } else { 0x1800 };
+                e(ty | f | 1 << 16 | 0 << 5 | 2);                             // fadd, fmul, fsub, fdiv v2, v0, v1
+            }
+            x_finite(p == 3, 2);
+            x_st(n, 2, r);
+        },
+        0x5D, 0x5F => {
+            // The smaller and the larger: the second operand unless the first is strictly
+            // less (or greater), so also when either is not a number.
+            if p < 2 { return false; }
+            let n: u32 = if p == 2 { 32 } else { 64 };
+            x_src(n, 1);
+            x_base();
+            x_ld(n, 0, r);
+            e((if p == 2 { 0x1E202000 } else { 0x1E602000 }) | 1 << 16 | 0 << 5);       // fcmp v0, v1
+            e((if p == 2 { 0x1E200C00 } else { 0x1E600C00 }) | 1 << 16 | (if op2 == 0x5D { C_MI } else { C_GT }) << 12 | 0 << 5 | 2);    // fcsel v2, v0, v1
+            x_st(n, 2, r);
+            j_hf = 0;
+        },
+        0x2A => {
+            // An integer to a float: rounded once, as the host does it.
+            if p < 2 { return false; }
+            var from = gr;
+            if !regs { j_addr(); j_chk(false); j_load(if wide { 64 } else { 32 }, S3); from = S3; }
+            e((if p == 3 { 0x1E620000 } else { 0x1E220000 }) | (if wide { 1 << 31 } else { 0 }) | from << 5);       // scvtf d0 or s0
+            x_base();
+            x_st(if p == 3 { 64 } else { 32 }, 0, r);
+        },
+        0x2C => {
+            // A float to an integer, cut off. Out of the integer's range, or not a number,
+            // the chip gives the "integer indefinite", the smallest integer: the host's
+            // conversion stops at the nearest end and gives 0 for what is not a number,
+            // so both are looked for. (The host's flags are used up.)
+            if p < 2 { return false; }
+            x_src(if p == 3 { 64 } else { 32 }, 0);
+            e((if p == 3 { 0x9E780000 } else { 0x9E380000 }) | 0 << 5 | S3);    // fcvtzs x3, d0 or s0
+            if wide {
+                a_imm(S4, 0x8000000000000000);
+                e(0xCA800000 | 63 << 10 | S3 << 16 | S3 << 5 | S2);             // eor x2, x3, x3, asr #63: the largest for either end
+                a_addi(0x11, 1, S2, S2, 1);
+                a_rrr(A_SUBS, 1, ZR, S2, S4);                                   // cmp x2, x4
+                a_csel(1, S3, S4, S3, C_EQ);
+            } else {
+                a_imm(S4, 0x80000000);
+                e(0x93407C00 | S3 << 5 | S2);                                   // sxtw x2, w3
+                a_rrr(A_SUBS, 1, ZR, S2, S3);                                   // cmp x2, x3
+                a_csel(1, S3, S3, S4, C_EQ);
+            }
+            e((if p == 3 { 0x1E602000 } else { 0x1E202000 }) | 0 << 16 | 0 << 5);       // fcmp v0, v0
+            a_csel(1, S3, S4, S3, C_VS);
+            a_mov(if wide { 1 } else { 0 }, hg(r), S3);
+            j_hf = 0;
+        },
+        0x5A => {
+            if p == 2 { x_src(32, 1); e(0x1E22C000 | 1 << 5); x_base(); x_st(64, 0, r); }       // fcvt d0, s1
+            else if p == 3 { x_src(64, 1); e(0x1E624000 | 1 << 5); x_base(); x_st(32, 0, r); }  // fcvt s0, d1
+            else { return false; }
+        },
+        0x2E, 0x2F => {
+            // The comparisons: the host's FCMP, whose flags a jump can use; and a record
+            // of the two values, if anything else can read the flags.
+            if p > 1 { return false; }
+            let n: u32 = if p == 0 { 32 } else { 64 };
+            x_src(n, 1);
+            x_base();
+            x_ld(n, 0, r);
+            if j_dead { j_stale = true; }
+            else {
+                e((if p == 0 { 0x1E260000 } else { 0x9E660000 }) | 0 << 5 | FA);        // fmov to x5
+                e((if p == 0 { 0x1E260000 } else { 0x9E660000 }) | 1 << 5 | FB);
+                a_imm(FK, if p == 0 { 0x40 } else { 0x41 });
+                j_set = true;
+                j_dyn = false;
+                j_stale = false;
+            }
+            e((if p == 0 { 0x1E202000 } else { 0x1E602000 }) | 1 << 16 | 0 << 5);       // fcmp v0, v1
+            j_hf = HF_FCMP;
+        },
+        0x54, 0x55, 0x56, 0x57, 0xDB, 0xEB, 0xEF => {
+            // The 128-bit AND, ANDN, OR and XOR, on floats' bits or integers'.
+            if (op2 < 0x58 && p > 1) || (op2 >= 0xDB && p != 1) { return false; }
+            x_src(128, 1);
+            x_base();
+            x_ld(128, 0, r);
+            if op2 == 0x54 || op2 == 0xDB { e(0x4E201C00 | 1 << 16 | 0 << 5); }         // and v0, v0, v1
+            else if op2 == 0x55 { e(0x4E601C00 | 0 << 16 | 1 << 5); }                   // bic v0, v1, v0
+            else if op2 == 0x56 || op2 == 0xEB { e(0x4EA01C00 | 1 << 16 | 0 << 5); }    // orr
+            else { e(0x6E201C00 | 1 << 16 | 0 << 5); }                                  // eor
+            x_st(128, 0, r);
+        },
+        _ => { return false; },
+    }
+    return true;
 }
 
 // A register that is a byte: false for AH, CH, DH and BH, which are not translated.
@@ -784,14 +1034,22 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     {
         let keep = je;
         let keep_k = jk;
+        let keep_at = j_at;
         j_next_jcc = q + len < q + room && j_entry(q + len) && (jk == K_JCC8 || (jk >= K_JCC32 && jk < K_CMOV));
         je = keep;
         jk = keep_k;
+        j_at = keep_at;
     }
     j_nohost = jit_no >> 60 & 1 == 0 && j_flags_dead(q + len, q + room);
     j_dead = j_nohost || (jit_no >> 60 & 1 == 0 && j_dead_past_jump(q + len, q + room, cnt));
     let op = je.op;
     let k = jk;
+    if k == 0 {
+        // An SSE instruction, in a program without a kernel (in a machine they need the
+        // operating system's leave, which the interpreter looks for).
+        if machine || je.asz32 || je.sg != 0 || jit_no >> 57 & 1 != 0 { return 0; }
+        return if j_sse(q, len) { len } else { 0 };
+    }
     // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
     if je.asz32 || (je.p66 && k != K_NOP && k != K_NOPM) || je.sg != 0 { return 0; }
     if je.rep != 0 && k != K_NOP && k != K_NOPM { return 0; }
@@ -1421,6 +1679,7 @@ fn j_settle() {
         mul_flags(over, lo, w);
     }
     else if what == 0x28 || what == 0x29 { shift(what & 7, jx[1], jx[2], w, true); }
+    else if what == 0x40 || what == 0x41 { sse64_comis(what == 0x40, jx[1], jx[2]); }
     else { shift(what & 7, jx[1], jx[2], w, false); }
 }
 
@@ -1459,13 +1718,16 @@ var jv_ip0: u64 = 0;
 var jv_ip: u64 = 0;
 var jv_flags: u64 = 0;
 var jv_reg: u64[16] = [0; 16];
+var jv_xmm: u64[32] = [0; 32];
 var jv_stale = false;         // the block left with flags it made no record of: not compared
 var jv_stores = 0;           // how many stores the block made, and what each left
 var jv_new: u64[128] = [0; 128];
 
 fn jit_both(slot: i64, n: u64) -> bool {
     var r0: u64[16] = [0; 16];
+    var x0: u64[32] = [0; 32];
     for i in 16 { r0[i] = reg[i]; }
+    for i in 32 { x0[i] = xmm[i]; }
     let f0 = rflags;
     jx[0] = rflags;
     jx[7] = 0;
@@ -1482,6 +1744,7 @@ fn jit_both(slot: i64, n: u64) -> bool {
         mem_put(jlog[i * 2] as! i64, 64, jlog[i * 2 + 1]);
     }
     for i in 16 { jv_reg[i] = reg[i]; reg[i] = r0[i]; }
+    for i in 32 { jv_xmm[i] = xmm[i]; xmm[i] = x0[i]; }
     jv_flags = rflags;
     jv_stale = jx[15] != 0;
     jv_ip = jx[4];
@@ -1503,6 +1766,8 @@ fn jit_tick() {
     jit_hold = false;
     var bad = rip != jv_ip || (!jv_stale && rflags != jv_flags);
     for i in 16 { if reg[i] != jv_reg[i] { bad = true; } }
+    var bad_xmm = -1;
+    for i in 32 { if xmm[i] != jv_xmm[i] { bad = true; bad_xmm = i; } }
     var bad_at: u64 = 0;
     for i in jv_stores {
         if mem_rd(jlog[i * 2], 64) != jv_new[i] { bad = true; bad_at = jlog[i * 2]; }
@@ -1528,6 +1793,7 @@ fn jit_tick() {
         }
     }
     if bad_at != 0 { format(msg, ", memory at "); hex64(msg, bad_at); }
+    if bad_xmm >= 0 { format(msg, ", XMM word ", bad_xmm, " "); hex64(msg, jv_xmm[bad_xmm]); format(msg, " for "); hex64(msg, xmm[bad_xmm]); }
     format(msg, "\n");
     write_stderr(msg);
     exit(3);
