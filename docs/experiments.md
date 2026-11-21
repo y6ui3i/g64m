@@ -9843,3 +9843,227 @@ the wrong builds are done.**
 so that a Linux booted gets what programs without a kernel have (its boot is 271 → 180
 host instructions for a guest instruction now, 25.3 s → 16.9 s); and the XMM registers
 in host registers.
+
+## E133: memory through the TLB, the stack and links in a machine (the JIT's fifth task; 2026-11-21)
+
+A Linux booted gets little of the JIT: only blocks of register-only instructions (E120),
+the boot 271 → 180 host instructions for a guest instruction, 25.3 s → 16.9 s, 3.9
+instructions for each entry into a block. Everything since (memory, the stack, links,
+the far way, SSE) is for a program without a kernel, where a guest address is an index
+into memory. In a machine an address goes through the page tables, and the interpreter
+keeps a TLB (E096): six tables, by the kind of access and the privilege level, where a
+hit means allowed, with nothing more to check.
+
+The owner's aim for this and what follows: the boot raced against QEMU's.
+
+- **Hypothesis**: **with a load or store in a machine translated as a look-up in that
+  TLB (a miss, an access across two pages, or a page outside memory leaves the block,
+  and the interpreter walks the tables or faults), PUSH, POP, CALL and RET the same way,
+  and links between blocks on one page, the boot runs four fifths of its instructions
+  in blocks, ten or more for each entry, and costs under 100 host instructions for a
+  guest instruction (180 now), under 10 seconds.**
+- **What changed since last time**: a block is translated for the privilege level it was
+  met at, and is not entered at another; FS and GS bases are given to a block.
+- **Next move for each result**:
+  - Under 100 → the far way in a machine (RET and jumps through an operand: the target
+    looked up through the TLB for instructions), then the race against QEMU's machine
+  - In blocks, entries still frequent → what ends the chains is counted (RET, jumps to
+    another page, the string instructions, the kernel's own instructions)
+  - `--jit-check` differs, or Linux does not boot → that, first
+- **Cut-off**: the boot's host instructions and time; the suites with `--jit-check` and
+  `--jit`; wrong builds.
+
+**Result: the hypothesis holds on three of its four counts. The boot costs 89 host
+instructions for a guest instruction (180), takes 8.3 seconds (16.9; 25.3 without the
+JIT), and runs 17.8 instructions for each entry into a block; 78% of its instructions
+are in blocks, just under the four fifths guessed.**
+
+| The boot to the prompt, 1,524 million instructions | No JIT | E120 to E132 | Now |
+|---|---:|---:|---:|
+| Seconds | 25.3 | 16.9 | 8.3 |
+| Host instructions for a guest instruction | 271 | 180 | 89 |
+| Instructions in blocks | | 55% | 78% |
+| Instructions for each entry into a block | | 3.9 | 17.8 |
+
+- **A load or store in a machine** is the TLB's look-up in generated code: the entry
+  for the address's page, in the table for this kind of access at the privilege level
+  the block is translated for; its tag compared; the physical page with the offset put
+  back. It leaves the block on a miss, on an access that may lie across two pages, and
+  on a page not in memory: the interpreter then walks the tables, faults, or answers for
+  what is not there. About eighteen host instructions for a load where a program
+  without a kernel has five.
+- **A block is for one privilege level**: it is not entered at another, and a link is
+  made only between blocks of one level. Nothing in a block changes the level.
+- **Links in a machine stay on the page**: there the target's physical address is known
+  from the block's own. A jump to another page, a RET and a jump through an operand
+  still go back to the interpreter: that is the far way, which needs the TLB for
+  instructions, and is next.
+- **FS's and GS's bases** are given to a block as it is entered; LEA takes none.
+- **Linux boots** under `--jit` and under `--jit-check`, which compares every block of
+  the boot with the same instructions interpreted, memory included; the disk, NetHack,
+  the network and the frame buffer pass both ways.
+- **Raced against QEMU's machine** (the owner's aim; `tools/boot_race.py`, QEMU 11.1.3
+  with TCG, the same kernel and initramfs to the shell's prompt, the best of three):
+  QEMU 2.65 s. g86m with the above 8.49 s, 3.2 times behind.
+- **What the blocks handed back at was counted, and three things found.** Of 67 million
+  entries in the boot, 22 million were left at a TEST of a byte with a constant and 16
+  million at a MOV of 16 bits to memory, neither translated: the kernel's unpacking
+  loop is made of them. Both are translated now (entries 67 → 27 million, the boot 89 →
+  72 host instructions for a guest instruction). And 298 million instructions were
+  still interpreted, of ordinary kinds, which no count of entries explained: **after
+  the blocks are dropped (a write to a page that holds one: 99 times in the boot) the
+  count of arrivals stood at its top, where it stays, and never came to the eighth
+  again: what had been translated before a drop was interpreted for good.** It has
+  been so since E122, where dropping came in; a program without a kernel seldom writes
+  to its code's pages, so no primitive showed it. The count starts from nothing after
+  a drop now.
+
+| The boot to the prompt | No JIT | E132 | Memory through the TLB | With the three |
+|---|---:|---:|---:|---:|
+| Seconds (QEMU: 2.65) | 24.4 | 16.9 | 8.3 | 3.9 |
+| Host instructions for a guest instruction | 271 | 180 | 89 | 40 |
+| Instructions in blocks | | 55% | 78% | 93% |
+| Instructions for each entry into a block | | 3.9 | 17.8 | 46 |
+
+  1.5 times behind QEMU. Of 31 million entries left, half are jumps to another page
+  (RET, CALL, jumps through an operand), which the far way in a machine would keep in
+  generated code.
+
+## E134: the boot raced against QEMU: what still sent it back to the interpreter (2026-11-21)
+
+E133's next move, and the owner's race: QEMU's machine boots the same kernel and
+initramfs to the prompt in 2.5 to 2.65 seconds; g86m stood at 3.9. (This card was written
+after the first of its measurements, not before: the work went on from E133's counting
+without a stop. What was guessed at each step is said with it.)
+
+- **Hypothesis**: **half of the 31 million entries into blocks that are left are jumps to
+  another page; with those looked up in generated code (the far way, through the TLB for
+  instructions) the boot comes to QEMU's time.**
+- **What changed since last time**: a jump's target on another page is found without
+  leaving generated code, in a machine too.
+- **Next move for each result**:
+  - At QEMU's time → the wrong builds for everything since E133, with tests; then
+    longer runs than a boot (NetHack's build in the guest)
+  - Not there → what is interpreted is counted by address, not by kind
+- **Cut-off**: `tools/boot_race.py`; the suites.
+
+**Result: the far way alone did not do it (3.9 s → 3.7 s); counting by address found the
+rest, and the boot now takes 2.4 seconds to QEMU's 2.5. Host instructions for a guest
+instruction: 40 → 23; 95.6% of the boot's instructions run in blocks.**
+
+| The boot to the prompt | Seconds | Host instructions for a guest instruction | In blocks | Entries into blocks |
+|---|---:|---:|---:|---:|
+| E133 | 3.9 | 40 | 93.3% | 31 million |
+| The far way in a machine | 3.7 | 35 | 93.3% | 9 million |
+| Only the written page's blocks dropped | 3.7 | 34 | 93.3% | 9 million |
+| A page given up taken back | 2.4 | 23 | 95.6% | 9 million |
+| QEMU 11.1.3, TCG | 2.5 | | | |
+
+- **The far way in a machine**: the target's page through the TLB's table for fetching
+  instructions at the block's privilege level, then the look-up of E123 by the physical
+  address, and the block must be one made at that level. A jump or CALL to a known
+  address on another page goes the same way. Entries fell from 31 to 9 million, and the
+  time hardly moved: an entry costs about 440 host instructions, and 22 million of them
+  are 10 billion of 61.
+- **What the time was in** was the 100 million instructions still interpreted, at 280
+  each. They were of ordinary kinds. Translating at the first arrival instead of the
+  eighth changed nothing, so they were not code too cold to translate.
+- **Dropping every block for a write to one page** (E122) is not needed in a machine,
+  where a link never leaves its page and the far way reads the decode cache: only that
+  page's blocks are forgotten. 166 drops of everything in the boot became none. It was
+  not where the time was either.
+- **Counted by address**, the instructions interpreted most were a RET at one address
+  1.8 million times and three loops of a dozen plain instructions half a million times
+  each: all on pages the decode cache had **given up** (E107: after 32 drops of a page
+  it is not remembered from again, so that a page written and run in turns does not
+  thrash). A kernel patches its own code as it starts, more than 32 times a page for
+  some, and then runs it unchanged; and where the decode cache remembers nothing, no
+  block can be. A page given up is now taken back when it has been run from 4,096 times
+  with no write to it in between. 3.7 s → 2.4 s; the interpreter alone also gains (24.4
+  → 23.2 s).
+- **How rough the race is**: the best of three, the host's load 2.6 to 4; QEMU's time
+  has its firmware loading the kernel in it, g86m's starts at the kernel's entry. 2.42
+  against 2.53 is "the same".
+
+- **Wrong builds of E133 and E134: 22 of 30 caught**, after `y_jit` was moved off the page
+  its fault handler writes to (a page written that often is given up by the decode
+  cache, and nothing on it was translated: the test's own loops were interpreted), and
+  given a level-0 read at every fault, a loop that faults at level 3 round and round, two
+  pages of code sharing an entry of the TLB; and `j_bytes` 16-bit MOV and byte TEST. Of
+  the eight that pass, five only make the machine slower (a wrong index into the TLB, a
+  count of arrivals not reset, a page given up not taken back, a far way that misses) and
+  three are not reached by a test: a page outside memory, and a block or a link of one
+  privilege level met at the other, which the TLB's own tables (one for each level) seem
+  to keep from going wrong.
+
+**Next.** The wrong builds for E133 and E134, with `y_jit` extended (code written while
+its blocks are hot; a page given up, taken back, and written again). Then a run longer
+than a boot.
+
+## E135: NetHack built in the guest, raced against QEMU (2026-11-21)
+
+The boot is 1.5 billion instructions and takes 2.4 seconds: no longer a measure. The
+guest's own GCC building NetHack is about 430 billion (E119), four fifths of them a
+program's and not the kernel's: the compiler, with the SSE moves it copies structures by
+and the string instructions, neither of which a machine's blocks have. E119's build
+stopped at a missing header; the disk has the kernel's headers now (`linux-headers`
+7.0.0-r1, 2 MB, from Alpine, put into `images/disk64-dev.img`).
+
+- **Hypothesis**: **with `--jit` the build that took the interpreter about two hours
+  takes under fifteen minutes and ends with a NetHack that runs; QEMU does it in under
+  five, so g86m is two to four times behind on a real program, and what the interpreter
+  still runs in it is the SSE moves and the string instructions first.**
+- **What changed since last time**: E119 was the interpreter, counting. This is the JIT
+  as it is after E134, and QEMU on the same disk, kernel and initramfs.
+- **Next move for each result**:
+  - Two to four times behind, by SSE and strings → those two in a machine's blocks, in
+    the order the count gives
+  - Level with QEMU or ahead → said so; then what the next longer thing is
+  - The build fails or its NetHack does not run under `--jit`, and does without → a
+    wrong translation that no test has: found by turning parts of the JIT off, first
+  - Something else is what the interpreter runs → that
+- **Cut-off**: one build under each; the count of what g86m interpreted.
+
+**Result: g86m took 3,561 seconds, QEMU 914: 3.9 times behind on a real program,
+where the boot is level. The card's time was wrong by four, its ratio at its edge, and its
+guess at the cause wrong.** Both builds made a NetHack that says its version, and both
+stopped at the same last step (`doc/Guidebook`, which wants a typesetter the disk does not
+have). The host was doing other work through both runs: the times are rough.
+
+| NetHack built in the guest | QEMU 11.1.3 | g86m `--jit` |
+|---|---:|---:|
+| Seconds | 914 | 3,561 |
+| Guest instructions | | 471.0 billion |
+| In blocks | | 85.5% (the boot: 95.6%) |
+| Instructions for each entry into a block | | 25 |
+| Times the room for code filled and was emptied | | 1,493 |
+
+**What the interpreter ran**, counted by a copy of g86m on three of NetHack's files
+(23.9 billion instructions, 86% in blocks, 3.0 billion interpreted):
+
+- **Not the SSE moves and the string instructions, as the card guessed**: together about a
+  tenth of what was interpreted. 65% of it was in user mode, 35% the kernel's.
+- **Not cold code.** Counted by how often each address was interpreted: 8% at addresses run
+  fewer than 8 times, 37% at addresses interpreted more than 4,096 times. Hot code, of
+  ordinary kinds (MOV, ALU, Jcc, the group 80h), outside blocks.
+- **Why, read off the hottest addresses with their code and the decode cache beside them:**
+  - **Behind an instruction that is not translated, the run is interpreted to the next
+    jump.** The translator walks on past such an instruction to make the next block only
+    if it knows the instruction's length, and for one of no kind that is not an SSE one
+    (BT here: `bt rax, r15; jae`) it does not: the walk stops, and nothing behind it is a
+    block until a jump lands there. The hottest interpreted address, a JAE behind a BT,
+    ran 1.9 million times this way.
+  - **Behind a way out the same**: a block left in its middle (a TLB miss, mostly) has the
+    rest of its run interpreted to the next jump. 20% of what was interpreted.
+  - **16-bit operations** (`shr cx, 6`) are not translated, and cut runs as BT does.
+  - **The room for code fills**: 64 MB, emptied 70 times in three files and 1,493 times in
+    the whole build. In a machine a page's blocks are forgotten when it is written, but
+    their room is not given back; every emptying starts every count of arrivals from
+    nothing.
+- **The SSE instructions in a machine** (`0F 11`, `0F 6F`, `0F 29`, `0F 6E`): about a tenth.
+
+**Next** (the owner's to choose): an instruction behind one interpreted, and behind a way
+out, made an arrival, so that it becomes a block's head; the room for code made larger, or
+given back; then BT, the 16-bit forms, and SSE in a machine. Each measured on the three
+files (`RACE_SHORT=1 tools/build_race.py`, three minutes), then on the whole build against
+QEMU.

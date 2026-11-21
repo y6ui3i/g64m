@@ -62,6 +62,34 @@ top:
     cmp eax, 9                          ; a borrow
     sbb eax, 1                          ; 5 less 1 less 1
     mov r12d, eax
+    mov rax, 0x1122334455667788
+    mov word [rbp + 16], 0xBEEF         ; sixteen bits to memory, a constant (E133)
+    mov ax, [rbp + 16]                  ; and from it: the rest of the register stays
+    mov rbx, 0x0102030405060708
+    mov bx, ax                          ; and between registers
+    mov [rbp + 20], bx
+    mov rcx, 0x1122334455667788
+    mov cx, [rbp + 20]
+    mov rdx, 0x112233445566BEEF
+    cmp rax, rdx
+    jne bad
+    cmp rcx, rdx
+    jne bad
+    mov rdx, 0x010203040506BEEF
+    cmp rbx, rdx
+    jne bad
+    mov eax, 0x4180
+    test al, 0x80                       ; a byte and a constant
+    jz bad
+    test al, 0x7F
+    jnz bad
+    test ah, 0x40                       ; the second byte
+    jz bad
+    mov byte [rbp + 24], 0x21
+    test byte [rbp + 24], 0x20          ; and a byte of memory
+    jz bad
+    test byte [rbp + 24], 0x5E
+    jnz bad
     xor eax, eax
     mov ebx, 5
     cmp ebx, 9                          ; a borrow
