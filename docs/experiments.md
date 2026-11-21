@@ -9459,3 +9459,87 @@ figure; the next comparison with QEMU uses the long programs.)
 
 **Next.** A hot block's listing read, for where the 16 to 26 host instructions go; the
 comparison with QEMU on the long programs; then the scalar SSE.
+
+## E129: a hot block's listing read, and what it wastes taken out (2026-11-21)
+
+E128 guessed where the cost was and was half wrong. This entry reads the host code first.
+Two things had to be made for it: the blocks written out as they are installed and
+disassembled, and a measure that is not swamped by the emulator's start (which is now a
+third to two thirds of a primitive's whole run): the long programs of E126, less a
+program that does nothing. By that measure, host instructions for a guest instruction:
+`p_shift` 1.7, `p_pixel` 2.6, `p_ternary` 2.7, `p_loop` 3.5, `p_muldiv` 3.7, `p_bytes`
+5.6, `p_if` 6.0, `p_pointer` 6.4, `p_bignum` 6.5, `p_switch` 6.6, `p_index` 7.0,
+`p_recursion` 7.6, `p_sha` 9.3, `p_funcptr` 12.3. (The table figures of E120 to E128,
+8 to 40, were whole runs.)
+
+`p_loop`'s inner loop is five guest instructions (MOV, XOR, ADD, SUB of 1, JNE) and
+eighteen host instructions a round:
+
+    mov x9, x14 / eor x9, x9, x8 / tst x9, x9 / adds x10, x10, x9      MOV, XOR, ADD
+    mov x1, #1 / mov x5, x8 / mov x6, x1 / mov x7, #0x4006 / subs x8, x8, x1    SUB
+    b.ne / add x1, x25, #0 / sub x0, x0, #5 / b                         JNE, taken: the link
+    cmp x0, #5 / b.lo / nop / mov x25, x1 / b                           the block's own entry
+
+- **Hypothesis**: **eight of the eighteen are the link from the block to itself, and
+  three more are plain waste: with a block's branch back to itself made a count, a
+  test and a branch (three instructions for eight), no TST behind an OR or XOR whose
+  flags are dead, constants under 4096 taken by ADD, SUB and CMP as they are, and
+  displacements under 4096 added in one instruction where a load or store or LEA built
+  them in up to five, `p_loop` goes from 3.5 host instructions for a guest instruction
+  to under 2.5, and the primitives that work on memory (`p_pointer` 6.4, `p_index` 7.0,
+  `p_bytes` 5.6) lose one or more.**
+- **What changed since last time**: the measure, and that the listing was read before
+  the guess.
+- **Next move for each result**:
+  - As guessed → the three host instructions of the record at a flag-setting
+    instruction in front of a conditional jump, where the flags are dead on both sides
+    of the jump (the SUB above); then the checks at a load and a store (four and
+    eleven host instructions)
+  - Less → the listing again, of the block that did not move
+- **Cut-off**: the measure above on the same programs; the suites; wrong builds.
+
+**Result: as guessed. `p_loop` 3.5 → 2.1 host instructions for a guest instruction;
+`p_bytes` 5.6 → 4.2, `p_index` 7.0 → 5.5, `p_pointer` 6.4 → 5.2; every primitive
+measured went down.**
+
+| | E128 | Now | Cycles for a guest instruction now |
+|---|---:|---:|---:|
+| `p_shift` | 1.73 | 1.43 | 0.16 |
+| `p_loop` | 3.49 | 2.12 | 0.28 |
+| `p_pixel` | 2.56 | 2.18 | 0.27 |
+| `p_ternary` | 2.67 | 2.34 | 0.25 |
+| `p_muldiv` | 3.74 | 3.39 | 0.45 |
+| `p_bytes` | 5.59 | 4.17 | 0.49 |
+| `p_pointer` | 6.43 | 5.15 | 0.69 |
+| `p_index` | 6.99 | 5.48 | 0.71 |
+| `p_if` | 5.99 | 5.70 | 1.17 |
+| `p_bignum` | 6.52 | 5.76 | 0.69 |
+| `p_switch` | 6.57 | 6.27 | 2.11 |
+| `p_recursion` | 7.64 | 6.80 | 0.72 |
+| `p_sha` | 9.34 | 8.99 | 1.24 |
+| `p_funcptr` | 12.25 | 12.05 | 2.81 |
+
+(The long programs of E126 less a program that does nothing: `tools/prim64_net.py`.
+`p_shift` runs a guest instruction in a sixth of a cycle; the real machine takes about a
+quarter to a third.)
+
+- **The branch back to the block itself** is a count, a test and a branch where it was
+  eight instructions; filled in when the block's length is known, and not at all if
+  the block reads RFLAGS in memory (it then goes round by its entry, which looks
+  whether a record is waiting).
+- **Constants under 4096** go into ADD, SUB and CMP as they are; **displacements**
+  under 4096 either way are one ADD or SUB at a load, a store or LEA.
+- **No TST behind an OR or XOR whose flags are dead.**
+- **What is next in the listing**: the record at a flag-setting instruction right in
+  front of a conditional jump (three host instructions, and the flags are usually dead
+  on both sides of the jump); a link to another block (seven); the checks at a load
+  (four) and at a store (eleven). And `p_funcptr` at 12 and `p_switch` at 6 with two
+  to three cycles an instruction: the look-up of a jump's target, where the host
+  cannot guess the branch.
+- **Wrong builds: 13 of 13 caught.** The one that needed a test was the branch back
+  taken straight to the body of a block that reads RFLAGS in memory: `j_bytes` has a
+  loop that begins with ADC and ends with a SUB and a jump back, and compares the sum.
+
+**Next.** The record in front of a conditional jump, where the flags are dead on both
+sides; then the link to another block and the checks at a load and a store; then the
+time against QEMU again, on a quiet host.

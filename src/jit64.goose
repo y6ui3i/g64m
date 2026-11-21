@@ -257,6 +257,10 @@ var tp_n = 0;
 var tp_pos: i64[TP_MAX] = [0; TP_MAX];
 var tp_to: u64[TP_MAX] = [0; TP_MAX];
 var jp: u8[>..];
+// The block's branches back to its own first instruction, to be filled in.
+let SS_MAX = 16;
+var ss_n = 0;
+var ss_pos: i64[SS_MAX] = [0; SS_MAX];
 // A block begins with what an entry from another block needs (BODY_AT bytes), and the
 // interpreter enters behind it.
 let BODY_AT = 24;
@@ -366,10 +370,41 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
         4 => { a_rrr(A_ANDS, sf, dst, a, b); j_hf = HF_LOGIC; },
         _ => {
             a_rrr(if k == 1 { A_ORR } else { A_EOR }, sf, dst, a, b);
-            a_rrr(A_ANDS, sf, ZR, dst, dst);
-            j_hf = HF_LOGIC;
+            // The host's flags, only if anything can read them (E129).
+            if j_dead { j_hf = 0; }
+            else { a_rrr(A_ANDS, sf, ZR, dst, dst); j_hf = HF_LOGIC; }
         },
     }
+}
+
+// The same with a constant for b. ADD, SUB and CMP take one under 4096 as it is; the rest
+// have it built in host register tmp.
+fn j_alu_i(k: u8, dst: u32, a: u32, v: u64, tmp: u32) {
+    if (k == 0 || k == 5 || k == 7) && v < 4096 {
+        let sf: u32 = if je.osz == 64 { 1 } else { 0 };
+        if j_dead { j_stale = true; }
+        else {
+            j_stale = false;
+            a_mov(1, FA, a);
+            a_imm(FB, v);
+            a_imm(FK, ((k as u32) + 1) | ((je.osz as u32) << 8));
+            j_set = true;
+            j_dyn = false;
+        }
+        a_addi(if k == 0 { 0x31 } else { 0x71 }, sf, if k == 7 { ZR } else { dst }, a, v as! u32);
+        j_hf = if k == 0 { HF_ADD } else { HF_SUB };
+        return;
+    }
+    a_imm(tmp, v);
+    j_alu(k, false, dst, a, tmp);
+}
+
+// rd = rn + v, in as few instructions as v allows (S2 is used for a large one).
+fn a_add_const(rd: u32, rn: u32, v: u64) {
+    if v == 0 { if rd != rn { a_mov(1, rd, rn); } }
+    else if v < 4096 { a_addi(0x11, 1, rd, rn, v as! u32); }
+    else if 0 - v < 4096 { a_addi(0x51, 1, rd, rn, (0 - v) as! u32); }
+    else { a_imm(S2, v); a_rrr(A_ADD, 1, rd, rn, S2); }
 }
 
 // Whether the carry that ADC and SBB take in can be had: RFLAGS in memory is right, or
@@ -389,8 +424,8 @@ fn j_alu8(k: u8, test: bool, a: u32, b: u32, v: u64) {
     else if k == 5 || k == 7 { a_rrr(A_SUBS, 0, S4, S2, S4); j_hf = HF_SUB; }
     else {
         a_rrr(if k == 1 { A_ORR } else { A_EOR }, 0, S4, S2, S4);
-        a_rrr(A_ANDS, 0, ZR, S4, S4);
-        j_hf = HF_LOGIC;
+        if j_dead { j_hf = 0; }
+        else { a_rrr(A_ANDS, 0, ZR, S4, S4); j_hf = HF_LOGIC; }
     }
     a_shifti(5, 0, S4, S4, 24);
 }
@@ -456,11 +491,21 @@ fn j_tell() {
 // With link, it goes into the block there if there is one, or will when there is: in a
 // program without a kernel, where an address is the same wherever it is jumped to from.
 fn j_exit(off: u64, cnt: u64, link: bool) {
-    j_rip(S1, off);
-    j_tell();
-    a_addi(0x51, 1, 0, 0, cnt as! u32);
     var to = j_out_at;
-    if link && !machine && !jit_check && jit_no >> 63 == 0 {
+    let linked = link && !machine && !jit_check && jit_no >> 63 == 0;
+    if linked && off == 0 && ss_n < SS_MAX {
+        // Back to this block's own first instruction (E129): what it ran taken off the
+        // time, and if there is time for another round and the block does not read
+        // RFLAGS in memory, straight to its body. The two instructions for that are
+        // filled in when the block's length is known; without them, round by its entry.
+        a_addi(0x51, 1, 0, 0, cnt as! u32);
+        ss_pos[ss_n] = jc.len;
+        ss_n += 1;
+        e(0xD503201F);
+        e(0xD503201F);
+    } else { j_tell(); a_addi(0x51, 1, 0, 0, cnt as! u32); }
+    j_rip(S1, off);
+    if linked {
         let t = j_head + off;
         let slot = dc_slot(t);
         if t == j_head { to = j_used; jit_links += 1; }
@@ -540,13 +585,9 @@ fn j_flags_dead(q: u64, page_end: u64) -> bool {
 
 // The address of je's operand in memory, into S1.
 fn j_addr() {
-    if je.base == 17 {
-        a_imm(S2, j_off + j_ilen + je.disp);
-        a_rrr(A_ADD, 1, S1, RIPB, S2);
-    } else if je.base < 16 {
-        a_mov(1, S1, hg(je.base));
-        if je.disp != 0 { a_imm(S2, je.disp); a_rrr(A_ADD, 1, S1, S1, S2); }
-    } else { a_imm(S1, je.disp); }
+    if je.base == 17 { a_add_const(S1, RIPB, j_off + j_ilen + je.disp); }
+    else if je.base < 16 { a_add_const(S1, hg(je.base), je.disp); }
+    else { a_imm(S1, je.disp); }
     if je.index < 16 { e(0x8B000000 | hg(je.index) << 16 | (je.scale as u32) << 10 | S1 << 5 | S1); }
 }
 
@@ -723,12 +764,10 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                     if ak != 7 { j_store(8, S4); }
                 }
             } else if regs {
-                a_imm(S1, v);
-                j_alu(ak, false, m, m, S1);
+                j_alu_i(ak, m, m, v, S1);
             } else {
                 j_addr(); j_chk(ak != 7); j_load(wb, S3);
-                a_imm(S2, v);
-                j_alu(ak, false, S4, S3, S2);
+                j_alu_i(ak, S4, S3, v, S2);
                 if ak != 7 { j_store(wb, S4); }
             }
         },
@@ -739,8 +778,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 j_alu8(ak, false, hg(0), ZR, mem_rd(q + len - 1, 8));
                 if ak != 7 { e(0xB3401C00 | S4 << 5 | hg(0)); }
             } else {
-                a_imm(S1, j_const(q + len - 4, 4));
-                j_alu(ak, false, hg(0), hg(0), S1);
+                j_alu_i(ak, hg(0), hg(0), j_const(q + len - 4, 4), S1);
             }
         },
         K_TEST => {
@@ -775,14 +813,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_LEA => {
             if regs { return 0; }
-            if je.base == 17 {
-                a_imm(S2, off + len + je.disp);
-                a_rrr(A_ADD, 1, S1, RIPB, S2);
-            } else if je.base < 16 {
-                a_mov(1, S1, hg(je.base));
-                if je.disp != 0 { a_imm(S2, je.disp); a_rrr(A_ADD, 1, S1, S1, S2); }
-            } else { a_imm(S1, je.disp); }
-            if je.index < 16 { e(0x8B000000 | hg(je.index) << 16 | (je.scale as u32) << 10 | S1 << 5 | S1); }
+            j_addr();
             a_mov(sf, r, S1);
         },
         K_MOVZX8 => {
@@ -1101,6 +1132,7 @@ fn jit_translate(ph: u64) {
         j_end = false;
         j_stop = false;
         so_n = 0;
+        ss_n = 0;
         j_stale = false;
         tp_n = 0;
         j_head = head;
@@ -1135,6 +1167,13 @@ fn jit_translate(ph: u64) {
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
             e_at(0, 0xF100001F | (n as! u32) << 10);         // cmp x0, #n
             if j_needs { e_at(8, 0xB5000067); }              // cbnz x7, three on
+            if !j_needs {
+                for i in ss_n {
+                    let at = ss_pos[i];
+                    e_at(at, 0xF100001F | (n as! u32) << 10);                                        // cmp x0, #n
+                    e_at(at + 4, 0x54000002 | ((((BODY_AT - (at + 4)) >> 2) as! u32) & 0x7FFFF) << 5);    // b.hs the body
+                }
+            }
             jit_write(j_mem + j_used, jc[..]);
             // The exits that wait for a block, by the address they wait for; and the ones
             // that waited for this.
