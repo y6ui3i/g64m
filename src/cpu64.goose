@@ -1,6 +1,6 @@
 // The 64-bit CPU (M10, E091): sixteen 64-bit registers, RIP and RFLAGS, in long mode's
 // 64-bit code and at privilege level 3. Nothing here is shared with the 32-bit machine of
-// exec.goose; x64.goose is the root file that uses this one.
+// exec.goose; g64m.goose is the root file that uses this one.
 //
 // What is here so far is what runs a program in user mode: the integer instructions a
 // compiler emits. A list, by first byte:
@@ -27,7 +27,7 @@
 
 import std;
 import os;
-import x64;
+import g64m;
 import sse64;
 import sys64;
 import jit64;
@@ -133,7 +133,7 @@ fn hex64(out: u8[>..]&, v: u64) {
 // nothing delivers yet. The registers are left as they are; RIP is the instruction's start.
 fn stop64(what: const u8[:], v: u64) {
     var msg: u8[>..] = [];
-    format(msg, "x64: ", what, " ");
+    format(msg, "g64m: ", what, " ");
     format_int(msg, v as! i64, 16, 2, '0');
     format(msg, " at ");
     hex64(msg, rip);
@@ -1685,7 +1685,7 @@ fn exec64_rest() -> bool {
             0xF => {
                 match op {
                     0xF4 => {
-                        // HLT: asleep until an interrupt from outside (x64.goose's between()).
+                        // HLT: asleep until an interrupt from outside (g64m.goose's between()).
                         io_level();
                         need_level0();
                         halted = true;

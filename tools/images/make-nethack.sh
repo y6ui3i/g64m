@@ -3,7 +3,7 @@
 # it, built on a real x86_64 Linux host and run in the guest as it is (E115).
 #
 #   ORACLE_HOST=name MODLOOP=images/modloop64-lts tools/images/make-nethack.sh
-#   build/x64 --disk images/disk64-nh.img --initrd images/initramfs64-disk images/vmlinuz64-lts
+#   build/g64m --disk images/disk64-nh.img --initrd images/initramfs64-disk images/vmlinuz64-lts
 #   and in the guest:  /nh/nethack
 #
 # On the host of that ssh name, in ~/g86m-oracle/nethack: the source is fetched from

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# NetHack built by the guest's own GCC (E135), under g86m and under QEMU's machine: the
+# NetHack built by the guest's own GCC (E135), under g64m and under QEMU's machine: the
 # same kernel, initramfs and disk (images/disk64-dev.img: Alpine with GCC, make and
 # NetHack's source, configured; each run gets its own copy in build/). Seconds from the
 # start of the emulator to the end of `make all` and `make install`, and whether the
 # NetHack that was built says its version.
 #
-#   python3 -I tools/build_race.py g86m [options for build/x64, default --jit]
+#   python3 -I tools/build_race.py g64m [options for build/g64m, default --jit]
 #   python3 -I tools/build_race.py qemu
 import subprocess, time, sys, os, shutil, re
 os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
@@ -15,7 +15,7 @@ CMD = ('export PATH=/usr/sbin:/usr/bin:/sbin:/bin; cd /root/NetHack-3.6.7; '
        'make install > /root/install.log 2>&1; echo install-rc=$?; '
        '/nh2/nethack --version; tail -2 /root/build.log; sync; echo fin$((6*7))\n')
 # RACE_SHORT=1: three of NetHack's files only (a minute or two), for trying a change.
-# RACE_X64 names another build of g86m than build/x64.
+# RACE_X64 names another build of g64m than build/g64m.
 if os.environ.get('RACE_SHORT'):
     CMD = ('export PATH=/usr/sbin:/usr/bin:/sbin:/bin; cd /root/NetHack-3.6.7/src; '
            'make apply.o artifact.o attrib.o > /root/build.log 2>&1; echo make-rc=$?; ls -l apply.o artifact.o attrib.o | wc -l; sync; echo fin$((6*7))\n')
@@ -23,16 +23,16 @@ who = sys.argv[1] + ('-short' if os.environ.get('RACE_SHORT') else '')
 disk = 'build/race-%s.img' % who
 shutil.copyfile(D, disk)
 t0 = time.perf_counter()
-if who.startswith('g86m'):
+if who.startswith('g64m'):
     opts = sys.argv[2:] or ['--jit']
-    r = subprocess.run([os.environ.get('RACE_X64', 'build/x64')] + opts + ['--rtc', 'host', '--disk', disk, '--keep', '--initrd', I,
+    r = subprocess.run([os.environ.get('RACE_X64', 'build/g64m')] + opts + ['--rtc', 'host', '--disk', disk, '--keep', '--initrd', I,
                         '--wait', 'root on /dev/sda', '--wait', '~ # ', '--type', CMD, '--wait', 'fin42',
                         '--type', 'off\n', '--wait', 'System halted', '--max', '40000000000000', K],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     took = time.perf_counter() - t0
     out = r.stdout
     open('build/race-%s.err' % who, 'wb').write(r.stderr)
-    m = re.search(rb'x64: (\d+) instructions', r.stderr)
+    m = re.search(rb'g64m: (\d+) instructions', r.stderr)
     print('guest instructions:', m[1].decode() if m else '?')
     for l in r.stderr.split(b'\n'):
         if b'jit:' in l: print(l.decode(errors='replace')[-200:])

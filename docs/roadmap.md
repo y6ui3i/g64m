@@ -85,9 +85,13 @@ devices on a CPU that is still moving.
 ### M10: x86_64
 
 - **The name changes when this stage is done**, and not before: once a 64-bit Linux kernel
-  boots to a shell, g86m is renamed **g64m**. The repository, the directory, the
-  executable, `src/g86m.goose` and the messages are changed together, in one step. Decided
-  2026-11-19.
+  boots to a shell, g86m is renamed **g64m**. Decided 2026-11-19; done 2026-11-22, with
+  one change the owner made that day: only the 64-bit machine takes the new name. The
+  repository (now `y6ui3i/g64m`), the directory, the 64-bit executable (`build/x64` became
+  `build/g64m`), its root file (`src/x64.goose` became `src/g64m.goose`) and its messages
+  are g64m; the 32-bit machine stays g86m (`build/g86m`, `src/g86m.goose`). Names outside
+  this repository are left as they were: `~/g86m-oracle` on the oracle host and the
+  Docker image `g86m-qemu`. The ledger keeps the names each entry was written with.
 
 - **SSE2** is required: the x86_64 ABI passes floats in XMM registers, so no 64-bit user space
   runs without it. This is likely the largest part. (Done for the i686 in E077, for M7; the
@@ -113,7 +117,7 @@ devices on a CPU that is still moving.
     instruction at a time.
 - Steps: 64-bit user-mode instructions and SSE2 first, run as a user-mode emulator of static ELF
   binaries against the ptrace oracle; then long mode and paging against QEMU; then the kernel.
-- **The 64-bit CPU is new code in files of its own** (`src/cpu64.goose`, with `src/x64.goose`
+- **The 64-bit CPU is new code in files of its own** (`src/cpu64.goose`, with `src/g64m.goose`
   as a second root file beside `src/g86m.goose`), not long mode added to the 32-bit CPU: a
   64-bit kernel can be entered at its 64-bit entry point with paging already on, as the 32-bit
   one is entered at its 32-bit entry point now, so nothing below long mode has to run in it.
@@ -139,10 +143,9 @@ devices on a CPU that is still moving.
     entry point by `src/linux64.goose`, boots to busybox's shell in 1.53 billion
     instructions. It took three things beyond E098: one MSR, VERR and VERW, and a line of
     the initramfs's `init`.
-- **M10's aim is met.** By this document's own rule the name changes now, in one step:
-  g86m becomes g64m (the repository, the directory, the executable, the root file, the
-  messages). That step is the owner's to start. Until the two programs are one, `build/x64`
-  is the 64-bit machine and `build/g86m` the 32-bit one.
+- **M10's aim is met.** By this document's own rule the name changes now. Done on
+  2026-11-22 (see the first point of M10): `build/g64m` is the 64-bit machine and
+  `build/g86m` the 32-bit one.
 - What the 64-bit machine does not have yet, each of which the 32-bit one has and which
   M11 or a desktop would want: the
   disk, the network and the frame buffer behind this CPU (the devices are there, E097;
@@ -164,9 +167,9 @@ it is worth trying.
   `binfmt_misc` hands every x86_64 ELF to a registered interpreter (QEMU's user-mode
   emulator, or Rosetta). The container, its file system and its kernel stay arm64 Linux's;
   only the program's instructions are emulated, and its system calls are passed on.
-- **So the backend is a user-mode emulator, and E091's `x64` is the beginning of one**: it
+- **So the backend is a user-mode emulator, and E091's `g64m` is the beginning of one**: it
   already loads a static ELF and answers three system calls itself. What M11 adds:
-  - `x64` built for arm64 Linux (Goose emits C and has a Linux release; to be tried first);
+  - `g64m` built for arm64 Linux (Goose emits C and has a Linux release; to be tried first);
   - system calls passed to the host kernel: the numbers differ between x86_64 and arm64, a
     few calls exist only on x86_64 (`open`, `stat`, `fork`, `pipe`: done with `openat`,
     `newfstatat`, `clone`, `pipe2`), and `struct stat` is laid out differently;

@@ -3,7 +3,7 @@
 instructions it runs, the host instructions for each, the share the short front runs, and
 the instructions that go to the rest of the CPU.
 
-The host's instructions are read from /usr/bin/time -l (macOS) on build/x64. The other
+The host's instructions are read from /usr/bin/time -l (macOS) on build/g64m. The other
 columns come from a counting copy of the sources (build/primsrc), which this script makes:
 the copy counts every instruction by where it is run and, in the rest of the CPU, by its
 opcode. Nothing in src/ is changed.
@@ -35,7 +35,7 @@ def counting_build():
               "      if ins.p66 && op == 0x0F { prim_grp[2560 + g2] += 1; } }\n"
               "    let w: u8")
     open(p, "w").write(s)
-    p = "build/primsrc/x64.goose"
+    p = "build/primsrc/g64m.goose"
     s = open(p).read()
     s = patch(s, "    exit(exit_code as! i32);",
               "    { var m: u8[>..] = [];\n"
@@ -45,7 +45,7 @@ def counting_build():
               "      write_stderr(m); }\n"
               "    exit(exit_code as! i32);")
     open(p, "w").write(s)
-    r = subprocess.run([GOOSE, "build", "-o", "build/x64-prim", "build/primsrc/x64.goose"], capture_output=True, text=True)
+    r = subprocess.run([GOOSE, "build", "-o", "build/g64m-prim", "build/primsrc/g64m.goose"], capture_output=True, text=True)
     if "built" not in r.stdout + r.stderr:
         sys.exit("the counting copy did not build:\n" + (r.stdout + r.stderr)[-2000:])
 
@@ -82,7 +82,7 @@ def name_of(i, grp):
 
 def measure(name):
     elf = "tests/prim64/%s.elf" % name
-    r = subprocess.run(["build/x64-prim", elf], capture_output=True, text=True)
+    r = subprocess.run(["build/g64m-prim", elf], capture_output=True, text=True)
     steps = front = 0
     rest = {}
     for l in r.stderr.split("\n"):
@@ -98,14 +98,14 @@ def measure(name):
             if i < 2048:
                 n = GROUP[i >> 3].split()[i & 7]
                 rest[n] = rest.get(n, 0) + c
-    t = subprocess.run(["/usr/bin/time", "-l", "build/x64", elf], capture_output=True, text=True)
+    t = subprocess.run(["/usr/bin/time", "-l", "build/g64m", elf], capture_output=True, text=True)
     host = int(re.search(r"(\d+)\s+instructions retired", t.stderr).group(1))
     cyc = int(re.search(r"(\d+)\s+cycles elapsed", t.stderr).group(1))
     return steps, front, rest, host, cyc
 
 def main():
     names = sys.argv[1:] or sorted(os.path.basename(p)[:-4] for p in glob.glob("tests/prim64/p_*.elf"))
-    r = subprocess.run([GOOSE, "build", "-o", "build/x64", "src/x64.goose"], capture_output=True, text=True)
+    r = subprocess.run([GOOSE, "build", "-o", "build/g64m", "src/g64m.goose"], capture_output=True, text=True)
     counting_build()
     rows = []
     for n in names:

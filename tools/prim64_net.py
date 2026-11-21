@@ -3,7 +3,7 @@
 # (tools/prim64_long.sh) less a program that does nothing
 import subprocess,re,sys,glob,os
 def run(f):
-    r=subprocess.run(['/usr/bin/time','-l','build/x64','--jit','--max','1000000000000','--jit-stats',f],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE).stderr
+    r=subprocess.run(['/usr/bin/time','-l','build/g64m','--jit','--max','1000000000000','--jit-stats',f],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE).stderr
     i=int(re.search(rb'(\d+)\s+instructions retired',r)[1]); c=int(re.search(rb'(\d+)\s+cycles elapsed',r)[1])
     g=int(re.search(rb' of (\d+) instructions in blocks',r)[1])
     return i,c,g

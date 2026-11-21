@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # The boot raced (E134): the same kernel and initramfs to the shell's prompt, under QEMU's
 # machine (TCG: no hardware virtualization can run an x86 guest on this host) and under
-# g86m with and without --jit. Wall-clock seconds from the start of the emulator to the
+# g64m with and without --jit. Wall-clock seconds from the start of the emulator to the
 # prompt on the serial console, the best of three. QEMU's time has its firmware in it,
-# which loads the kernel; g86m begins at the kernel's entry, and stops itself at the prompt
+# which loads the kernel; g64m begins at the kernel's entry, and stops itself at the prompt
 # (--wait), its console being written out when it ends.
 #
 #   python3 -I tools/boot_race.py
@@ -47,8 +47,8 @@ def race(cmd, want=b'~ # ', limit=180):
     return best
 rows = [
     ('QEMU (TCG)', ['qemu-system-x86_64', '-accel', 'tcg', '-m', '256', '-nographic', '-no-reboot', '-kernel', K, '-initrd', I, '-append', APPEND]),
-    ('g86m --jit', ['build/x64', '--jit', '--headless', '--initrd', I, '--wait', '~ # ', '--max', '600000000000', K]),
-    ('g86m', ['build/x64', '--headless', '--initrd', I, '--wait', '~ # ', '--max', '600000000000', K]),
+    ('g64m --jit', ['build/g64m', '--jit', '--headless', '--initrd', I, '--wait', '~ # ', '--max', '600000000000', K]),
+    ('g64m', ['build/g64m', '--headless', '--initrd', I, '--wait', '~ # ', '--max', '600000000000', K]),
 ]
 for name, cmd in rows:
     if len(sys.argv) > 1 and sys.argv[1] not in name: continue

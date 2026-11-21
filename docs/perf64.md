@@ -4,7 +4,7 @@ A survey (E104 in [experiments.md](experiments.md)), taken before any work on th
 CPU's speed, so that the work is not a guess. Nothing here is a change; the list at the end
 is what the numbers say to try, and in what order.
 
-Two stretches were measured, on the build of 2026-11-19 (`build/x64` at E103):
+Two stretches were measured, on the build of 2026-11-19 (`build/g64m` at E103):
 
 - **the boot**: Alpine's x86_64 kernel from its entry to the shell's prompt, 1,524 million
   guest instructions, 99.8% of them at privilege level 0 (the kernel unpacking itself and

@@ -4,7 +4,7 @@
 ; Two ways in:
 ; - QEMU (`-kernel`) finds the multiboot header and enters start32 in 32-bit protected
 ;   mode; start32 turns on PAE, long mode and paging and jumps to start64.
-; - g86m's 64-bit CPU has no 32-bit mode. Its loader finds the "G64T" header, puts the
+; - g64m's 64-bit CPU has no 32-bit mode. Its loader finds the "G64T" header, puts the
 ;   image at 1 MB and sets what start32 would have left: CR0 = 80000011h, CR4 = 20h,
 ;   EFER = 500h, CR3 = the table named in the header, the GDT named in the header, CS = 8
 ;   (64-bit code), the data segments 10h, and RIP = start64.

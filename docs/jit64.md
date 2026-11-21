@@ -14,7 +14,7 @@ work. It is kept up to date as the tasks at the end are done, as jit.md is.
 | The 32-bit CPU with its JIT (E073) | 341 million running X | 22 |
 
 NetHack is built by GCC in 71 seconds on the real machine (an Ivy Bridge) and in more than
-half an hour by the guest's GCC on g86m. Everything left in the interpreter's plan
+half an hour by the guest's GCC on g64m. Everything left in the interpreter's plan
 ([primitives64.md](primitives64.md)) is a factor of two at best.
 
 ## The yardstick: QEMU on the same host (E117)
@@ -23,7 +23,7 @@ The aim is to get past QEMU's user-mode emulator, which is what Docker runs an x
 program with on an arm64 host that has no Rosetta. Million guest instructions a second on
 the primitives, Apple M1 (`tools/prim64_qemu.sh`; rough, the programs are short):
 
-| Primitive | QEMU 11.0.3 | Docker's own | g86m | g86m behind QEMU |
+| Primitive | QEMU 11.0.3 | Docker's own | g64m | g64m behind QEMU |
 |---|---:|---:|---:|---:|
 | `p_shift` | 8,200 | 11,354 | 42 | 195 times |
 | `p_bitfield` | 5,878 | 7,511 | 38 | 155 times |
@@ -50,13 +50,13 @@ the primitives, Apple M1 (`tools/prim64_qemu.sh`; rough, the programs are short)
 | `p_fill` | 339 | 1,560 | 277 | 1.2 times |
 
 QEMU runs straight-line integer code at 2,000 to 8,000, jumps through a register at 300 to
-800, double and float at 200 to 600, the x87 at 74. g86m interpreted is 24 to 47 whatever
+800, double and float at 200 to 600, the x87 at 74. g64m interpreted is 24 to 47 whatever
 the instruction. Each task below is reported as this table again.
 
 **After E120 to E125 (E126)**, with each primitive's work done thirty times so that it can
 be timed (`tools/prim64_long.sh`), million guest instructions a second:
 
-| | QEMU | Rosetta | g86m `--jit` | g86m / QEMU |
+| | QEMU | Rosetta | g64m `--jit` | g64m / QEMU |
 |---|---:|---:|---:|---:|
 | `p_muldiv` | 1405 | 9515 | 5698 | 4.06 |
 | `p_recursion` | 1567 | 3319 | 2745 | 1.75 |
@@ -90,7 +90,7 @@ for rotations, not where their flags are needed).
 **After E127 to E130 (E131)**, the same measure again: at or past QEMU on thirteen of the
 fourteen integer primitives that run in blocks.
 
-| | QEMU | Rosetta | g86m `--jit` | g86m / QEMU |
+| | QEMU | Rosetta | g64m `--jit` | g64m / QEMU |
 |---|---:|---:|---:|---:|
 | `p_muldiv` | 1398 | 9515 | 6195 | 4.43 |
 | `p_recursion` | 1541 | 3319 | 3726 | 2.42 |
@@ -223,7 +223,7 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   privilege level 3 and below it), a tag that is the whole page number, so one compare
   says both that the page is there and that the address is canonical. An access that
   runs over a page's end leaves by the way out, as do FS's and GS's bases at first.
-- **Two kinds of run.** A program run without a kernel (`build/x64 program`) has no
+- **Two kinds of run.** A program run without a kernel (`build/g64m program`) has no
   paging: its memory operand is a bounds test and an index. The translator makes one or
   the other when it translates.
 - **No segments' limits**, which the 32-bit translator tests at every access and every
@@ -249,7 +249,7 @@ without `--jit`.
 | # | Task | Measured on |
 |---|---|---|
 | 1 (done, E118) | The kinds that cut the runs: shifts and rotations, `F6`/`F7`, NOP and ENDBR64, MOVSXD, MOV of a constant, the constant-and-A forms, CMOV and SETcc, the indirect CALL and JMP. In the short front first, so that each is tested as interpreted before it is translated | the count above, again |
-| 2 (done, E120: `p_shift` 309 → 27, the boot 276 → 201; an entry into a block costs 300 to 500 host instructions, which tasks 4 to 6 take away) | An emitter for arm64 with 64-bit operands (`src/jit64.goose`), the way in and out, and a block of instructions without memory operands, entered from the front; `--jit` on `build/x64` | `p_loop`, `p_if`, `p_shift` |
+| 2 (done, E120: `p_shift` 309 → 27, the boot 276 → 201; an entry into a block costs 300 to 500 host instructions, which tasks 4 to 6 take away) | An emitter for arm64 with 64-bit operands (`src/jit64.goose`), the way in and out, and a block of instructions without memory operands, entered from the front; `--jit` on `build/g64m` | `p_loop`, `p_if`, `p_shift` |
 | 3 | The flags' record for four widths, and the jump that reads it | `p_ternary`, `p_switch`, the trace tests with `--jit` |
 | 4 (done, E121, with the stack and the jumps through an operand: `p_pointer` 247 → 92, `p_index` 247 → 79; a program of branches is still at 190, an entry for every 2.3 instructions, so links come next) | Memory operands for a program without a kernel, with the way out | `p_pointer`, `p_index`, `p_bytes`, all the primitives |
 | 5 (done, E133, with links on a page: the boot 180 → 89 host instructions for a guest instruction, 16.9 s → 8.3 s; the far way in a machine, E134: the boot 2.4 s to QEMU's 2.5) | Memory operands through the TLB, and the stack (PUSH, POP, CALL, RET) | the system tests, the boot |

@@ -13,7 +13,7 @@
 # images/initramfs64-mini gives busybox, MODLOOP is the x86_64 modloop-lts, and what is made
 # is images/initramfs64-disk and images/disk64.img.
 #   ARCH=64 MODLOOP=images/modloop64-lts tools/images/make-disk.sh
-#   build/x64 --disk images/disk64.img --initrd images/initramfs64-disk images/vmlinuz64-lts
+#   build/g64m --disk images/disk64.img --initrd images/initramfs64-disk images/vmlinuz64-lts
 #
 # EXTRA names a directory whose contents go into the disk's root as well (a program to run
 # in the guest, say), SIZE the disk's size (32M), and OUT the image's name:

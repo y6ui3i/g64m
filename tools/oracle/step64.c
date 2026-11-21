@@ -6,7 +6,7 @@
 //
 // Runs a static x86_64 ELF one instruction at a time under ptrace, on the host's own CPU,
 // and prints the registers and flags after each instruction, one line each, in the format
-// of `x64 --trace`. The program gets no arguments and no environment, its standard output
+// of `g64m --trace`. The program gets no arguments and no environment, its standard output
 // goes nowhere, and address randomizing is off for it.
 //
 // Two things are different in a program that is being single-stepped, and both are put

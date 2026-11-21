@@ -1,7 +1,7 @@
 #!/bin/sh
 # Times the primitives against QEMU with enough work in each to be timed (E126): every
 # primitive is built again on the x86_64 host with its main() called ROUNDS times, and
-# run under QEMU's user mode, under Docker's own emulator, and under g86m with the JIT.
+# run under QEMU's user mode, under Docker's own emulator, and under g64m with the JIT.
 #
 #   ORACLE_HOST=name tools/prim64_long.sh [ROUNDS]     (30 if not given)
 #
@@ -30,14 +30,14 @@ for l in open('build/long/qemu.txt'):
 def t(p):
     b = []
     for i in range(3):
-        s = time.perf_counter(); subprocess.run(['build/x64', '--jit', '--max', '1000000000000', p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); b.append(time.perf_counter() - s)
+        s = time.perf_counter(); subprocess.run(['build/g64m', '--jit', '--max', '1000000000000', p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); b.append(time.perf_counter() - s)
     return min(b)
 base = t('build/long/p_none.elf')
-print('nothing: QEMU %.3f s, Docker %.3f s, g86m %.3f s' % (q['p_none'][0], q['p_none'][1], base))
+print('nothing: QEMU %.3f s, Docker %.3f s, g64m %.3f s' % (q['p_none'][0], q['p_none'][1], base))
 for f in sorted(glob.glob('build/long/p_*.elf')):
     n = os.path.basename(f)[:-4]
     if n == 'p_none': continue
-    r = subprocess.run(['build/x64', '--jit', '--max', '1000000000000', '--jit-stats', f], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    r = subprocess.run(['build/g64m', '--jit', '--max', '1000000000000', '--jit-stats', f], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     m = re.search(rb' of (\d+) instructions in blocks', r.stderr)
     g = int(m[1]) / 1e6 if m else 0
     print('%s %.1f %.3f %.3f %.3f' % (n, g, q[n][0] - q['p_none'][0], q[n][1] - q['p_none'][1], t(f) - base))
