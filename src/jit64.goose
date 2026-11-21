@@ -1100,7 +1100,8 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         return if j_sse(q, len) { len } else { 0 };
     }
     // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
-    if je.asz32 || (je.p66 && k != K_NOP && k != K_NOPM) { return 0; }
+    // (And MOV is taken with it: 16 bits moved.)
+    if je.asz32 || (je.p66 && k != K_NOP && k != K_NOPM && k != K_MOV && k != K_MOVMI) { return 0; }
     if je.rep != 0 && k != K_NOP && k != K_NOPM { return 0; }
     if k < 64 && jit_no >> k & 1 != 0 { return 0; }
     let sf: u32 = if je.osz == 64 { 1 } else { 0 };
@@ -1264,6 +1265,15 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             }
         },
         K_MOV => {
+            if je.p66 {
+                // Sixteen bits: the rest of a register stays.
+                if !wide || je.osz != 16 || !(regs || inmem) { return 0; }
+                if regs {
+                    if op & 2 == 0 { e(0xB3403C00 | r << 5 | m); } else { e(0xB3403C00 | m << 5 | r); }      // bfi #0, #16
+                } else if op & 2 == 0 { j_addr(); j_chk(true); j_store(16, r); }
+                else { j_addr(); j_chk(false); j_load(16, S3); e(0xB3403C00 | S3 << 5 | r); }
+                return len;
+            }
             if regs {
                 if !wide { return 0; }
                 if op & 2 == 0 { a_mov(sf, m, r); } else { a_mov(sf, r, m); }
@@ -1322,6 +1332,12 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_MOVMI => {
             if je.reg & 7 != 0 { return 0; }
+            if je.p66 {
+                if !wide || je.osz != 16 || !(regs || inmem) { return 0; }
+                a_imm(S4, mem_rd(q + len - 2, 16));
+                if regs { e(0xB3403C00 | S4 << 5 | m); } else { j_addr(); j_chk(true); j_store(16, S4); }
+                return len;
+            }
             if regs {
                 if !wide { return 0; }
                 let v = j_const(q + len - 4, 4);
@@ -1454,6 +1470,15 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 }
                 return len;
             }
+            if !wide {
+                // TEST of a byte with a constant.
+                if field > 1 || !(regs || inmem) { return 0; }
+                let v = mem_rd(q + len - 1, 8);
+                if !regs { j_addr(); j_chk(false); j_load(8, S3); j_alu8(4, true, S3, ZR, v); }
+                else if j_byte_ok(je.rm) { j_alu8(4, true, m, ZR, v); }
+                else { e(0x53083C00 | hg(je.rm - 4) << 5 | S3); j_alu8(4, true, S3, ZR, v); }       // AH, CH, DH, BH
+                return len;
+            }
             if !regs || !wide { return 0; }
             if field < 2 {
                 a_imm(S1, j_const(q + len - 4, 4));
@@ -1572,6 +1597,9 @@ fn jit_flush() {
     for slot in DC_SIZE {
         if dc_n[slot] != 0 { dc[slot].ins.kind = dc_k0[slot]; dc_n[slot] = 0; }
         dc_wait[slot] = 0;
+        // Arrivals are counted from nothing again: a count left at its top would never
+        // come to J_HOT, and what was translated before would be interpreted for good.
+        dc_heat[slot] = 0;
     }
     for i in MEM_SIZE >> 12 { jit_page[i] = 0; }
     lk_n = 0;

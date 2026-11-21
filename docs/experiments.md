@@ -9902,3 +9902,29 @@ are in blocks, just under the four fifths guessed.**
 - **Linux boots** under `--jit` and under `--jit-check`, which compares every block of
   the boot with the same instructions interpreted, memory included; the disk, NetHack,
   the network and the frame buffer pass both ways.
+- **Raced against QEMU's machine** (the owner's aim; `tools/boot_race.py`, QEMU 11.1.3
+  with TCG, the same kernel and initramfs to the shell's prompt, the best of three):
+  QEMU 2.65 s. g86m with the above 8.49 s, 3.2 times behind.
+- **What the blocks handed back at was counted, and three things found.** Of 67 million
+  entries in the boot, 22 million were left at a TEST of a byte with a constant and 16
+  million at a MOV of 16 bits to memory, neither translated: the kernel's unpacking
+  loop is made of them. Both are translated now (entries 67 → 27 million, the boot 89 →
+  72 host instructions for a guest instruction). And 298 million instructions were
+  still interpreted, of ordinary kinds, which no count of entries explained: **after
+  the blocks are dropped (a write to a page that holds one: 99 times in the boot) the
+  count of arrivals stood at its top, where it stays, and never came to the eighth
+  again: what had been translated before a drop was interpreted for good.** It has
+  been so since E122, where dropping came in; a program without a kernel seldom writes
+  to its code's pages, so no primitive showed it. The count starts from nothing after
+  a drop now.
+
+| The boot to the prompt | No JIT | E132 | Memory through the TLB | With the three |
+|---|---:|---:|---:|---:|
+| Seconds (QEMU: 2.65) | 24.4 | 16.9 | 8.3 | 3.9 |
+| Host instructions for a guest instruction | 271 | 180 | 89 | 40 |
+| Instructions in blocks | | 55% | 78% | 93% |
+| Instructions for each entry into a block | | 3.9 | 17.8 | 46 |
+
+  1.5 times behind QEMU. Of 31 million entries left, half are jumps to another page
+  (RET, CALL, jumps through an operand), which the far way in a machine would keep in
+  generated code.

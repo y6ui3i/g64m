@@ -1,0 +1,16 @@
+eight bytes across two pages that are not neighbours in memory
+3333333199999998
+level 3: a page it may only read, written; and level 0's page, read
+0000000000000031
+00000000000000A8
+0000000000000007
+FS and GS, where the address without them is another page
+00000000001018B0
+0000000000119988
+a jump to the next page, which is not the next in memory
+0000000000000960
+0000000000000108
+a block made at level 0, met at level 3
+0000000000000090
+0000000000000002
+0000000000000000
