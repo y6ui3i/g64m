@@ -14,6 +14,10 @@ V equ 0x40000000
 P equ 0x400000
 ROUNDS equ 24
 
+; The loops below are on pages of their own. The page before holds what the fault handlers
+; write at every fault (idt.inc), and a page of code that is written to that often is not
+; remembered by the decode cache, so that nothing on it would be translated at all.
+    align 4096
 test:
     call idt_init
     call ring3_init
@@ -45,7 +49,9 @@ test:
     mov rbx, V + 0x3000
     mov qword [rbx], 9
     mov rax, [rbx]                              ; level 0 has read and written it
-    mov qword [f_count], 0
+    lea rax, [refill]                           ; and reads it again at every fault, which
+    mov [f_hook], rax                           ; forgets the page: level 0's entry is there
+    mov qword [f_count], 0                      ; each time level 3 tries
     USER .u
     PRINT [f_count]
     PRINT r12
@@ -80,13 +86,14 @@ test:
     mov rbx, V + 0x6000
     mov qword [rbx + 0x800], 0xAAAA
     mov qword [rbx + 0x900], 0xBBBB
+    mov qword [abs 0x200800], 0xCCCC            ; what the address alone has
     mov ecx, 0xC0000101                         ; GS's base
-    mov rax, V + 0x6000
+    mov rax, V + 0x6000 - 0x200000
     mov rdx, rax
     shr rdx, 32
     wrmsr
     mov ecx, 0xC0000100                         ; FS's
-    mov rax, V + 0x6100
+    mov rax, V + 0x6100 - 0x200000
     mov rdx, rax
     shr rdx, 32
     wrmsr
@@ -94,9 +101,10 @@ test:
     xor r13, r13
     mov r14d, ROUNDS
 .seg:
-    mov rax, [gs:abs 0x800]
+    mov rdx, [abs 0x200800]                     ; (the TLB has the address alone too)
+    mov rax, [gs:abs 0x200800]
     add r12, rax
-    mov rax, [fs:abs 0x800]
+    mov rax, [fs:abs 0x200800]
     add r13, rax
     mov rsi, 0x100
     db 0x64
@@ -163,10 +171,36 @@ test:
     dec r14d
     jnz .both
     PRINT r12
+    lea rax, [refill2]
+    mov [f_hook], rax
     mov qword [f_count], 0
     USER .g
     PRINT [f_count]
     PRINT r12
+
+    PUTS "two pages of code that share an entry of the TLB"
+    MAP V + 0x20000, P + 0x20000, 3
+    MAP V + 0x1020000, P + 0x21000, 3           ; the same low twelve bits of the page's number
+    mov rax, V + 0x20000
+    mov dword [rax], 0x000001B8                 ; MOV EAX, 1
+    mov word [rax + 4], 0xC300                  ; RET
+    mov rax, V + 0x1020000
+    mov dword [rax], 0x000002B8                 ; MOV EAX, 2
+    mov word [rax + 4], 0xC300
+    xor r12, r12
+    xor r13, r13
+    mov r14d, ROUNDS
+.share:
+    mov rdx, V + 0x20000
+    call rdx
+    add r12, rax
+    mov rdx, V + 0x1020000
+    call rdx
+    add r13, rax
+    dec r14d
+    jnz .share
+    PRINT r12
+    PRINT r13
 
     PUTS "code written while it is run"
     MAP V + 0x12000, P + 0x12000, 3
@@ -220,14 +254,33 @@ test:
     PRINT r12
     EXIT
 .g:
+    xor r12, r12
+    mov r14d, ROUNDS
+.gl:
     mov rbx, V + 0xE000
     lea rax, [.g1]
     mov [f_resume], rax
-    xor r12, r12
     mov rdx, V + 0xD000
-    call rdx                                    ; the read in it faults at this level
-    mov r12, rax                                ; (not reached)
+    call rdx                                    ; the read in it faults at this level, every
+    add r12, rax                                ; time (not reached)
 .g1:
+    mov rsp, USER_STACK                         ; (the call's return address is left behind)
+    dec r14d
+    jnz .gl
     LEAVE_USER
+
+; Run by the fault handler, at level 0: the pages level 3 may not read, read.
+refill:
+    push rbx
+    mov rbx, V + 0x3000
+    mov rbx, [rbx]
+    pop rbx
+    ret
+refill2:
+    push rbx
+    mov rbx, V + 0xE000
+    mov rbx, [rbx]
+    pop rbx
+    ret
 
 file_end:

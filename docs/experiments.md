@@ -9985,6 +9985,85 @@ instruction: 40 → 23; 95.6% of the boot's instructions run in blocks.**
   has its firmware loading the kernel in it, g86m's starts at the kernel's entry. 2.42
   against 2.53 is "the same".
 
+- **Wrong builds of E133 and E134: 22 of 30 caught**, after `y_jit` was moved off the page
+  its fault handler writes to (a page written that often is given up by the decode
+  cache, and nothing on it was translated: the test's own loops were interpreted), and
+  given a level-0 read at every fault, a loop that faults at level 3 round and round, two
+  pages of code sharing an entry of the TLB; and `j_bytes` 16-bit MOV and byte TEST. Of
+  the eight that pass, five only make the machine slower (a wrong index into the TLB, a
+  count of arrivals not reset, a page given up not taken back, a far way that misses) and
+  three are not reached by a test: a page outside memory, and a block or a link of one
+  privilege level met at the other, which the TLB's own tables (one for each level) seem
+  to keep from going wrong.
+
 **Next.** The wrong builds for E133 and E134, with `y_jit` extended (code written while
 its blocks are hot; a page given up, taken back, and written again). Then a run longer
 than a boot.
+
+## E135: NetHack built in the guest, raced against QEMU (2026-11-21)
+
+The boot is 1.5 billion instructions and takes 2.4 seconds: no longer a measure. The
+guest's own GCC building NetHack is about 430 billion (E119), four fifths of them a
+program's and not the kernel's: the compiler, with the SSE moves it copies structures by
+and the string instructions, neither of which a machine's blocks have. E119's build
+stopped at a missing header; the disk has the kernel's headers now (`linux-headers`
+7.0.0-r1, 2 MB, from Alpine, put into `images/disk64-dev.img`).
+
+- **Hypothesis**: **with `--jit` the build that took the interpreter about two hours
+  takes under fifteen minutes and ends with a NetHack that runs; QEMU does it in under
+  five, so g86m is two to four times behind on a real program, and what the interpreter
+  still runs in it is the SSE moves and the string instructions first.**
+- **What changed since last time**: E119 was the interpreter, counting. This is the JIT
+  as it is after E134, and QEMU on the same disk, kernel and initramfs.
+- **Next move for each result**:
+  - Two to four times behind, by SSE and strings → those two in a machine's blocks, in
+    the order the count gives
+  - Level with QEMU or ahead → said so; then what the next longer thing is
+  - The build fails or its NetHack does not run under `--jit`, and does without → a
+    wrong translation that no test has: found by turning parts of the JIT off, first
+  - Something else is what the interpreter runs → that
+- **Cut-off**: one build under each; the count of what g86m interpreted.
+
+**Result: g86m took 3,561 seconds, QEMU 914: 3.9 times behind on a real program,
+where the boot is level. The card's time was wrong by four, its ratio at its edge, and its
+guess at the cause wrong.** Both builds made a NetHack that says its version, and both
+stopped at the same last step (`doc/Guidebook`, which wants a typesetter the disk does not
+have). The host was doing other work through both runs: the times are rough.
+
+| NetHack built in the guest | QEMU 11.1.3 | g86m `--jit` |
+|---|---:|---:|
+| Seconds | 914 | 3,561 |
+| Guest instructions | | 471.0 billion |
+| In blocks | | 85.5% (the boot: 95.6%) |
+| Instructions for each entry into a block | | 25 |
+| Times the room for code filled and was emptied | | 1,493 |
+
+**What the interpreter ran**, counted by a copy of g86m on three of NetHack's files
+(23.9 billion instructions, 86% in blocks, 3.0 billion interpreted):
+
+- **Not the SSE moves and the string instructions, as the card guessed**: together about a
+  tenth of what was interpreted. 65% of it was in user mode, 35% the kernel's.
+- **Not cold code.** Counted by how often each address was interpreted: 8% at addresses run
+  fewer than 8 times, 37% at addresses interpreted more than 4,096 times. Hot code, of
+  ordinary kinds (MOV, ALU, Jcc, the group 80h), outside blocks.
+- **Why, read off the hottest addresses with their code and the decode cache beside them:**
+  - **Behind an instruction that is not translated, the run is interpreted to the next
+    jump.** The translator walks on past such an instruction to make the next block only
+    if it knows the instruction's length, and for one of no kind that is not an SSE one
+    (BT here: `bt rax, r15; jae`) it does not: the walk stops, and nothing behind it is a
+    block until a jump lands there. The hottest interpreted address, a JAE behind a BT,
+    ran 1.9 million times this way.
+  - **Behind a way out the same**: a block left in its middle (a TLB miss, mostly) has the
+    rest of its run interpreted to the next jump. 20% of what was interpreted.
+  - **16-bit operations** (`shr cx, 6`) are not translated, and cut runs as BT does.
+  - **The room for code fills**: 64 MB, emptied 70 times in three files and 1,493 times in
+    the whole build. In a machine a page's blocks are forgotten when it is written, but
+    their room is not given back; every emptying starts every count of arrivals from
+    nothing.
+- **The SSE instructions in a machine** (`0F 11`, `0F 6F`, `0F 29`, `0F 6E`): about a tenth.
+
+**Next** (the owner's to choose): an instruction behind one interpreted, and behind a way
+out, made an arrival, so that it becomes a block's head; the room for code made larger, or
+given back; then BT, the 16-bit forms, and SSE in a machine. Each measured on the three
+files (`RACE_SHORT=1 tools/build_race.py`, three minutes), then on the whole build against
+QEMU.

@@ -12,8 +12,11 @@ a jump to the next page, which is not the next in memory
 0000000000000108
 a block made at level 0, met at level 3
 0000000000000090
-0000000000000002
+0000000000000019
 0000000000000000
+two pages of code that share an entry of the TLB
+0000000000000018
+0000000000000030
 code written while it is run
 0000000000000078
 0000000000000090
