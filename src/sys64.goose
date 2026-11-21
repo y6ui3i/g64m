@@ -20,7 +20,7 @@
 
 import std;
 import cpu64;
-import x64;
+import g64m;
 
 let SEG_ES = 0; let SEG_CS = 1; let SEG_SS = 2; let SEG_DS = 3; let SEG_FS = 4; let SEG_GS = 5;
 
@@ -72,7 +72,7 @@ fn fault(vec: u8, has_err: bool, err: u64) {
     if !machine { stop64("a fault, which nothing delivers in a user-mode program: vector", vec); }
     if show_faults && (vec != 14 || cpl == 0) {
         var msg: u8[>..] = [];
-        format(msg, "x64: fault ", vec as i64, " error ");
+        format(msg, "g64m: fault ", vec as i64, " error ");
         format_int(msg, err as! i64, 16, 1, '0');
         format(msg, " at ");
         hex64(msg, rip);

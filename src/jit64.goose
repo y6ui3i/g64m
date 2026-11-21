@@ -1845,7 +1845,7 @@ fn jit_enter() -> bool {
 }
 
 // --jit-check: the block is run, what it left is kept, and the state is put back; the same
-// instructions are then interpreted, one at a time by the run loop (x64.goose), with no
+// instructions are then interpreted, one at a time by the run loop (g64m.goose), with no
 // block entered, and jit_tick compares when the last is done. They touch no memory, so the
 // registers, RFLAGS and RIP are all there is to compare.
 var jit_left: u64 = 0;       // instructions of the block being checked still to interpret
@@ -1910,7 +1910,7 @@ fn jit_tick() {
     }
     if !bad { return; }
     var msg: u8[>..] = [];
-    format(msg, "x64: --jit-check: a block of ", jv_n as! i64, " at ");
+    format(msg, "g64m: --jit-check: a block of ", jv_n as! i64, " at ");
     hex64(msg, jv_ip0);
     format(msg, " differs: RIP ");
     hex64(msg, jv_ip);

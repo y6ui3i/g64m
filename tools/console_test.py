@@ -18,7 +18,7 @@ An image that is not there is reported as skipped. Exits 0 when nothing failed.
 The console only sends the cells that changed, so its output cannot be read as a stream of text.
 The test keeps its own 80x25 grid and applies the cursor moves and characters to it.
 
-With a third argument of 64 the program is build/x64, the 64-bit machine, and only the Linux
+With a third argument of 64 the program is build/g64m, the 64-bit machine, and only the Linux
 session is run, with images/vmlinuz64-lts and images/initramfs64-mini.
 """
 import os
@@ -354,7 +354,7 @@ def linux_session(exe, kernel, initramfs, name="linux"):
 def main():
     exe, images = sys.argv[1], sys.argv[2]
     if len(sys.argv) > 3 and sys.argv[3] == "64":
-        # The 64-bit machine (build/x64): the same session with its kernel and initramfs.
+        # The 64-bit machine (build/g64m): the same session with its kernel and initramfs.
         kernel = os.path.join(images, "vmlinuz64-lts")
         initramfs = os.path.join(images, "initramfs64-mini")
         if os.path.exists(kernel) and os.path.exists(initramfs):

@@ -15,8 +15,8 @@ cd "$(dirname "$0")/.."
 GOOSE="${GOOSE:-goose}"
 mkdir -p build/t64 tests/expected64
 
-"$GOOSE" build --debug -o build/x64-debug src/x64.goose >/dev/null || exit 2
-"$GOOSE" build -o build/x64 src/x64.goose >/dev/null || exit 2
+"$GOOSE" build --debug -o build/g64m-debug src/g64m.goose >/dev/null || exit 2
+"$GOOSE" build -o build/g64m src/g64m.goose >/dev/null || exit 2
 
 if [ $# -gt 0 ]; then
     list=""
@@ -63,20 +63,20 @@ for asm in $list; do
     if [ ! -f "$exp" ]; then fail=1; echo "FAIL  $name: no expected trace"; continue; fi
     # Tests named x_ and cx_ use SSE: their traces have the XMM registers too.
     case "$name" in x_*|cx_*) tr="--trace-xmm" ;; *) tr="--trace" ;; esac
-    build/x64-debug $tr "build/t64/$name" > "build/t64/$name.trace" 2> "build/t64/$name.err"
+    build/g64m-debug $tr "build/t64/$name" > "build/t64/$name.trace" 2> "build/t64/$name.err"
     gunzip -c "$exp" > "build/t64/$name.expected"
     # The release build must produce the same trace: optimization must not change behaviour.
-    if ! build/x64 $tr "build/t64/$name" 2>/dev/null | cmp -s - "build/t64/$name.expected"; then
+    if ! build/g64m $tr "build/t64/$name" 2>/dev/null | cmp -s - "build/t64/$name.expected"; then
         fail=1
         echo "FAIL  $name: release build differs from the expected trace"
     fi
     # And with the JIT, each block compared with the same instructions interpreted (E120).
     # A trace runs no block, so this is a run without one: what it says is its exit code.
-    if ! build/x64 --jit-check "build/t64/$name" > /dev/null 2> "build/t64/$name.jit"; then
+    if ! build/g64m --jit-check "build/t64/$name" > /dev/null 2> "build/t64/$name.jit"; then
         fail=1
         echo "FAIL  $name: with --jit-check: $(head -c 400 "build/t64/$name.jit" | tr '\n' ' ')"
     fi
-    if ! build/x64 --jit "build/t64/$name" > /dev/null 2> "build/t64/$name.jit"; then
+    if ! build/g64m --jit "build/t64/$name" > /dev/null 2> "build/t64/$name.jit"; then
         fail=1
         echo "FAIL  $name: with --jit: $(head -c 400 "build/t64/$name.jit" | tr '\n' ' ')"
     fi

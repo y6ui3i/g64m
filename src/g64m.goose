@@ -1,6 +1,6 @@
-// x64: the 64-bit CPU of M10, run as a user-mode emulator (E091).
+// g64m: the 64-bit CPU of M10, run as a user-mode emulator (E091).
 //
-//   x64 [options] program
+//   g64m [options] program
 //
 // program is a static x86_64 ELF for Linux, or a system test's image (tests/sys64), which is
 // run as a machine in long mode at privilege level 0: see sys64.goose.
@@ -460,7 +460,7 @@ fn main() {
         else if a[i] == "--max" && i + 1 < a.len {
             i++;
             let n, ok = parse_int(a[i]);
-            guard ok else { write_stderr("x64: --max needs a number\n"); exit(2); }
+            guard ok else { write_stderr("g64m: --max needs a number\n"); exit(2); }
             max = n as! u64;
             max_given = true;
         }
@@ -472,7 +472,7 @@ fn main() {
         else if a[i] == "--jit-off" && i + 1 < a.len {
             i++;
             let n, ok = parse_int(a[i]);
-            guard ok else { write_stderr("x64: --jit-off needs a number\n"); exit(2); }
+            guard ok else { write_stderr("g64m: --jit-off needs a number\n"); exit(2); }
             jit_no = n as! u64;
         }
         else if a[i] == "--headless" { headless = true; }
@@ -483,13 +483,13 @@ fn main() {
             if a[i] == "host" { rtc_base = con_time(); rtc_given = true; }
             else {
                 let n, ok = parse_int(a[i]);
-                guard ok else { write_stderr("x64: --rtc takes host or a number of seconds\n"); exit(2); }
+                guard ok else { write_stderr("g64m: --rtc takes host or a number of seconds\n"); exit(2); }
                 rtc_base = n;
                 rtc_given = true;
             }
         }
         else if a[i] == "--net" {
-            if net_open() != 0 { write_stderr("x64: --net needs libslirp, which was not found (brew install libslirp)\n"); exit(2); }
+            if net_open() != 0 { write_stderr("g64m: --net needs libslirp, which was not found (brew install libslirp)\n"); exit(2); }
             net_on = true;
             pci_setup();
             ne_setup();
@@ -511,21 +511,21 @@ fn main() {
                 let h, okh = parse_int(t[x + 1..]);
                 if okw && okh && w >= 320 && w <= 1920 && h >= 200 && h <= 1200 { fb_w = w as! u64; fb_h = h as! u64; }
             }
-            if fb_w == 0 { write_stderr("x64: --fb wants a size, as in 1024x768\n"); exit(2); }
+            if fb_w == 0 { write_stderr("g64m: --fb wants a size, as in 1024x768\n"); exit(2); }
         }
         else if a[i] == "--shot" && i + 1 < a.len { i++; shot_arg = i; }
         else { path = a[i]; }
         i++;
     }
-    guard path.len > 0 else { write_stderr("usage: x64 [--trace] [--max N] program\n"); exit(2); }
+    guard path.len > 0 else { write_stderr("usage: g64m [--trace] [--max N] program\n"); exit(2); }
     var img: u8[>..] = [];
-    guard read_file(path, img) else { write_stderr("x64: cannot read the program\n"); exit(2); }
+    guard read_file(path, img) else { write_stderr("g64m: cannot read the program\n"); exit(2); }
     var problem: const u8[:] = "";
     let kernel = is_kernel64(img);
     if kernel {
         var initrd: u8[>..] = [];
         if initrd_arg > 0 {
-            guard read_file(a[initrd_arg], initrd) else { write_stderr("x64: cannot read the initramfs\n"); exit(2); }
+            guard read_file(a[initrd_arg], initrd) else { write_stderr("g64m: cannot read the initramfs\n"); exit(2); }
         }
         // tsc=reliable: the TSC here is the instruction count, which is what the timer runs
         // on, so there is nothing to check it against (E080).
@@ -535,11 +535,11 @@ fn main() {
     }
     else if is_test_image(img) { problem = load_test_image(img); }
     else { problem = load_elf(img); }
-    guard problem.len == 0 else { write_stderr(str("x64: ", problem, "\n")); exit(2); }
+    guard problem.len == 0 else { write_stderr(str("g64m: ", problem, "\n")); exit(2); }
 
     if disk_arg > 0 {
         ide_sectors = disk_open(a[disk_arg], disk_scratch);
-        if ide_sectors < 1 { write_stderr("x64: cannot open the disk image, or it has no sector\n"); exit(2); }
+        if ide_sectors < 1 { write_stderr("g64m: cannot open the disk image, or it has no sector\n"); exit(2); }
     }
     tick_insns = 64;
     timer_on = false;
@@ -550,7 +550,7 @@ fn main() {
     // serial port, the guest's clock starts at the host's, and nothing limits the run.
     var terminal = kernel && !trace && step_kind.len == 0 && !headless && con_is_tty() != 0;
     if terminal {
-        write_stdout("x64: Ctrl-] to quit\r\n");
+        write_stdout("g64m: Ctrl-] to quit\r\n");
         terminal = con_raw() != 0;
     }
     if terminal {
@@ -634,12 +634,12 @@ fn main() {
     }
     if jit_stats {
         var msg: u8[>..] = [];
-        format(msg, "x64: jit: ", j_blocks, " blocks, ", j_used, " bytes, entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links\n");
+        format(msg, "g64m: jit: ", j_blocks, " blocks, ", j_used, " bytes, entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links\n");
         write_stderr(msg);
     }
     if screen_on { screen_close(); }
     if shot_arg > 0 && fb_w != 0 {
-        if !shot_write(a[shot_arg]) { write_stderr("x64: cannot write the image\n"); }
+        if !shot_write(a[shot_arg]) { write_stderr("g64m: cannot write the image\n"); }
     }
     if terminal {
         com_flush();
@@ -656,8 +656,8 @@ fn main() {
         write_stderr(msg);
         if scripted { exit(0); }
     }
-    if asleep { write_stderr("x64: halted, with nothing to wake it\n"); exit(3); }
-    if !stopped { write_stderr("x64: stopped at the limit of --max\n"); exit(1); }
+    if asleep { write_stderr("g64m: halted, with nothing to wake it\n"); exit(3); }
+    if !stopped { write_stderr("g64m: stopped at the limit of --max\n"); exit(1); }
     if faulted { exit(1); }
     exit(exit_code as! i32);
 }

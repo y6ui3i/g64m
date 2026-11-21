@@ -1,6 +1,11 @@
-# g86m
+# g64m
 
 An x86 emulator written in [Goose](https://github.com/aardappel/goose).
+
+The repository was called g86m until 2026-11-22. It holds two machines: **g64m**, the 64-bit
+one (`build/g64m` from `src/g64m.goose`, M10 on), and **g86m**, the 32-bit one it grew from
+(`build/g86m` from `src/g86m.goose`, M1 to M9), which keeps its name. Most of what follows,
+up to "The 64-bit machine", is about g86m.
 It is a rewrite of [rustx86](https://github.com/y6ui3i/rustx86) from scratch, not a port of its code.
 
 What carries over from rustx86 is only what does not depend on the language: test binaries such as
@@ -59,7 +64,7 @@ checked against rustx86:
 | M7 | A network | done (E076, E077): `wget https://...` in the guest fetches a page through the host. MMX and SSE2 came with it, which the guest's OpenSSL is compiled for |
 | M8 | A screen | done by script (E078): X comes up on a frame buffer, takes the keyboard and the mouse; the window on the host is to be tried by hand |
 | M9 | A browser | done (E079): Dillo, in X, shows a page fetched over HTTPS |
-| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/x64`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: speed, and X on its screen |
+| M10 | x86_64 | done (E091 to E099): a 64-bit CPU of its own, `build/g64m`, boots Alpine's x86_64 kernel to a busybox shell on the serial port. Each part of it was matched with a real CPU first: ptrace for user-mode instructions, KVM for the system side. Still to come for it: speed, and X on its screen |
 | M11 | A backend for Docker: x86_64 containers on an arm64 host | planned |
 
 Why the stages are in this order, and how each is checked, is in [docs/roadmap.md](docs/roadmap.md).
@@ -245,7 +250,7 @@ computes. It is off unless asked for.
 The 64-bit CPU is a program of its own for now, built from a second root file:
 
 ```bash
-goose build -o build/x64 src/x64.goose
+goose build -o build/g64m src/g64m.goose
 ```
 
 With Alpine's x86_64 kernel as `images/vmlinuz64-lts` (the netboot `vmlinuz-lts` of Alpine
@@ -254,13 +259,13 @@ reads the netboot `initramfs-lts` as `images/initramfs64-lts`), it boots to a sh
 billion and a half instructions later:
 
 ```bash
-./build/x64 --initrd images/initramfs64-mini --wait "~ # " --type 'uname -a\n' --wait "x86_64 Linux" images/vmlinuz64-lts
+./build/g64m --initrd images/initramfs64-mini --wait "~ # " --type 'uname -a\n' --wait "x86_64 Linux" images/vmlinuz64-lts
 ```
 
 Started from a terminal with no script, the terminal is the kernel's console, and Ctrl-] leaves:
 
 ```bash
-./build/x64 --initrd images/initramfs64-mini images/vmlinuz64-lts
+./build/g64m --initrd images/initramfs64-mini images/vmlinuz64-lts
 ```
 
 The boot takes most of a minute. At the prompt the machine sleeps with the guest and keeps
@@ -272,7 +277,7 @@ and an initramfs with the driver, from Alpine's x86_64 `modloop-lts`), the root 
 file system on `/dev/sda`; `--keep` and `off` in the guest are as on the 32-bit machine:
 
 ```bash
-./build/x64 --disk images/disk64.img --initrd images/initramfs64-disk images/vmlinuz64-lts
+./build/g64m --disk images/disk64.img --initrd images/initramfs64-disk images/vmlinuz64-lts
 ```
 
 With `--net` and an initramfs that has the card's driver (`tools/images/make-mini64.py`
@@ -281,7 +286,7 @@ through the host, as on the 32-bit machine (`--rtc host` gives it the date a cer
 checked against):
 
 ```bash
-./build/x64 --net --initrd images/initramfs64-net images/vmlinuz64-lts
+./build/g64m --net --initrd images/initramfs64-net images/vmlinuz64-lts
 ```
 
 With `--fb 1024x768` the kernel is told of a frame buffer and draws its console there; from
@@ -289,7 +294,7 @@ a terminal a window shows it and takes the keyboard (add `console=tty0` to the c
 to have the kernel's console in it):
 
 ```bash
-./build/x64 --fb 1024x768 --append "console=tty0 console=ttyS0 tsc=reliable" --initrd images/initramfs64-mini images/vmlinuz64-lts
+./build/g64m --fb 1024x768 --append "console=tty0 console=ttyS0 tsc=reliable" --initrd images/initramfs64-mini images/vmlinuz64-lts
 ```
 
 There is no JIT behind this CPU yet: it runs some 30 million instructions a second, and no
@@ -353,7 +358,7 @@ again.
 | [src/console.goose](src/console.goose), [src/console.c](src/console.c) | The terminal console: drawing the screen, translating keys; raw terminal mode in C |
 | [src/jit.goose](src/jit.goose), [src/jit.c](src/jit.c) | The JIT (`--jit`): a translator of blocks of guest instructions into arm64 code; executable memory and the call into it in C |
 | [src/g86m.goose](src/g86m.goose) | The run loop, interrupt delivery, pacing, the serial console, the session script, the command line |
-| [src/x64.goose](src/x64.goose), [src/cpu64.goose](src/cpu64.goose), [src/sse64.goose](src/sse64.goose), [src/sys64.goose](src/sys64.goose), [src/linux64.goose](src/linux64.goose) | M10's 64-bit CPU, a program of its own for now (`build/x64`): the instructions, SSE and SSE2, long mode's paging and faults, and loaders of a Linux kernel (by the 64-bit boot protocol), of static ELF programs (with three system calls) and of system test images |
+| [src/g64m.goose](src/g64m.goose), [src/cpu64.goose](src/cpu64.goose), [src/sse64.goose](src/sse64.goose), [src/sys64.goose](src/sys64.goose), [src/linux64.goose](src/linux64.goose) | M10's 64-bit CPU, a program of its own for now (`build/g64m`): the instructions, SSE and SSE2, long mode's paging and faults, and loaders of a Linux kernel (by the 64-bit boot protocol), of static ELF programs (with three system calls) and of system test images |
 | [src/big.goose](src/big.goose) | The large arrays (RAM and three others), in a file of their own so they come last in memory |
 
 The boot sectors in `testdata/` are copied from rustx86's `asm/` as they are, including the Japanese

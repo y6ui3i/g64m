@@ -23,7 +23,7 @@ cd "$(dirname "$0")/.."
 GOOSE="${GOOSE:-goose}"
 BASE="-static -nostdlib -ffreestanding -fno-pic -no-pie -fno-stack-protector -fcf-protection=none -Wl,--build-id=none"
 
-"$GOOSE" build -o build/x64 src/x64.goose >/dev/null || exit 2
+"$GOOSE" build -o build/g64m src/g64m.goose >/dev/null || exit 2
 
 if [ $# -gt 0 ]; then
     list=""
@@ -55,7 +55,7 @@ for src in $list; do
     name=$(basename "$src" .c)
     if [ ! -f "tests/prim64/$name.elf" ] || [ ! -f "tests/prim64/$name.out" ]; then fail=1; echo "FAIL  $name: not built"; continue; fi
     # With options (X64, the JIT's), the count of instructions must be the plain run's too.
-    count() { build/x64 $1 --jit-stats "tests/prim64/$name.elf" 2>&1 >/dev/null | sed -n 's/.* of \([0-9]*\) instructions in blocks.*/\1/p'; }
+    count() { build/g64m $1 --jit-stats "tests/prim64/$name.elf" 2>&1 >/dev/null | sed -n 's/.* of \([0-9]*\) instructions in blocks.*/\1/p'; }
     if [ -n "${X64:-}" ] && [ "$(count "$X64")" != "$(count "")" ]; then
         fail=1
         echo "FAIL  $name: $(count "$X64") instructions with $X64, $(count "") without"
@@ -64,7 +64,7 @@ for src in $list; do
         # only as far as the time left (E122).
         fail=1
         echo "FAIL  $name: stopped by --max after $(count "$X64 --max 1000003") instructions with $X64, $(count "--max 1000003") without"
-    elif build/x64 ${X64:-} "tests/prim64/$name.elf" 2> "build/$name.err" | cmp -s - "tests/prim64/$name.out"; then
+    elif build/g64m ${X64:-} "tests/prim64/$name.elf" 2> "build/$name.err" | cmp -s - "tests/prim64/$name.out"; then
         echo "ok    $name"
     else
         fail=1
