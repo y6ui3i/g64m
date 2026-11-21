@@ -87,6 +87,35 @@ on the rest of the integer code that runs in blocks; ten times and more behind o
 floating point, on rotations and on 16-bit operations, none of which is translated (or,
 for rotations, not where their flags are needed).
 
+**After E127 to E130 (E131)**, the same measure again: at or past QEMU on thirteen of the
+fourteen integer primitives that run in blocks.
+
+| | QEMU | Rosetta | g86m `--jit` | g86m / QEMU |
+|---|---:|---:|---:|---:|
+| `p_muldiv` | 1398 | 9515 | 6195 | 4.43 |
+| `p_recursion` | 1541 | 3319 | 3726 | 2.42 |
+| `p_funcptr` | 461 | 1486 | 1056 | 2.29 |
+| `p_loop` | 3756 | 16693 | 7907 | 2.11 |
+| `p_switch` | 834 | 1853 | 1426 | 1.71 |
+| `p_bignum` | 3378 | 10315 | 4515 | 1.34 |
+| `p_pointer` | 3411 | 9245 | 4192 | 1.23 |
+| `p_index` | 3454 | 14967 | 3991 | 1.16 |
+| `p_shift` | 16154 | 22131 | 18290 | 1.13 |
+| `p_bytes` | 5014 | 12504 | 5520 | 1.10 |
+| `p_fill` | 541 | 3211 | 587 | 1.09 |
+| `p_if` | 2439 | 4827 | 2547 | 1.04 |
+| `p_ternary` | 10458 | 16881 | 10743 | 1.03 |
+| `p_pixel` | 9929 | 13935 | 9236 | 0.93 |
+| `p_ldbl` | 114 | 48 | 36 | 0.31 |
+| `p_sha` | 7534 | 13643 | 2305 | 0.31 |
+| `p_dbl_conv` | 301 | 9855 | 53 | 0.18 |
+| `p_dbl_arith` | 554 | 2155 | 53 | 0.10 |
+| `p_float` | 569 | 2566 | 52 | 0.09 |
+| `p_rotate` | 4068 | 5979 | 281 | 0.07 |
+| `p_dbl_cmp` | 894 | 9605 | 60 | 0.07 |
+| `p_bitfield` | 12448 | 15256 | 612 | 0.05 |
+| `p_simd` | 1495 | 9958 | 37 | 0.02 |
+
 **Host instructions for a guest instruction (E129, E130)**, net of the emulator's start
 (`tools/prim64_net.py`): 1.3 (`p_shift`) to 11.7 (`p_funcptr`), `p_loop` 1.5, `p_if`
 4.6, `p_pointer` 4.6. The interpreter is about 280.

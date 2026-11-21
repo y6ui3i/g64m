@@ -9617,3 +9617,69 @@ way. `p_loop` 2.1 → 1.5 host instructions for a guest instruction, `p_if` 5.7 
 
 **Next.** The link to another block (seven host instructions), the checks at a load and
 a store (four and eleven); the time against QEMU on a quiet host.
+
+## E131: against QEMU again, after E127 to E130 (a measurement; 2026-11-21)
+
+`tools/prim64_long.sh` as in E126: each primitive's work done thirty times, under QEMU's
+user mode (11.0.3), Docker's own emulator (Rosetta) and g86m with `--jit`, less a
+program that does nothing. Same host; its load was about 3.
+
+- **Hypothesis**: **the integer primitives that were at 0.4 to 0.95 of QEMU in E126 are
+  at QEMU's speed or past it now (the block through a jump not taken, the record put
+  off or left out, the branch back to a block's own start); the floating point, the
+  rotations whose flags are needed and the 16-bit operations are where they were.**
+- **What changed since last time**: E127 to E130.
+- **Next move for each result**:
+  - At or past QEMU on the integer primitives → the scalar SSE instructions, where the
+    distance now is; the kernel's memory (task 5) behind that
+  - An integer primitive still under 0.8 → its hot block's listing
+- **Cut-off**: one run of the script.
+
+**Result: g86m is at or past QEMU on thirteen of the fourteen integer primitives that
+run in blocks, and the rest are where they were.** Million guest instructions a second:
+
+| | QEMU | Docker's own (Rosetta) | g86m `--jit` | g86m / QEMU | In E126 |
+|---|---:|---:|---:|---:|---:|
+| `p_muldiv` | 1398 | 9515 | 6195 | 4.43 | 4.06 |
+| `p_recursion` | 1541 | 3319 | 3726 | 2.42 | 1.75 |
+| `p_funcptr` | 461 | 1486 | 1056 | 2.29 | 1.54 |
+| `p_loop` | 3756 | 16693 | 7907 | 2.11 | 1.45 |
+| `p_switch` | 834 | 1853 | 1426 | 1.71 | 0.70 |
+| `p_bignum` | 3378 | 10315 | 4515 | 1.34 | 0.91 |
+| `p_pointer` | 3411 | 9245 | 4192 | 1.23 | 0.95 |
+| `p_index` | 3454 | 14967 | 3991 | 1.16 | 0.81 |
+| `p_shift` | 16154 | 22131 | 18290 | 1.13 | 0.42 |
+| `p_bytes` | 5014 | 12504 | 5520 | 1.10 | 0.75 |
+| `p_fill` | 541 | 3211 | 587 | 1.09 | 1.11 |
+| `p_if` | 2439 | 4827 | 2547 | 1.04 | 0.82 |
+| `p_ternary` | 10458 | 16881 | 10743 | 1.03 | 0.76 |
+| `p_pixel` | 9929 | 13935 | 9236 | 0.93 | 0.60 |
+| `p_ldbl` | 114 | 48 | 36 | 0.31 | 0.31 |
+| `p_sha` | 7534 | 13643 | 2305 | 0.31 | 0.11 |
+| `p_dbl_conv` | 301 | 9855 | 53 | 0.18 | 0.18 |
+| `p_dbl_arith` | 554 | 2155 | 53 | 0.10 | 0.10 |
+| `p_float` | 569 | 2566 | 52 | 0.09 | 0.09 |
+| `p_rotate` | 4068 | 5979 | 281 | 0.07 | 0.07 |
+| `p_dbl_cmp` | 894 | 9605 | 60 | 0.07 | 0.07 |
+| `p_bitfield` | 12448 | 15256 | 612 | 0.05 | 0.04 |
+| `p_simd` | 1495 | 9958 | 37 | 0.02 | 0.02 |
+
+- **Past QEMU by more than half**: `p_muldiv` (4.4 times), `p_recursion` (2.4),
+  `p_funcptr` (2.3), `p_loop` (2.1), `p_switch` (1.7). `p_switch` was at 0.70: the
+  second jump on one comparison.
+- **At QEMU's speed to a third past it**: `p_bignum`, `p_pointer`, `p_index`,
+  `p_shift`, `p_bytes`, `p_fill`, `p_if`, `p_ternary`. `p_shift` was at 0.42 and is
+  at 18 billion guest instructions a second, which is Rosetta's neighbourhood.
+- **Just under**: `p_pixel` 0.93.
+- **Where it was**: the floating point (0.02 to 0.31: nothing of SSE or the x87 is
+  translated), `p_rotate` 0.07, `p_bitfield` 0.05. `p_sha` went from 0.11 to 0.31 by
+  the look ahead through rotations.
+- **How rough**: as E126 (three runs, a clock of hundredths of a second in the
+  container); the load was not low. A ratio of 1.03 or 0.93 is "the same".
+- **What this is not**: these are programs without a kernel, small, with their loops
+  hot. A kernel booted is still run with register-only blocks (the boot 276 → about
+  200 host instructions for a guest instruction, E120), and QEMU's user mode is not
+  QEMU's machine either.
+
+**Next.** The scalar SSE instructions (task 8). Behind them the kernel's memory through
+the TLB (task 5), rotations with a second record, 16 bits.
