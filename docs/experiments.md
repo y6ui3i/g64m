@@ -9388,3 +9388,74 @@ a row (`p_sha`), an operation on AH (`p_funcptr`). E126 put those three primitiv
 - **The real CPU was out of reach for part of this entry** (the VPN to its host was
   down): the test was first run here only, three ways, and its trace taken when the
   host was back.
+
+## E128: the flags' record made only where something can read it (2026-11-21)
+
+Every flag-setting instruction in a block leaves a record: its two operands and what it
+was, three host instructions (more with a constant). E126 named it first among what g86m
+pays and QEMU does not on the integer primitives that are within a factor of three.
+E125's look ahead already says, for a rotation, INC or DEC, whether the flags are
+overwritten before anything reads them.
+
+- **Hypothesis**: **with the same look ahead asked for every instruction that sets all
+  six flags, and no record made where it says they are dead, the integer primitives
+  lose two to four host instructions for each guest instruction (`p_loop` 28, `p_if`
+  22, `p_pointer` 18, `p_index` 21, `p_bytes` 17), and nothing changes in what a
+  program computes.**
+- **What changed since last time**: nothing in what is translated; less is generated.
+- **Next move for each result**:
+  - Two or more off → against QEMU again (`tools/prim64_long.sh`), then the scalar SSE
+  - Under one off → the records were not where the cost is: a hot block's listing is
+    read, host instruction by host instruction
+  - `--jit-check` finds a difference → a case where dead flags are read after all: that
+    case, with a test
+- **Cut-off**: the primitives' table; the suites; wrong builds.
+
+**Result: one to two host instructions off each guest instruction, under the card's two
+to four. `p_index` 21 → 18.6, `p_shift` 8 → 6.5, `p_pixel` 17 → 15.7, `p_loop` 28 →
+26.4, `p_if` 22 → 21.2, `p_pointer` 18 → 16.9.**
+
+| | E127 | Now |
+|---|---:|---:|
+| `p_shift` | 8 | 6.5 |
+| `p_ternary` | 12 | 11.5 |
+| `p_bignum` | 16 | 14.4 |
+| `p_muldiv` | 16 | 15.1 |
+| `p_pixel` | 17 | 15.7 |
+| `p_bytes` | 17 | 15.8 |
+| `p_pointer` | 18 | 16.9 |
+| `p_index` | 21 | 18.6 |
+| `p_switch` | 21 | 20.2 |
+| `p_if` | 22 | 21.2 |
+| `p_loop` | 28 | 26.4 |
+| `p_funcptr` | 29 | 28.9 |
+| `p_sha` | 31 | 30.0 |
+| `p_recursion` | 37 | 36.1 |
+
+(Whole runs, the program's start included, which is now a third of the fastest ones'
+figure; the next comparison with QEMU uses the long programs.)
+
+- **`--jit-check` found a difference at once, and it was the check that had to
+  change.** A block whose last flag-setting instruction made no record leaves with the
+  flags of an earlier one; the same instructions interpreted leave with the right
+  ones; RFLAGS differ, and nothing can read them. The check compared them all the
+  same. (The rotations of E125 and the INC and DEC of E127 could have tripped it in the
+  same way, and did not only because the instruction that overwrites their flags was in
+  the same block in every test.) A block now says at each way out whether its flags are
+  stale, and the check leaves RFLAGS uncompared there; the registers, RIP and memory
+  are compared as before, and the run goes on with the interpreter's state.
+- **Where the rest of the cost is** is the card's second branch, by half: the record
+  was one to two of the 16 to 26, not the first thing. A hot block's listing is to be
+  read before more is guessed.
+- **Wrong builds: 7 of 8 caught, with `j_arith` extended twice more.** Two passed at
+  first. ADC taken for an instruction that sets all flags and reads none: the test's
+  ADC behind a rotation took its carry from RFLAGS as the loop's last round left it,
+  which happened to be the carry the rotation makes; the round now ends with no carry.
+  NOT taken for an instruction that sets all flags: a comparison in front of it made no
+  record, and the jump behind it used the host's flags and was right; the jump is in
+  the next block now, where it reads the record. The one not caught makes the check
+  compare RFLAGS nowhere: a check that looks at less cannot be caught by programs that
+  are right.
+
+**Next.** A hot block's listing read, for where the 16 to 26 host instructions go; the
+comparison with QEMU on the long programs; then the scalar SSE.

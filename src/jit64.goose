@@ -243,6 +243,11 @@ var j_off: u64 = 0;          // the instruction being translated: how far from t
 var j_cnt: u64 = 0;          // how many are before it,
 var j_ilen: u64 = 0;         // and how long it is
 var j_head: u64 = 0;         // the block's first instruction's physical address
+var j_dead = false;           // the instruction being translated sets flags that nothing can read
+// The flags as the record has them are not the last flag-setting instruction's: it made no
+// record, its flags being dead. --jit-check is told at each way out (jx[15]), and does not
+// compare RFLAGS there.
+var j_stale = false;
 var j_needs = false;         // the block reads RFLAGS in memory, or builds on it (INC, DEC)
 var jit_links: u64 = 0;      // exits made into branches to a block
 var lk_n = 0;
@@ -276,6 +281,7 @@ var so_off: u64[SO_MAX] = [0; SO_MAX];
 var so_cnt: u64[SO_MAX] = [0; SO_MAX];
 var so_op: u32[SO_MAX] = [0; SO_MAX];        // the branch itself: cbnz or cbz and its register, or b.cond
 var so_link: bool[SO_MAX] = [false; SO_MAX]; // it is a jump taken, to be linked, and not an instruction to interpret
+var so_stale: bool[SO_MAX] = [false; SO_MAX];
 
 // The entry of the instruction at physical address q, into je and jk. False if there is none.
 fn j_entry(q: u64) -> bool {
@@ -318,6 +324,10 @@ fn j_const(at: u64, n: u64) -> u64 { return sx(mem_rd(at, (n * 8) as! u8), (n * 
 fn j_rec(what: u32, a: u32, b: u32) { j_rec_w(what, je.osz, a, b); }
 
 fn j_rec_w(what: u32, w: u32, a: u32, b: u32) {
+    // Nothing can read these flags (E128): no record, and whatever record there was
+    // stays, as stale as the flags are dead.
+    if j_dead { j_stale = true; return; }
+    j_stale = false;
     a_mov(1, FA, a);
     a_mov(1, FB, b);
     a_imm(FK, what | w << 8);
@@ -340,7 +350,7 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
         } else if j_hf == HF_LOGIC { a_mov(0, 29, ZR); }
         else { e(0x1A9F07E0 | ((if j_hf == HF_ADD { C_HS } else { C_LO }) ^ 1) << 12 | 29); }    // cset w29
         j_rec(if k == 2 { 3 } else { 4 }, a, b);
-        e(0xAA1D40E7);                                       // orr x7, x7, x29, lsl #16
+        if !j_dead { e(0xAA1D40E7); }                        // orr x7, x7, x29, lsl #16
         if k == 3 { e(0x52000000 | 29 << 5 | 29); }          // eor w29, w29, #1: SBCS takes the borrow upside down
         a_addi(0x71, 0, ZR, 29, 1);                          // cmp w29, #1: the host's carry
         a_rrr(if k == 2 { 0x3A000000 } else { 0x7A000000 }, sf, dst, a, b);      // adcs, sbcs
@@ -435,11 +445,19 @@ fn j_rip(rd: u32, off: u64) {
     else { a_imm(S2, off); a_rrr(A_ADD, 1, rd, RIPB, S2); }
 }
 
+// For --jit-check: whether the flags are stale at this way out.
+fn j_tell() {
+    if !jit_check { return; }
+    a_imm(S2, if j_stale { 1 } else { 0 });
+    a_str(S2, CTX, 120);
+}
+
 // The way out to the instruction off bytes from the block's first, cnt instructions run.
 // With link, it goes into the block there if there is one, or will when there is: in a
 // program without a kernel, where an address is the same wherever it is jumped to from.
 fn j_exit(off: u64, cnt: u64, link: bool) {
     j_rip(S1, off);
+    j_tell();
     a_addi(0x51, 1, 0, 0, cnt as! u32);
     var to = j_out_at;
     if link && !machine && !jit_check && jit_no >> 63 == 0 {
@@ -456,6 +474,7 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
 // The way out to the address in host register r.
 fn j_exit_to(r: u32, cnt: u64) {
     a_mov(1, S1, r);
+    j_tell();
     a_addi(0x51, 1, 0, 0, cnt as! u32);
     let far = j_far_at != 0 && !machine && !jit_check && jit_no >> 62 & 1 == 0;
     let d: u32 = (((if far { j_far_at } else { j_out_at }) - (j_used + jc.len)) >> 2) as! u32;
@@ -474,6 +493,7 @@ fn j_leave(r: u32, zero: bool) {
     so_cnt[so_n] = j_cnt;
     so_op[so_n] = (if zero { 0xB4000000 } else { 0xB5000000 }) | r;
     so_link[so_n] = false;
+    so_stale[so_n] = j_stale;
     so_n += 1;
     e(0);
 }
@@ -590,6 +610,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     j_off = off;
     j_cnt = cnt;
     j_ilen = len;
+    j_dead = jit_no >> 60 & 1 == 0 && j_flags_dead(q + len, q + room);
     let op = je.op;
     let k = jk;
     // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
@@ -634,6 +655,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             so_cnt[so_n] = cnt + 1;
             so_op[so_n] = 0x54000000 | c;
             so_link[so_n] = true;
+            so_stale[so_n] = j_stale;
             so_n += 1;
             e(0);
             return len;
@@ -822,6 +844,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 // by a constant as the first to set flags in the block.
                 let bits: u32 = je.osz;
                 let dead = j_flags_dead(q + len, q + room);
+                if dead { j_stale = true; }
                 if op == 0xD3 {
                     if !dead { return 0; }
                     var by = hg(1);
@@ -860,15 +883,18 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             if op == 0xD3 {
                 // By CL: by zero it changes no flag, so the record is set only if not, and
                 // what was there (this block's, or none: RFLAGS in memory) stays.
-                e((if sf == 1 { 0x92401400 } else { 0x12001000 }) | hg(1) << 5 | S1);    // and x1, xCL, #63 or #31
-                a_addi(0x71, 1, ZR, S1, 0);                  // cmp x1, #0
-                a_csel(1, FA, m, FA, C_NE);
-                a_csel(1, FB, S1, FB, C_NE);
-                a_imm(S2, 0x20 | (which as u32) | (je.osz as u32) << 8);
-                a_csel(1, FK, S2, FK, C_NE);
+                if !j_dead {
+                    e((if sf == 1 { 0x92401400 } else { 0x12001000 }) | hg(1) << 5 | S1);    // and x1, xCL, #63 or #31
+                    a_addi(0x71, 1, ZR, S1, 0);                  // cmp x1, #0
+                    a_csel(1, FA, m, FA, C_NE);
+                    a_csel(1, FB, S1, FB, C_NE);
+                    a_imm(S2, 0x20 | (which as u32) | (je.osz as u32) << 8);
+                    a_csel(1, FK, S2, FK, C_NE);
+                    j_set = true;
+                    j_dyn = true;
+                }
+                if j_dead { j_stale = true; }
                 a_shiftv(which, sf, m, m, hg(1));
-                j_set = true;
-                j_dyn = true;
             } else {
                 let n = if op == 0xD1 { 1 } else { mem_rd(q + len - 1, 8) & top };
                 if n == 0 { return 0; }
@@ -967,6 +993,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             // block's first to set flags.
             if j_flags_dead(q + len, q + room) {
                 a_addi(if field == 0 { 0x11 } else { 0x51 }, sf, m, m, 1);
+                j_stale = true;
                 return len;
             }
             if j_set { return 0; }
@@ -1074,6 +1101,7 @@ fn jit_translate(ph: u64) {
         j_end = false;
         j_stop = false;
         so_n = 0;
+        j_stale = false;
         tp_n = 0;
         j_head = head;
         j_needs = false;
@@ -1101,6 +1129,7 @@ fn jit_translate(ph: u64) {
             for i in so_n {
                 let at = so_pos[i];
                 e_at(at, so_op[i] | (((jc.len - at) >> 2) as! u32) << 5);
+                j_stale = so_stale[i];
                 j_exit(so_off[i], so_cnt[i], so_link[i]);
             }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
@@ -1230,6 +1259,7 @@ var jv_ip0: u64 = 0;
 var jv_ip: u64 = 0;
 var jv_flags: u64 = 0;
 var jv_reg: u64[16] = [0; 16];
+var jv_stale = false;         // the block left with flags it made no record of: not compared
 var jv_stores = 0;           // how many stores the block made, and what each left
 var jv_new: u64[128] = [0; 128];
 
@@ -1253,6 +1283,7 @@ fn jit_both(slot: i64, n: u64) -> bool {
     }
     for i in 16 { jv_reg[i] = reg[i]; reg[i] = r0[i]; }
     jv_flags = rflags;
+    jv_stale = jx[15] != 0;
     jv_ip = jx[4];
     jv_ip0 = rip;
     jv_n = ran;
@@ -1270,7 +1301,7 @@ fn jit_tick() {
     jit_left -= 1;
     if jit_left != 0 { return; }
     jit_hold = false;
-    var bad = rip != jv_ip || rflags != jv_flags;
+    var bad = rip != jv_ip || (!jv_stale && rflags != jv_flags);
     for i in 16 { if reg[i] != jv_reg[i] { bad = true; } }
     var bad_at: u64 = 0;
     for i in jv_stores {

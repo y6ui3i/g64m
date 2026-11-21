@@ -118,9 +118,16 @@ top:
     cmp eax, 9
     je bad                              ; two jumps on one comparison: the second in the
     jae bad                             ; same block, on the host's flags
-    jmp .i3
+    mov eax, 5
+    mov ebx, 1
+    cmp eax, 5
+    not ebx                             ; NOT sets no flag: the comparison's are not dead (E128),
+    jmp .i3                             ; and the next block reads them from the record
 .i3:
-    dec r15d
+    mov ebp, 6
+    jne bad
+    cmp r15d, 0                         ; no carry into the next round, so that the ADC at
+    dec r15d                            ; the top takes its carry from the rotation
     jnz top
     EXIT
 bad:
