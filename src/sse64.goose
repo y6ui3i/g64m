@@ -42,6 +42,18 @@ fn xs() -> u64 {
     return rd(m_ea, 32);
 }
 
+// The flags of a comparison of two singles (in the low halves) or two doubles: ZF, PF and
+// CF, the rest of the six clear. (The JIT settles its record of one with this too.)
+fn sse64_comis(single: bool, a: u64, b: u64) {
+    var x = 0.0;
+    var y = 0.0;
+    if single { x = fs(a, 0); y = fs(b, 0); } else { x = fd(a); y = fd(b); }
+    rflags &= ~ARITH;
+    if is_nan(x) || is_nan(y) { rflags |= ZF | PF | CF; }
+    else if x < y { rflags |= CF; }
+    else if x == y { rflags |= ZF; }
+}
+
 // ---- Floats to integers and back ----
 
 // A float as a whole number: cut off, or rounded as MXCSR says (to nearest, down, up, or
@@ -277,14 +289,8 @@ fn sse64_op(op: u8) {
         0x2E, 0x2F => {
             // UCOMISS, UCOMISD and COMISS, COMISD: ZF, PF and CF; the rest of the six clear.
             if p > 1 { sse64_unknown(op); }
-            var x = 0.0;
-            var y = 0.0;
-            if p == 0 { x = fs(xmm[r], 0); y = fs(xs(), 0); }
-            else { x = fd(xmm[r]); y = fd(xq(0)); }
-            rflags &= ~ARITH;
-            if is_nan(x) || is_nan(y) { rflags |= ZF | PF | CF; }
-            else if x < y { rflags |= CF; }
-            else if x == y { rflags |= ZF; }
+            if p == 0 { sse64_comis(true, xmm[r], xs()); }
+            else { sse64_comis(false, xmm[r], xq(0)); }
         },
         0x50 => {
             // MOVMSKPS, MOVMSKPD: the signs.

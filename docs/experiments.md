@@ -9715,3 +9715,76 @@ This is not QEMU done badly. Its translator is one for every guest and host it h
 goes through an intermediate code, serves a whole machine as well as a program, and
 keeps the guest's state where any helper can find it. g86m's does one guest on one
 host, and for now only a program without a kernel.
+
+## E132: the scalar SSE instructions in blocks (the JIT's eighth task; 2026-11-21)
+
+E131: the floating point is where the distance to QEMU is, 0.02 to 0.31 of its speed,
+because nothing of SSE is translated: an SSE instruction ends its block and is
+interpreted at 280 host instructions. QEMU does its floating point in software, a call
+for each operation, and is itself slow there (300 to 900 million guest instructions a
+second, where it does 3,000 to 16,000 on integers).
+
+The interpreter does scalar arithmetic with the host's own (Goose's f64), and puts right
+by hand only what the host does otherwise: which operand that is not a number comes out,
+and the sign of the one made from nothing. So generated code can use the host's
+instructions for everything else, and leave the block, before it changes anything, where
+a result is not a finite number.
+
+- **Hypothesis**: **with the XMM registers left in memory and each instruction a load,
+  the host's operation and a store (MOVSS and MOVSD, MOVAPS, MOVUPS, MOVDQA, MOVDQU, MOVD
+  and MOVQ; ADD, SUB, MUL, DIV and SQRT on scalars; the conversions between integers,
+  singles and doubles; UCOMIS and COMIS with the jump behind them on the host's flags;
+  the 128-bit AND, OR, XOR and ANDN), `p_dbl_arith`, `p_float`, `p_dbl_conv` and
+  `p_dbl_cmp` run nine tenths of their instructions in blocks and go from about 50
+  million guest instructions a second to over 500, which is QEMU's speed on them.**
+- **What changed since last time**: a block may begin at an instruction the short front
+  has no kind for; `--jit-check` compares the XMM registers too.
+- **Next move for each result**:
+  - At QEMU's speed or past → the XMM registers kept in host registers through a block
+    (they are loaded and stored at every use now), if the listing says that is the cost
+  - In blocks but slow → the listing
+  - Not in blocks → the counter: which instruction still ends them (MIN and MAX, the
+    packed forms, CVTSD2SI with rounding)
+  - `--jit-check` differs → a case where the host's arithmetic is not the chip's and no
+    way out was made: that case, with a test from the real CPU
+- **Cut-off**: `tools/prim64_net.py` and `tools/prim64_long.sh` on those four; the
+  suites; wrong builds.
+
+**Result: all four run in blocks and cost a fiftieth of what they did. Host instructions
+for a guest instruction, net of start-up: `p_dbl_arith` about 400 → 8.9, `p_float` about
+400 → 8.5, `p_dbl_conv` 6.3, `p_dbl_cmp` 5.3. The time against QEMU is to be taken when
+the wrong builds are done.**
+
+| | Host instructions for a guest instruction | Cycles for a guest instruction |
+|---|---:|---:|
+| `p_dbl_cmp` | 5.3 | 1.0 |
+| `p_dbl_conv` | 6.3 | 1.2 |
+| `p_float` | 8.5 | 3.2 |
+| `p_dbl_arith` | 8.9 | 3.5 |
+
+- **What is translated**: MOVSS and MOVSD (all forms), MOVAPS, MOVAPD, MOVUPS, MOVUPD,
+  MOVDQA, MOVDQU, MOVD and MOVQ in both directions; ADD, SUB, MUL, DIV and SQRT on
+  scalars; MIN and MAX on scalars; CVTSI2SS and CVTSI2SD, CVTTSS2SI and CVTTSD2SI,
+  CVTSS2SD and CVTSD2SS; UCOMIS and COMIS; ANDPS, ANDNPS, ORPS, XORPS and their PD
+  forms, PAND, POR, PXOR. Only in a program without a kernel.
+- **Where the host is not the chip.** The arithmetic leaves the block, with nothing
+  changed, if its result is not a finite number (the chip's choice of which NaN comes
+  out is the interpreter's to make); that test is four host instructions and leaves the
+  host's flags alone. A conversion to an integer that is out of range or of a NaN gives
+  the chip's "integer indefinite" by two conditional selects, with no way out: the
+  first version left the block there, and `p_dbl_conv`, which converts such values a
+  million times, was at 58 host instructions for a guest instruction. MIN and MAX are
+  one comparison and one select, which gives the second operand for a NaN and for equal
+  zeros as the chip does.
+- **UCOMIS and COMIS** set the host's flags by FCMP, and a jump behind them on "above",
+  "below" or parity uses those; "equal" after a comparison of floats is "equal or
+  unordered", which no single host condition says, and ends the block. Their record is
+  the two values, settled by the interpreter's own code (now a function both use).
+- **A block may begin at an SSE instruction**, which the short front has no kind for;
+  the place that enters a block falls through to the rest of the CPU for it.
+- **`--jit-check` compares the XMM registers** too.
+- **The cycles say what is next**: 3.5 cycles for a guest instruction in `p_dbl_arith`
+  at 9 host instructions, where the integer primitives take 0.2 to 0.7 at 2 to 5. An
+  XMM register is stored to memory by one instruction and loaded by the next, and a
+  sum carried round a loop goes through memory every time. Keeping the XMM registers
+  in host registers through a block is the card's first branch.
