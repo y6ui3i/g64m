@@ -9447,3 +9447,15 @@ figure; the next comparison with QEMU uses the long programs.)
 - **Where the rest of the cost is** is the card's second branch, by half: the record
   was one to two of the 16 to 26, not the first thing. A hot block's listing is to be
   read before more is guessed.
+- **Wrong builds: 7 of 8 caught, with `j_arith` extended twice more.** Two passed at
+  first. ADC taken for an instruction that sets all flags and reads none: the test's
+  ADC behind a rotation took its carry from RFLAGS as the loop's last round left it,
+  which happened to be the carry the rotation makes; the round now ends with no carry.
+  NOT taken for an instruction that sets all flags: a comparison in front of it made no
+  record, and the jump behind it used the host's flags and was right; the jump is in
+  the next block now, where it reads the record. The one not caught makes the check
+  compare RFLAGS nowhere: a check that looks at less cannot be caught by programs that
+  are right.
+
+**Next.** A hot block's listing read, for where the 16 to 26 host instructions go; the
+comparison with QEMU on the long programs; then the scalar SSE.
