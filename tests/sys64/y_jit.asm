@@ -167,6 +167,57 @@ test:
     USER .g
     PRINT [f_count]
     PRINT r12
+
+    PUTS "code written while it is run"
+    MAP V + 0x12000, P + 0x12000, 3
+    mov rbx, V + 0x12000
+    mov dword [rbx], 0x000005B8                 ; MOV EAX, 5
+    mov word [rbx + 4], 0xC300                  ; RET
+    xor r12, r12
+    mov r14d, ROUNDS
+.w1:
+    call rbx
+    add r12, rax
+    dec r14d
+    jnz .w1
+    PRINT r12
+    mov dword [rbx + 1], 6                      ; the constant, with the code translated
+    xor r12, r12
+    mov r14d, ROUNDS
+.w2:
+    call rbx
+    add r12, rax
+    dec r14d
+    jnz .w2
+    PRINT r12
+
+    PUTS "a page written often, then run for long, then written again"
+    xor r12, r12
+    mov r14d, 40
+.w3:
+    mov [rbx + 1], r14d                         ; written and run in turns, more often than
+    call rbx                                    ; a decode cache keeps up with
+    add r12, rax
+    dec r14d
+    jnz .w3
+    PRINT r12
+    xor r12, r12
+    mov r14d, 6000
+.w4:
+    call rbx                                    ; then only run
+    add r12, rax
+    dec r14d
+    jnz .w4
+    PRINT r12
+    mov dword [rbx + 1], 9                      ; and written once more
+    xor r12, r12
+    mov r14d, ROUNDS
+.w5:
+    call rbx
+    add r12, rax
+    dec r14d
+    jnz .w5
+    PRINT r12
     EXIT
 .g:
     mov rbx, V + 0xE000
