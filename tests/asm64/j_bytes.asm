@@ -62,6 +62,16 @@ top:
     cmp eax, 9                          ; a borrow
     sbb eax, 1                          ; 5 less 1 less 1
     mov r12d, eax
+    xor eax, eax
+    mov ebx, 5
+    cmp ebx, 9                          ; a borrow
+    jmp .s1
+.s1:
+    adc eax, 0                          ; a block that takes its carry from RFLAGS, and goes
+    sub ebx, 1                          ; back to itself with the SUB's record waiting
+    jnz .s1                             ; (E129): by its entry each time, not by its body
+    cmp eax, 1                          ; the one carry of the first round
+    jne bad
     dec r15d
     jnz top
     EXIT
