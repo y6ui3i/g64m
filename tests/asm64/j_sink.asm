@@ -48,11 +48,11 @@ top:
     jnc bad
     jno bad
     mov eax, 3
-    cmp eax, 3
-    jp .e1                              ; a condition the host's flags do not give: the
+    cmp eax, 2                          ; odd parity, where the ADD above left it even
+    jnp .e1                             ; a condition the host's flags do not give: the
     jmp bad                             ; block ends in front of the jump, with the record
 .e1:
-    jnz bad
+    jz bad
     mov eax, 1
     cmp eax, 2                          ; a constant for the second operand
     jb .f1
@@ -74,6 +74,19 @@ top:
     mov ebp, 6
     jbe bad
     cmp ecx, 5
+    jne bad
+    mov esi, 5
+    cmp esi, 1                          ; "above", left in RFLAGS for the block below
+    jmp .h0
+.h0:
+    xor edi, edi
+    mov eax, 0xFFFFFFF0
+    mov ebx, 0x20
+    add eax, ebx                        ; a carry: not above. After an ADD the host's flags
+    ja .h1                              ; do not give "above", and the flags are dead on
+    mov edi, 1                          ; both sides: the record is made all the same,
+.h1:                                    ; since the jump cannot be in the block
+    cmp edi, 1
     jne bad
     dec r15d
     jnz top

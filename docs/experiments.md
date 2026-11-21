@@ -9607,3 +9607,13 @@ way. `p_loop` 2.1 → 1.5 host instructions for a guest instruction, `p_if` 5.7 
   record had been made in the block, and with the record put off none had. The jump
   now ends the block in that case, and the record is made in front of it. `j_sink` has
   the case.
+- **Wrong builds: 10 of 11 caught; the one left changes nothing.** Three passed at first.
+  The hole of the paragraph above, put back: the test's jump on parity found the same
+  parity in RFLAGS as the comparison made, and now does not. The regimes of ADD and SUB
+  swapped in the look past the jump: it then promises that `add; ja` will be one block,
+  which it cannot be, and makes no record where the flags are dead on both sides; a
+  stretch for that. And the register a put-off record is made from taken to be the
+  first operand's and not the result's: they are the same register wherever it matters.
+
+**Next.** The link to another block (seven host instructions), the checks at a load and
+a store (four and eleven); the time against QEMU on a quiet host.
