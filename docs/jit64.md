@@ -87,6 +87,10 @@ on the rest of the integer code that runs in blocks; ten times and more behind o
 floating point, on rotations and on 16-bit operations, none of which is translated (or,
 for rotations, not where their flags are needed).
 
+**Host instructions for a guest instruction (E129, E130)**, net of the emulator's start
+(`tools/prim64_net.py`): 1.3 (`p_shift`) to 11.7 (`p_funcptr`), `p_loop` 1.5, `p_if`
+4.6, `p_pointer` 4.6. The interpreter is about 280.
+
 ## What the guest's code looks like to a translator (the boot, 1,524 million instructions)
 
 Counted with the kinds the short front has now (E110: ALU with ModRM, MOV, the group

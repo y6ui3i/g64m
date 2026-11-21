@@ -243,7 +243,8 @@ var j_off: u64 = 0;          // the instruction being translated: how far from t
 var j_cnt: u64 = 0;          // how many are before it,
 var j_ilen: u64 = 0;         // and how long it is
 var j_head: u64 = 0;         // the block's first instruction's physical address
-var j_dead = false;           // the instruction being translated sets flags that nothing can read
+var j_dead = false;           // the instruction being translated sets flags no record is needed of
+var j_nohost = false;         // and nothing reads them from the host's flags either
 // The flags as the record has them are not the last flag-setting instruction's: it made no
 // record, its flags being dead. --jit-check is told at each way out (jx[15]), and does not
 // compare RFLAGS there.
@@ -286,6 +287,12 @@ var so_cnt: u64[SO_MAX] = [0; SO_MAX];
 var so_op: u32[SO_MAX] = [0; SO_MAX];        // the branch itself: cbnz or cbz and its register, or b.cond
 var so_link: bool[SO_MAX] = [false; SO_MAX]; // it is a jump taken, to be linked, and not an instruction to interpret
 var so_stale: bool[SO_MAX] = [false; SO_MAX];
+// A record to be made in the way out (E130): how, 0 for none, and from what.
+var so_how: u8[SO_MAX] = [0; SO_MAX];
+var so_ska: u32[SO_MAX] = [0; SO_MAX];
+var so_skb: u32[SO_MAX] = [0; SO_MAX];
+var so_ski: u64[SO_MAX] = [0; SO_MAX];
+var so_skw: u32[SO_MAX] = [0; SO_MAX];
 
 // The entry of the instruction at physical address q, into je and jk. False if there is none.
 fn j_entry(q: u64) -> bool {
@@ -339,6 +346,68 @@ fn j_rec_w(what: u32, w: u32, a: u32, b: u32) {
     j_dyn = false;
 }
 
+// A record put off (E130): the flag-setting instruction has a conditional jump right behind
+// it, which uses the host's flags; the record is made only on the sides of that jump where
+// the flags are not dead, from what the registers still hold there. How: 1 the operands
+// are as they were (sk_a and sk_b; sk_b 255 for the constant sk_i); 2 and 3 the first
+// operand was overwritten by the result of a SUB or an ADD and is the result with the
+// second put back; 4 a logic instruction, whose flags are its result's.
+var sk_live = false;
+var sk_how: u8 = 0;
+var sk_a: u32 = 0;
+var sk_b: u32 = 0;
+var sk_i: u64 = 0;
+var sk_w: u32 = 0;                // what it was, and the width above it
+var j_next_jcc = false;       // the instruction behind the one being translated is a conditional jump
+
+fn j_sink_emit(how: u8, a: u32, b: u32, i: u64, w: u32) {
+    if how == 4 { a_mov(1, FA, a); a_mov(1, FB, a); }
+    else {
+        if b == 255 { a_imm(FB, i); } else { a_mov(1, FB, b); }
+        if how == 1 { a_mov(1, FA, a); }
+        else { a_rrr(if how == 2 { A_ADD } else { A_SUB }, 1, FA, a, FB); }
+    }
+    a_imm(FK, w);
+}
+
+// The record put off is made here after all.
+fn j_sink_flush() {
+    j_sink_emit(sk_how, sk_a, sk_b, sk_i, sk_w);
+    sk_live = false;
+    j_set = true;
+    j_dyn = false;
+    j_stale = false;
+}
+
+// The record of an ALU instruction: what, at width w, of a and b (b 255 for the constant
+// i) with the result going to dst (ZR for none). Made now, or put off, or not at all.
+fn j_rec_alu(what: u32, w: u32, dst: u32, a: u32, b: u32, i: u64) {
+    if j_dead { j_stale = true; return; }
+    if j_next_jcc && jit_no >> 58 & 1 == 0 {
+        var how: u8 = 0;
+        if dst == ZR || (dst != a && dst != b) { how = 1; }
+        else if dst == a && dst != b {
+            if what == 6 { how = 2; } else if what == 1 { how = 3; }
+            else if what == 2 || what == 5 || what == 7 { how = 4; }
+        }
+        if how != 0 {
+            sk_live = true;
+            sk_how = how;
+            sk_a = if how == 1 { a } else { dst };
+            sk_b = b;
+            sk_i = i;
+            sk_w = (if how == 4 { 5 } else { what }) | w << 8;
+            return;
+        }
+    }
+    j_stale = false;
+    a_mov(1, FA, a);
+    if b == 255 { a_imm(FB, i); } else { a_mov(1, FB, b); }
+    a_imm(FK, what | w << 8);
+    j_set = true;
+    j_dyn = false;
+}
+
 // ALU operation k (the instruction's 3-bit field) of a and b into dst (not for CMP and TEST,
 // test true).
 fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
@@ -347,12 +416,13 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
         // ADC and SBB (j_carry_ok has said the carry can be had): the carry that goes in,
         // 0 or 1, into x29, from the host's flags or from RFLAGS in memory; kept in the
         // record, above the width; and put into the host's carry as ADCS and SBCS want it.
-        if !j_set {
+        if !j_dyn && j_hf == HF_LOGIC { a_mov(0, 29, ZR); }
+        else if !j_dyn && (j_hf == HF_ADD || j_hf == HF_SUB) { e(0x1A9F07E0 | ((if j_hf == HF_ADD { C_HS } else { C_LO }) ^ 1) << 12 | 29); }    // cset w29
+        else {
             j_needs = true;
             a_ldr(29, CTX, 0);
             e(0x12000000 | 29 << 5 | 29);                    // and w29, w29, #1
-        } else if j_hf == HF_LOGIC { a_mov(0, 29, ZR); }
-        else { e(0x1A9F07E0 | ((if j_hf == HF_ADD { C_HS } else { C_LO }) ^ 1) << 12 | 29); }    // cset w29
+        }
         j_rec(if k == 2 { 3 } else { 4 }, a, b);
         if !j_dead { e(0xAA1D40E7); }                        // orr x7, x7, x29, lsl #16
         if k == 3 { e(0x52000000 | 29 << 5 | 29); }          // eor w29, w29, #1: SBCS takes the borrow upside down
@@ -361,7 +431,7 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
         j_hf = if k == 2 { HF_ADD } else { HF_SUB };
         return;
     }
-    j_rec(if test { 5 } else { (k as u32) + 1 }, a, b);
+    j_rec_alu(if test { 5 } else { (k as u32) + 1 }, je.osz, if test || k == 7 { ZR } else { dst }, a, b, 0);
     if test { a_rrr(A_ANDS, sf, ZR, a, b); j_hf = HF_LOGIC; return; }
     match k {
         0 => { a_rrr(A_ADDS, sf, dst, a, b); j_hf = HF_ADD; },
@@ -371,7 +441,7 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
         _ => {
             a_rrr(if k == 1 { A_ORR } else { A_EOR }, sf, dst, a, b);
             // The host's flags, only if anything can read them (E129).
-            if j_dead { j_hf = 0; }
+            if j_nohost { j_hf = 0; }
             else { a_rrr(A_ANDS, sf, ZR, dst, dst); j_hf = HF_LOGIC; }
         },
     }
@@ -382,15 +452,7 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
 fn j_alu_i(k: u8, dst: u32, a: u32, v: u64, tmp: u32) {
     if (k == 0 || k == 5 || k == 7) && v < 4096 {
         let sf: u32 = if je.osz == 64 { 1 } else { 0 };
-        if j_dead { j_stale = true; }
-        else {
-            j_stale = false;
-            a_mov(1, FA, a);
-            a_imm(FB, v);
-            a_imm(FK, ((k as u32) + 1) | ((je.osz as u32) << 8));
-            j_set = true;
-            j_dyn = false;
-        }
+        j_rec_alu((k as u32) + 1, je.osz, if k == 7 { ZR } else { dst }, a, 255, v);
         a_addi(if k == 0 { 0x31 } else { 0x71 }, sf, if k == 7 { ZR } else { dst }, a, v as! u32);
         j_hf = if k == 0 { HF_ADD } else { HF_SUB };
         return;
@@ -424,7 +486,7 @@ fn j_alu8(k: u8, test: bool, a: u32, b: u32, v: u64) {
     else if k == 5 || k == 7 { a_rrr(A_SUBS, 0, S4, S2, S4); j_hf = HF_SUB; }
     else {
         a_rrr(if k == 1 { A_ORR } else { A_EOR }, 0, S4, S2, S4);
-        if j_dead { j_hf = 0; }
+        if j_nohost { j_hf = 0; }
         else { a_rrr(A_ANDS, 0, ZR, S4, S4); j_hf = HF_LOGIC; }
     }
     a_shifti(5, 0, S4, S4, 24);
@@ -433,6 +495,13 @@ fn j_alu8(k: u8, test: bool, a: u32, b: u32, v: u64) {
 // The host's condition for the guest's cc as the flags stand, or C_NONE. With no instruction
 // of the block having set them, the code to test RFLAGS in memory is generated here.
 fn j_cond(cc: u8) -> u32 {
+    // The host's flags wherever they are good (E130): an instruction may have set them
+    // and made no record.
+    let h = j_cond_host(cc);
+    if h != C_NONE { return h; }
+    // A record put off for this jump, and the host's flags cannot give its condition: no
+    // condition, so the block ends here and the record is made.
+    if sk_live { return C_NONE; }
     if !j_set {
         j_needs = true;
         a_ldr(S1, CTX, 0);
@@ -455,7 +524,7 @@ fn j_cond(cc: u8) -> u32 {
         }
         return if cc & 1 == 0 { C_NE } else { C_EQ };
     }
-    return j_cond_host(cc);
+    return C_NONE;
 }
 
 // Whether j_cond will give a condition.
@@ -463,13 +532,19 @@ fn j_cond_ok(cc: u8) -> bool { return !j_set || j_cond_host(cc) != C_NONE; }
 
 // The host's condition for the guest's cc from the host's own flags, or C_NONE.
 fn j_cond_host(cc: u8) -> u32 {
-    if j_dyn || j_hf == 0 { return C_NONE; }
+    if j_dyn { return C_NONE; }
+    return j_cond_of(j_hf, cc);
+}
+
+// The same for the host's flags as an instruction of regime hf leaves them.
+fn j_cond_of(hf: u8, cc: u8) -> u32 {
+    if hf == 0 { return C_NONE; }
     // The guest's conditions 0 to 15: O NO B AE E NE BE A S NS P NP L GE LE G.
     let sub: u8[16] = [6, 7, 3, 2, 0, 1, 9, 8, 4, 5, 255, 255, 11, 10, 13, 12];
     let add: u8[16] = [6, 7, 2, 3, 0, 1, 255, 255, 4, 5, 255, 255, 11, 10, 13, 12];
     let logic: u8[16] = [255, 255, 255, 255, 0, 1, 0, 1, 4, 5, 255, 255, 4, 5, 13, 12];
     let incdec: u8[16] = [6, 7, 255, 255, 0, 1, 255, 255, 4, 5, 255, 255, 11, 10, 13, 12];
-    let c: u8 = if j_hf == HF_SUB { sub[cc] } else if j_hf == HF_ADD { add[cc] } else if j_hf == HF_LOGIC { logic[cc] } else { incdec[cc] };
+    let c: u8 = if hf == HF_SUB { sub[cc] } else if hf == HF_ADD { add[cc] } else if hf == HF_LOGIC { logic[cc] } else { incdec[cc] };
     return c;
 }
 
@@ -526,6 +601,57 @@ fn j_exit_to(r: u32, cnt: u64) {
     e(0x14000000 | d & 0x3FFFFFF);
 }
 
+// What the host's flags are from behind the instruction in je, as j_one will translate it:
+// HF_ADD, HF_SUB or HF_LOGIC, or 0 for an instruction that leaves them no use to a jump.
+fn j_regime() -> u8 {
+    let f = je.reg & 7;
+    var ak: u8 = 255;
+    match jk {
+        K_ALU, K_ALUA => { ak = je.op >> 3; },
+        K_GRP1 => { ak = f; },
+        K_TEST, K_TESTA => { ak = 4; },
+        K_GRP3 => { if f < 2 { ak = 4; } else if f == 3 { ak = 5; } },
+        _ => {},
+    }
+    if ak == 0 || ak == 2 { return HF_ADD; }
+    if ak == 3 || ak == 5 || ak == 7 { return HF_SUB; }
+    if ak == 1 || ak == 4 || ak == 6 { return HF_LOGIC; }
+    return 0;
+}
+
+// Whether no record is needed of the flags the instruction in je sets although a
+// conditional jump comes right behind it, at q (E130): the jump will be in this block and
+// will use the host's flags, and the flags are dead both where it goes and behind it. Every
+// reason j_one could have not to translate that jump here is looked at first, since a
+// jump interpreted, or begun a block with, would read a record that was not made. cnt is
+// how many instructions the block has before the one in je.
+fn j_dead_past_jump(q: u64, page_end: u64, cnt: u64) -> bool {
+    if jit_no >> 61 & 1 != 0 || jit_no >> 59 & 1 != 0 { return false; }
+    let hf = j_regime();
+    if hf == 0 || cnt + 2 > J_MAX || so_n + 12 > SO_MAX || q >= page_end { return false; }
+    let keep = je;
+    let keep_k = jk;
+    var ok = false;
+    var fall: u64 = 0;
+    var to: u64 = 0;
+    if j_entry(q) {
+        let k = jk;
+        let len = j_len();
+        if (k == K_JCC8 || (k >= K_JCC32 && k < K_CMOV)) && len != 0 && len <= page_end - q
+            && !je.asz32 && !je.p66 && je.sg == 0 && je.rep == 0 && jit_no >> k & 1 == 0 {
+            let cc = if k == K_JCC8 { je.op & 15 } else { k & 15 };
+            if j_cond_of(hf, cc) != C_NONE {
+                fall = q + len;
+                to = fall + (if k == K_JCC8 { j_const(q + len - 1, 1) } else { j_const(q + len - 4, 4) });
+                ok = to >= page_end - 0x1000 && to < page_end;
+            }
+        }
+    }
+    je = keep;
+    jk = keep_k;
+    return ok && j_flags_dead(fall, page_end) && j_flags_dead(to, page_end);
+}
+
 // ---- Memory, for a program without a kernel ----
 
 // cbnz x2 to the way out before the instruction being translated.
@@ -539,6 +665,7 @@ fn j_leave(r: u32, zero: bool) {
     so_op[so_n] = (if zero { 0xB4000000 } else { 0xB5000000 }) | r;
     so_link[so_n] = false;
     so_stale[so_n] = j_stale;
+    so_how[so_n] = 0;
     so_n += 1;
     e(0);
 }
@@ -651,7 +778,18 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     j_off = off;
     j_cnt = cnt;
     j_ilen = len;
-    j_dead = jit_no >> 60 & 1 == 0 && j_flags_dead(q + len, q + room);
+    // A record put off for a jump that this is not: made now, with the registers as that
+    // instruction left them.
+    if sk_live && !(jk == K_JCC8 || (jk >= K_JCC32 && jk < K_CMOV)) { j_sink_flush(); }
+    {
+        let keep = je;
+        let keep_k = jk;
+        j_next_jcc = q + len < q + room && j_entry(q + len) && (jk == K_JCC8 || (jk >= K_JCC32 && jk < K_CMOV));
+        je = keep;
+        jk = keep_k;
+    }
+    j_nohost = jit_no >> 60 & 1 == 0 && j_flags_dead(q + len, q + room);
+    j_dead = j_nohost || (jit_no >> 60 & 1 == 0 && j_dead_past_jump(q + len, q + room, cnt));
     let op = je.op;
     let k = jk;
     // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
@@ -697,10 +835,30 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             so_op[so_n] = 0x54000000 | c;
             so_link[so_n] = true;
             so_stale[so_n] = j_stale;
+            so_how[so_n] = 0;
+            // A record put off: on the side taken it is made in the way out, unless the
+            // flags are dead where the jump goes; on the other side here, unless dead.
+            if sk_live {
+                let to = q + len + d;
+                if to >= q + room - 0x1000 && to < q + room && j_flags_dead(to, q + room) { so_stale[so_n] = true; }
+                else {
+                    so_stale[so_n] = false;
+                    so_how[so_n] = sk_how;
+                    so_ska[so_n] = sk_a;
+                    so_skb[so_n] = sk_b;
+                    so_ski[so_n] = sk_i;
+                    so_skw[so_n] = sk_w;
+                }
+            }
             so_n += 1;
             e(0);
+            if sk_live {
+                if j_flags_dead(q + len, q + room) { sk_live = false; j_stale = true; }
+                else { j_sink_flush(); }
+            }
             return len;
         }
+        if sk_live { j_sink_flush(); }
         let at = jc.len;
         e(0);
         j_exit(off + len, cnt + 1, true);
@@ -1132,6 +1290,7 @@ fn jit_translate(ph: u64) {
         j_end = false;
         j_stop = false;
         so_n = 0;
+        sk_live = false;
         ss_n = 0;
         j_stale = false;
         tp_n = 0;
@@ -1156,12 +1315,14 @@ fn jit_translate(ph: u64) {
         }
         // One instruction is worth a block where blocks are entered from one another.
         if n >= J_MIN || (n == 1 && !machine && !jit_check) {
+            if sk_live { j_sink_flush(); }
             if !j_end { j_exit(q - head, n as! u64, true); }
             // The ways out, behind the block.
             for i in so_n {
                 let at = so_pos[i];
                 e_at(at, so_op[i] | (((jc.len - at) >> 2) as! u32) << 5);
                 j_stale = so_stale[i];
+                if so_how[i] != 0 { j_sink_emit(so_how[i], so_ska[i], so_skb[i], so_ski[i], so_skw[i]); }
                 j_exit(so_off[i], so_cnt[i], so_link[i]);
             }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }

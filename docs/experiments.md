@@ -9543,3 +9543,67 @@ quarter to a third.)
 **Next.** The record in front of a conditional jump, where the flags are dead on both
 sides; then the link to another block and the checks at a load and a store; then the
 time against QEMU again, on a quiet host.
+
+## E130: no record in front of a conditional jump whose two sides overwrite the flags (2026-11-21)
+
+E129's listing: the SUB in front of `p_loop`'s JNE makes a record (three host
+instructions) although the jump uses the host's flags and the flags are set again on
+both sides of it before anything reads them. The look ahead of E125 stops at any jump.
+
+- **Hypothesis**: **where the instruction right behind a flag-setting instruction is a
+  conditional jump that will use the host's flags, and the flags are dead at the jump's
+  target and behind the jump, no record is needed; that is the usual shape of a loop's
+  end and of an `if`, so `p_loop` (2.1 host instructions for a guest instruction),
+  `p_if` (5.7), `p_switch` (6.3) and `p_index` (5.5) lose half an instruction or more
+  each.**
+- **What changed since last time**: a jump on a condition takes the host's flags
+  wherever they are good, also when no record was made in the block (it looked for the
+  record first).
+- **Next move for each result**:
+  - Half or more off → the link to another block (seven host instructions), then the
+    checks at a load and a store
+  - Less → how often the flags are dead at both sides is counted at translation
+  - `--jit` differs from a plain run → the promise that the jump is translated in the
+    same block was broken somewhere: that place, with a test
+- **Cut-off**: `tools/prim64_net.py` on the long programs; the suites; wrong builds.
+
+**Result: the hypothesis as written was wrong, and what it was after was got another
+way. `p_loop` 2.1 → 1.5 host instructions for a guest instruction, `p_if` 5.7 → 4.6,
+`p_pointer` 5.2 → 4.6, `p_switch` 6.3 → 5.8, `p_index` 5.5 → 5.2.**
+
+| | E129 | Now |
+|---|---:|---:|
+| `p_shift` | 1.43 | 1.34 |
+| `p_loop` | 2.12 | 1.50 |
+| `p_pixel` | 2.18 | 2.09 |
+| `p_ternary` | 2.34 | 2.22 |
+| `p_muldiv` | 3.39 | 3.29 |
+| `p_bytes` | 4.17 | 4.16 |
+| `p_pointer` | 5.15 | 4.57 |
+| `p_if` | 5.70 | 4.61 |
+| `p_index` | 5.48 | 5.18 |
+| `p_bignum` | 5.76 | 5.49 |
+| `p_switch` | 6.27 | 5.76 |
+| `p_recursion` | 6.80 | 6.46 |
+| `p_sha` | 8.99 | 8.84 |
+| `p_funcptr` | 12.05 | 11.68 |
+
+- **The look ahead on both sides of the jump moved nothing** (`p_loop` 2.12 → 2.11).
+  The listing said why: the look ahead reads the decode cache, which knows only what has
+  been run, and when a loop is translated (at its eighth round) the instruction behind
+  its closing jump has never been run. The flags could not be shown dead on that side,
+  so the record stayed, on the side that is run a thousand times because of the side
+  that is run once.
+- **So the record is put off, not left out.** Where a conditional jump comes right
+  behind an ADD, SUB, CMP, TEST, AND, OR or XOR, the instruction makes no record; the
+  jump uses the host's flags; and the record is made on each side of the jump where
+  the flags are not known to be dead: on the side taken, in the way out behind the
+  block; on the other, right behind the jump. The operands are still there to make it
+  from: CMP and TEST change nothing, the first operand of a SUB or ADD is the result
+  with the second put back, and a logic instruction's flags are its result's. In
+  `p_loop` the record is now three instructions on the way out of the loop.
+- **A hole found while writing the test, before any test ran**: a jump whose condition
+  the host's flags cannot give (parity) took the flags from RFLAGS in memory when no
+  record had been made in the block, and with the record put off none had. The jump
+  now ends the block in that case, and the record is made in front of it. `j_sink` has
+  the case.
