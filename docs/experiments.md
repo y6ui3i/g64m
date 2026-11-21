@@ -9683,3 +9683,35 @@ run in blocks, and the rest are where they were.** Million guest instructions a 
 
 **Next.** The scalar SSE instructions (task 8). Behind them the kernel's memory through
 the TLB (task 5), rotations with a second record, 16 bits.
+
+**Why g86m is ahead where it is (read off QEMU's own host code).** `qemu-x86_64 -d
+in_asm,out_asm` writes each translated block; this build has no disassembler and gives
+the bytes, which were disassembled here. For the same guest code:
+
+| | QEMU 11.0.3 | g86m |
+|---|---|---|
+| `p_loop`'s inner loop, five guest instructions, a round | 21 host instructions: 4 loads and 8 stores | 8 host instructions: no load, no store |
+| The guest's registers | in memory (`env`): loaded where read, stored where written | in host registers for the whole block |
+| The flags | the last result, operand and operation stored to memory at each flag-setting instruction (3 stores) | the host's flags; a record only on a way out where they may be read |
+| The start of every block | a load and a test (has the block been asked to stop), and a store | a count and a test where one block enters another; nothing on the way back to a block's own start beyond them |
+| RET, CALL and JMP through an operand | a call to a C function that looks the target up, then a jump | fifteen instructions of look-up in generated code |
+| DIV and IDIV | a call to a C function for each | one host division and a multiply-and-subtract, with ways out |
+
+QEMU's loop for `mov rcx, rsi; xor rcx, rax; add rdx, rcx; sub rax, 1; jne`:
+
+    ldur w20, [x19, #-16] / tbnz w20, #31 / sturb wzr, [x19, #-12]
+    ldr x20, [x19, #48] / ldr x21, [x19] / eor x20, x20, x21 / str x20, [x19, #8]
+    ldr x22, [x19, #16] / add x20, x22, x20 / str x20, [x19, #16]
+    sub x20, x21, #1 / str x20, [x19] / str x20, [x19, #272]
+    mov w21, #1 / str x21, [x19, #280] / mov w21, #1 / sturb w21, [x19, #-12]
+    mov w21, #19 / str w21, [x19, #296] / cbnz x20 / b
+
+g86m's:
+
+    mov x9, x14 / eor x9, x9, x8 / adds x10, x10, x9 / subs x8, x8, #1 / b.ne
+    sub x0, x0, #5 / cmp x0, #5 / b.hs
+
+This is not QEMU done badly. Its translator is one for every guest and host it has,
+goes through an intermediate code, serves a whole machine as well as a program, and
+keeps the guest's state where any helper can find it. g86m's does one guest on one
+host, and for now only a program without a kernel.
