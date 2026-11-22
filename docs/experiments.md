@@ -10163,3 +10163,72 @@ here: SHLD/SHRD, the string instructions, and, for the Docker backend's sake, wh
 to start a process (to be measured when M11 runs one). x87 and packed SSE stay on the list
 for the primitives, last. OrbStack's Rosetta setting was turned off for the timing and
 turned back on; the container that was running came back by its restart policy.
+
+----
+## E137: every interpreted instruction an arrival, and the room for code doubled (2026-11-22)
+
+E135 read off the hottest interpreted addresses why 14% of the build ran outside blocks:
+behind an instruction the translator cannot measure (BT, a 16-bit form) the walk stops, and
+behind a way out of a block the rest of the run is interpreted, both to the next jump; and
+the room for code (64 MB) filled 1,493 times in the build, each time starting every count of
+arrivals from nothing. Arrivals are counted only where a jump lands (`jit_arrive`, from the
+jumps, from a block's way out and from a new code page), so an instruction that is only ever
+fallen into is never a block's head.
+
+- **Hypothesis**: **counting an arrival at every instruction the interpreter runs from the
+  decode cache (not only where jumps land) makes the instruction behind BT, behind a 16-bit
+  operation or behind a way out a block's head at its eighth run, and on the three files of
+  E135 the instructions interpreted fall from 3.0 billion (14%) to under 1.0 billion (4%);
+  doubling the room to 128 MB (the reach of an AArch64 `b`) halves the flushes, 70 to about
+  35, and the two together take a tenth or more off the time.**
+- **What changed since last time**: E135's count. The arrival moves from the jumps to the
+  run loop's hit on the decode cache (`exec64`), and `J_SIZE` goes to 128 MB.
+- **Next move for each result**:
+  - Interpreted under 4% and flushes halved → the whole build against QEMU (E135's
+    914 s); then BT, the 16-bit forms, SHLD/SHRD and the string instructions in blocks
+  - Interpreted still over 8% → the hottest interpreted addresses read again: another
+    reason than the two found
+  - Blocks or bytes translated grow by more than half → arrivals at every instruction
+    translate cold code too: the threshold raised for fallen-into instructions, or the
+    walk ahead cut
+  - Slower → the count's cost on the interpreter's path, measured on `p_*` without `--jit`
+- **Cut-off**: the short race (three files) three times at most; one whole build.
+
+**Result: interpreted instructions fell from 13.9% to 7.9%, and the time by 3.5%: the
+runs behind BT and the 16-bit forms are blocks now, but blocks of two or three
+instructions, and entering a block costs about what interpreting those would.** The
+three files, `RACE_SHORT=1 tools/build_race.py`, both builds `--jit --jit-stats`, CPU
+time by `/usr/bin/time` (the host had other work; load 2.5 to 4):
+
+| Three of NetHack's files | Before | E137 |
+|---|---:|---:|
+| CPU seconds (user) | 155.6 | 150.1 |
+| Guest instructions | 23.89 billion | 23.89 billion |
+| Interpreted | 3.32 billion (13.9%) | 1.88 billion (7.9%) |
+| Entries into blocks | 876 million | 1,488 million |
+| Instructions for each entry | 23.5 | 14.8 |
+| Blocks translated | 10.2 million | 18.9 million |
+| Code written in all | about 4.7 GB (73 × 64 MB) | 7.2 GB |
+| Times the room filled | 73 (64 MB) | 53 (128 MB) |
+| Links | 6.3 million | 8.6 million |
+
+- **The first form counted every instruction the interpreter ran**, inside a block or
+  not: interpreted 7.3%, but 21.9 million blocks and 1,598 million entries. A block that
+  is refused or left for the time slice has its instructions interpreted one by one, and
+  each became a head in its turn: the same block again from every offset, shorter. The form
+  kept marks the instructions inside a block (`dc_cov`) and counts an arrival there only
+  where a jump lands (`jit_land`, set by the jumps, by a block's way out and by a new code
+  page), as before E137. Blocks 18.9 million, entries 1,488 million.
+- **What the 1.44 billion instructions that moved into blocks cost**: 612 million more
+  entries, 2.4 instructions an entry. The code behind a BT is `jae` and a block begins
+  behind the jump; 16-bit forms cut the same way. An entry is a call into the room, the
+  record settled and the arrival on the way back: on the order of a few interpreted
+  instructions. So most of what was saved was spent entering.
+- **The room**: 128 MB filled 53 times, 64 MB 73 times; the code written grew by half
+  (the new heads, and the walk ahead from each). The room is not what limits here.
+- **The hypothesis** was right about the heads and wrong about the gain. Not under 4%
+  interpreted, not a tenth of the time.
+
+**Next.** BT, the 16-bit forms and SHLD/SHRD translated, so that the runs they cut are one
+block: the item next on the list, and what gives this change its worth. The counting of
+arrivals stays as it is here.
