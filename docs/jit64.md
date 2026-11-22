@@ -176,7 +176,10 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   the decode cache: the entry of its first instruction gets the kind `K_BLOCK` and keeps
   its own kind beside it. The translator decodes nothing: it reads the entries (`Ins`,
   E109), which hold the prefixes, the operand size, and the ModRM's base, index, scale
-  and displacement already.
+  and displacement already. The cache is 2^18 entries in sets of two ways (E142: a slot
+  and its neighbour), and a new instruction takes the way where no block begins, so that
+  a block keeps its first instruction's entry; before that, four blocks in five were lost
+  to another instruction wanting the slot, and translated again (E141).
 - **Entering** from the short front, by one more arm of its jump on the kind. Nothing
   else of the JIT is in the interpreter's path.
 - **Generated code never faults and never calls back.** Anything it cannot do (a TLB
