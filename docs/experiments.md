@@ -10163,3 +10163,33 @@ here: SHLD/SHRD, the string instructions, and, for the Docker backend's sake, wh
 to start a process (to be measured when M11 runs one). x87 and packed SSE stay on the list
 for the primitives, last. OrbStack's Rosetta setting was turned off for the timing and
 turned back on; the container that was running came back by its restart policy.
+
+----
+## E137: every interpreted instruction an arrival, and the room for code doubled (2026-11-22)
+
+E135 read off the hottest interpreted addresses why 14% of the build ran outside blocks:
+behind an instruction the translator cannot measure (BT, a 16-bit form) the walk stops, and
+behind a way out of a block the rest of the run is interpreted, both to the next jump; and
+the room for code (64 MB) filled 1,493 times in the build, each time starting every count of
+arrivals from nothing. Arrivals are counted only where a jump lands (`jit_arrive`, from the
+jumps, from a block's way out and from a new code page), so an instruction that is only ever
+fallen into is never a block's head.
+
+- **Hypothesis**: **counting an arrival at every instruction the interpreter runs from the
+  decode cache (not only where jumps land) makes the instruction behind BT, behind a 16-bit
+  operation or behind a way out a block's head at its eighth run, and on the three files of
+  E135 the instructions interpreted fall from 3.0 billion (14%) to under 1.0 billion (4%);
+  doubling the room to 128 MB (the reach of an AArch64 `b`) halves the flushes, 70 to about
+  35, and the two together take a tenth or more off the time.**
+- **What changed since last time**: E135's count. The arrival moves from the jumps to the
+  run loop's hit on the decode cache (`exec64`), and `J_SIZE` goes to 128 MB.
+- **Next move for each result**:
+  - Interpreted under 4% and flushes halved → the whole build against QEMU (E135's
+    914 s); then BT, the 16-bit forms, SHLD/SHRD and the string instructions in blocks
+  - Interpreted still over 8% → the hottest interpreted addresses read again: another
+    reason than the two found
+  - Blocks or bytes translated grow by more than half → arrivals at every instruction
+    translate cold code too: the threshold raised for fallen-into instructions, or the
+    walk ahead cut
+  - Slower → the count's cost on the interpreter's path, measured on `p_*` without `--jit`
+- **Cut-off**: the short race (three files) three times at most; one whole build.
