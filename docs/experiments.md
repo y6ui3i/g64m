@@ -10892,3 +10892,63 @@ XADD 0.9, PCMPEQB 0.7, BSWAP 0.65.
   - Leavings down, time not → as E146's second line: the leaving is cheap now
   - A test fails → that form, by `--jit-off` bit 49 (the integer forms) or 57 (SSE)
 - **Cut-off**: the short race with the count and without; the gate, with two new tests.
+
+**Result: the leavings to a refused instruction fell from 133 million to 50 million, all
+leavings from 482 million to 395 million, the CPU time from 100.3 s to 97.7 s; and the
+longer blocks brought out a wrong decision about dead flags that had been there since
+E128, which no suite could see.**
+
+| Three of NetHack's files | E146 | E147 |
+|---|---:|---:|
+| CPU seconds, without the count | 100.3 | **97.7** |
+| Leavings (entries into blocks) | 482 million | 395 million |
+| – to a refused instruction | 133 million | 50 million |
+| Interpreted | 4.5% | 4.2% |
+
+- **The hypothesis** held on the counts (refused under 75 million: 50; leavings under 430
+  million: 395) and fell a little short on the time (2.6% for "3% or more").
+- **What is translated now**: the shifts of an XMM register by a constant (`0F 73`: USHR,
+  SHL, and EXT against a zero register for the byte shifts), PANDN, the PUNPCKL and
+  PUNPCKH family (ZIP1, ZIP2), PSHUFD (four moves of an element), PADD, PSUB, PCMPEQ,
+  PCMPGT; BSF and BSR (RBIT and CLZ; the register left as it was for zero; records 52h
+  and 53h) with F3h in front or not; BSWAP (REV); CMPXCHG of 32 and 64 bits, of a register
+  or memory (a CMP's record, two CSELs); INC and DEC of memory; TEST of memory with a
+  constant. `--jit-off` bit 49 turns the integer forms off, 43 to 48 the packed groups.
+- **The first race failed: GCC stopped inside the guest with an internal error**
+  (`ira_color`), 17 seconds in, with every suite passing and the build passing under
+  `--jit-check`. Found by turning things off: SSE (bit 57) → `0F 73` → the byte shifts;
+  the same failure with the byte shift made by other code, so not its code; passing with
+  the dead-flags analysis off (bit 60) or blocks ended at jumps (bit 61); passing with the
+  analysis off for TEST alone; then one TEST found by a hash of its bytes, following the
+  failing half sixteen times. The block:
+
+      xor ecx, ecx / tzcnt rcx, rdx / shr rdx, cl / ... / movdqu xmm0, [rsi+0x28]
+      movdqa xmm1, xmm0 / psrldq xmm1, 8 / por xmm0, xmm1 / movq rax, xmm0
+      test rax, rax / je ...
+
+  A shift by CL makes its record only if the count is not zero, and marks the block
+  (`j_dyn`: whether the record was set was decided as it ran), which also says the
+  host's flags are of no use to a jump. The TEST's flags are read by the JE alone (dead on
+  both of its sides), so no record is made for it and the JE is to use the host's flags:
+  but the path that leaves the record out did not clear `j_dyn`, the JE found no
+  condition, the block ended in front of it, and the JE was interpreted on the record
+  that was there, the shift's. Until now a PSRLDQ or a BSF between the shift and the TEST
+  ended the block and hid it. Cleared now wherever a record is left out and the host's
+  flags are the instruction's own (`j_rec_w`, `j_rec_alu`, BT, COMIS).
+- **Why no suite saw it**: `--jit-check` does not compare RFLAGS where a block leaves
+  them stale, which is exactly where the analysis has decided; a wrong decision passes it
+  by construction. `j_misc` has the case now (a TEST behind a shift by CL and an SSE
+  instruction, its jump taken in the first round so that both sides are known): it fails
+  under `--jit` without the fix and passes with it. The build race's `make-rc` is part of
+  the gate from here.
+- The guard on the table of ways out is 12 free entries for an instruction, not 4 (an SSE
+  store in a machine takes five).
+
+All suites pass: `difftest64` 32 (with `x_packed` and `j_misc`, traces from hal),
+`prim64` 23, `systest64` 17 plain, with `--jit` and with `--jit-check` (106 `ok`); the
+short race ends with `make-rc=0`.
+
+**Next.** The whole build with CPU times; then what is left of the leavings: addresses
+not remembered or cold (145 million), the TLB's table for fetches (68 million), a block
+that was there (116 million: the shifts' records, and exits on other pages), the string
+instructions and the system's own.
