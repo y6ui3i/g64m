@@ -10391,3 +10391,27 @@ All suites pass: `difftest64` 29, `prim64` 23, `systest64` 17 three times (plain
 three files' 14% puts it. Then the cold code (E138's count: 29% of what is interpreted
 is run fewer than eight times), the packed forms the build has (`0F 73`, `0F 6C`,
 `0F 62`, `0F 70`), BSF/BSR and CMPXCHG.
+
+----
+## E140: NetHack built in the guest, raced against QEMU again (2026-11-22)
+
+E135 raced the whole build: g86m 3,561 s, QEMU 914 s, 3.9 times behind, 85.5% of the
+instructions in blocks, 1,493 flushes. Since then: arrivals at every interpreted instruction
+and a 128 MB room (E137), BT, SHLD/SHRD and the 16-bit forms (E138), SSE in a machine
+(E139). On three of NetHack's files those took the CPU time from 155.6 s to 131.2 s (16%)
+and the interpreted share from 13.9% to 5.2%.
+
+- **Hypothesis**: **the whole build takes between 2,800 and 3,100 s under `--jit` (the
+  three files' 16%, less what the whole build has that they do not: more processes, the
+  linker, the install), with about 95% of its instructions in blocks and the flushes down
+  to about 900 (twice the room, and fewer blocks); QEMU takes about 900 s again, so g64m
+  is about three times behind.**
+- **What changed since last time**: E137 to E139. The same kernel, initramfs, disk and
+  command as E135 (`tools/build_race.py`), QEMU 11.1.3.
+- **Next move for each result**:
+  - Three times behind, 95% in blocks → the time is in the blocks' own code and the
+    entries, not the interpreter: an entry's cost measured on its own, and the cold code
+  - Still four times behind → what the whole build has that the three files do not,
+    counted (the counting copy on the whole build)
+  - Under 2,800 s → said so; the ratio stands
+- **Cut-off**: one build under each. The host's load is noted beside the times.
