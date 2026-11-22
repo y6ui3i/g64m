@@ -247,6 +247,8 @@ var dc_drops: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
 // Beside each entry of the decode cache, for the JIT (jit64.goose). (Here, behind the
 // memory, so that they do not push the CPU's own state away from the front of the globals.)
 var dc_heat: u8[DC_SIZE] = [0; DC_SIZE];     // arrivals counted
+var dc_cov: u8[DC_SIZE] = [0; DC_SIZE];      // 1: inside a block (E137)
+var jit_land = false;                       // the instruction at hand is where a jump landed
 var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
 var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
 var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
@@ -380,8 +382,8 @@ fn code_fill() {
     code_cpl = cpl;
     code_end = start + 0x1000;
     code_delta = start - p;
-    // The first instruction run on a page is where a jump from another page arrived.
-    if jit_on { jit_arrive(); }
+    // The first instruction run on a page is where a jump from another page landed.
+    jit_land = true;
 }
 
 inline fn fb() -> u64 {
@@ -1169,7 +1171,14 @@ fn exec64() -> bool {
     let slot = dc_slot(ph);
     dc_cur = slot;
     if dc[slot].tag != ph { return exec64_miss(); }
+    // An instruction run from the cache and no block's first is an arrival (E137): at
+    // the J_HOT-th a block is made there, and run at once.
     ins = dc[slot].ins;
+    if jit_on {
+        let made = dc_n[slot] == 0 && jit_arrive(slot, ph);
+        jit_land = false;
+        if made { return exec64_rest(); }
+    }
     if ins.kind == 0 { return exec64_rest(); }
     return run_kind();
 }
@@ -1181,9 +1190,10 @@ fn exec64_miss() -> bool {
     return run_kind();
 }
 
-// A jump has gone somewhere: with the JIT on, the arrival is counted.
+// A jump has gone somewhere. (Until E137 the arrival was counted here; now every
+// instruction the interpreter runs from the decode cache is one, in exec64.)
 inline fn went() -> bool {
-    if jit_on { jit_arrive(); }
+    jit_land = true;
     return true;
 }
 
@@ -1371,6 +1381,7 @@ fn decode() {
             dc[dc_cur].tag = ph;
             dc[dc_cur].ins = ins;
             dc_heat[dc_cur] = 0;
+            dc_cov[dc_cur] = 0;
             dc_n[dc_cur] = 0;
             dc_mark[page] = 1;
         } else {

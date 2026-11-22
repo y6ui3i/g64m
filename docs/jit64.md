@@ -192,8 +192,9 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   comparison with the host's flags; RFLAGS itself is made only where it is needed.
   Flags that nothing can see are not made.
 - **Links** between blocks inside a page, a far way to a block in another page (looked up
-  at every arrival, nothing remembered), translation at the eighth arrival, everything
-  dropped when the room for code is full.
+  at every arrival, nothing remembered), translation at the eighth arrival (an arrival:
+  a jump's landing, or since E137 any instruction the interpreter runs that is in no
+  block yet), everything dropped when the room for code (128 MB) is full.
 - **When a block dies**: a store into a page that holds decode-cache entries already
   goes the long way (`mem_wr_marked`, E107) and drops them; a generation number for the
   page, moved on there, makes its blocks stale.

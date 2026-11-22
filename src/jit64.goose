@@ -67,10 +67,12 @@ var j_blocks = 0;            // blocks translated
 var j_entered: u64 = 0;      // times one was entered
 var j_ran: u64 = 0;          // guest instructions executed in blocks
 var j_flushes = 0;
-let J_SIZE = 67108864;       // 64 MB
+var j_bytes: u64 = 0;        // bytes of code written in all, flushed or not (E137)
+let J_SIZE = 134217728;      // 128 MB: as far as a `b` reaches (E137)
 let J_HOT = 8;               // arrivals at a jump's target before it is translated
 let J_MAX = 60;              // instructions in a block at most
 let J_MIN = 2;               // and at least
+var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made (for dc_cov)
 
 // What a block is given and gives back: [0] RFLAGS in, [1] [2] [3] the flags' record,
 // [4] the next RIP, [5] where the memory is, [6] where dc_mark is, [7] how many stores
@@ -1654,6 +1656,7 @@ fn jit_flush() {
         // Arrivals are counted from nothing again: a count left at its top would never
         // come to J_HOT, and what was translated before would be interpreted for good.
         dc_heat[slot] = 0;
+        dc_cov[slot] = 0;
     }
     for i in MEM_SIZE >> 12 { jit_page[i] = 0; }
     lk_n = 0;
@@ -1699,6 +1702,7 @@ fn jit_translate(ph: u64) {
             if !j_entry(q) { break; }
             let len = j_one(q, q - head, page_end - q, n as! u64);
             if len == 0 { break; }
+            cv_slot[n] = dc_slot(q);
             q += len;
             n += 1;
             if j_end { break; }
@@ -1752,7 +1756,9 @@ fn jit_translate(ph: u64) {
             dc_k0[head_slot] = dc[head_slot].ins.kind;
             dc[head_slot].ins.kind = 0;
             j_used += jc.len;
+            j_bytes += jc.len as! u64;
             j_blocks += 1;
+            for i in n { dc_cov[cv_slot[i]] = 1; }
         }
         walked += n + 1;
         if j_stop { return; }
@@ -1766,14 +1772,21 @@ fn jit_translate(ph: u64) {
     }
 }
 
-// A jump has arrived at RIP: counted, and translated at the J_HOT-th.
-fn jit_arrive() {
-    if rip >> 12 != code_page || cpl != code_cpl { return; }
-    let ph = rip - code_delta;
-    let slot = dc_slot(ph);
-    if dc[slot].tag != ph || dc_n[slot] != 0 { return; }
+// The interpreter is about to run the instruction in the decode cache's entry slot, at
+// physical address ph, and it is no block's first: an arrival, counted, and translated at
+// the J_HOT-th (E137). Until E137 only a jump's landing was one, and an instruction behind
+// one the translator could not measure was interpreted for good. An instruction that is
+// inside a block already (dc_cov) counts only where a jump lands on it: the interpreter
+// runs such an instruction when the block was refused or left for the time slice, and a
+// block made from each place it was left at would be the same block again, shorter (the
+// first E137 run: twice the blocks and bytes). True if a block begins there now.
+inline fn jit_arrive(slot: i64, ph: u64) -> bool {
+    if !jit_land && dc_cov[slot] != 0 { return false; }
     if dc_heat[slot] < 255 { dc_heat[slot] += 1; }
-    if dc_heat[slot] == J_HOT { jit_translate(ph); }
+    // (Counted on past J_HOT, so that an instruction no block can begin at is tried once.)
+    if dc_heat[slot] != J_HOT { return false; }
+    jit_translate(ph);
+    return dc_n[slot] != 0;
 }
 
 // The flags of the record a block left.
@@ -1835,9 +1848,8 @@ fn jit_enter() -> bool {
     if ran == 0 { return false; }
     rip = jx[4];
     j_settle();
-    // Where the block went is an arrival like any jump's: counted, or nothing after a
-    // block would ever be translated.
-    jit_arrive();
+    // Where the block went is where a jump landed.
+    jit_land = true;
     steps += ran - 1;
     j_entered += 1;
     j_ran += ran;
