@@ -10415,3 +10415,45 @@ and the interpreted share from 13.9% to 5.2%.
     counted (the counting copy on the whole build)
   - Under 2,800 s → said so; the ratio stands
 - **Cut-off**: one build under each. The host's load is noted beside the times.
+
+**Result: g64m 2,870 s, QEMU 1,198 s: 2.4 times behind (E135: 3.9), with 94.9% of the
+instructions in blocks; the flushes did not halve, because twice the code was written.**
+The same disk, kernel and command as E135; both builds end at the same step
+(`doc/Guidebook`, which wants a typesetter) with a NetHack that says its version. The host
+had other work: load 13 as g64m started, 4 to 5 through most of it, 2 to 4 under QEMU.
+
+| NetHack built in the guest | E135 | E140 |
+|---|---:|---:|
+| g64m `--jit`, seconds | 3,561 | **2,870** |
+| QEMU 11.1.3, seconds | 914 | 1,198 |
+| g64m / QEMU | 3.9 | 2.4 |
+| Guest instructions | 471.0 billion | 471.1 billion |
+| In blocks | 85.5% | 94.9% |
+| Entries into blocks | 18.8 billion | 24.5 billion |
+| Instructions for each entry | 25 | 18.2 |
+| Blocks translated | | 375.5 million |
+| Code written in all | about 95 GB (1,493 × 64 MB) | 157 GB |
+| Times the room filled | 1,493 (64 MB) | 1,169 (128 MB) |
+
+- **The hypothesis** was right about the time (2,800 to 3,100 s: 2,870) and the share in
+  blocks (about 95%: 94.9%), wrong about the flushes (about 900: 1,169) and about QEMU's
+  time (about 900: 1,198; the host, or E135's run was the lucky one). 2.4 times behind,
+  not three: QEMU's slower run is half of that.
+- **Where the time is now.** 95% of the instructions run in blocks, so the interpreter's
+  5% can cost at most a fifth or so of the time even at 30 host instructions to one. What
+  is left is the blocks' own code, the entries (24.5 billion: a block is entered every 18
+  instructions, and an entry is on the order of a few dozen host instructions), and the
+  translating: 157 GB of code written, 55 MB for every second of the build, 375 million
+  blocks, each run from its room only until the next flush, 2.5 seconds later on average.
+  After every flush the whole working set is interpreted eight times over and translated
+  again. Neither the entries' nor the translator's share has been measured; both can be,
+  with a clock around `jit_translate` and `jit_enter`.
+- **Why twice the code.** E137's arrivals make a head of every instruction interpreted
+  eight times, and `jit_translate` walks on from each head to make the next blocks on the
+  page whether they will run or not. How much of what is translated is never entered has
+  not been counted.
+
+**Next.** Measure before cutting: a clock around the translator and the entry, and a count
+of blocks never entered, on the three files; then whichever is largest: the room given back
+by page (chunks, so a dropped page's blocks make room without a flush), the walk ahead
+cut, or the entry made cheaper. The cold code (E138's 29% of the interpreted) behind that.
