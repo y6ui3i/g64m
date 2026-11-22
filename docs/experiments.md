@@ -10625,3 +10625,38 @@ a third, and the CPU time from 139 s to 113 s (19%).
     count of sets with two heads, and four ways
   - Under 2,200 s → said so; the ratio stands
 - **Cut-off**: one build under each; the host's load beside the times.
+
+**Result: g64m 2,441 s, QEMU 1,303 s: 1.9 times behind (E140: 2.4, E135: 3.9). The code
+written fell to a third and the flushes to a third; but in the whole build three blocks in
+five are still lost to the cache.** Both builds end at the same step with a NetHack that
+says its version. Load 3 to 4 throughout.
+
+| NetHack built in the guest | E135 | E140 | E143 |
+|---|---:|---:|---:|
+| g64m `--jit`, seconds | 3,561 | 2,870 | **2,441** |
+| QEMU 11.1.3, seconds | 914 | 1,198 | 1,303 |
+| g64m / QEMU | 3.9 | 2.4 | 1.9 |
+| In blocks | 85.5% | 94.9% | 95.4% |
+| Entries into blocks | 18.8 billion | 24.5 billion | 20.4 billion |
+| Blocks translated | | 375.5 million | 125.0 million |
+| Blocks lost to the cache | | | 78.6 million |
+| Code written in all | about 95 GB | 157 GB | 50.6 GB |
+| Times the room filled | 1,493 | 1,169 | 377 |
+
+- **The hypothesis** held on the time (2,200 to 2,450 s: 2,441, at its edge), the code
+  (under 60 GB) and the flushes (under 450); QEMU was outside what was guessed (900 to
+  1,200 s: 1,303).
+- **QEMU's time moves more than g64m's gains**: 914, 1,198 and 1,303 s on three
+  afternoons for the same build. The ratio's fall from 2.4 to 1.9 is half g64m's 15% and
+  half QEMU's 9% the other way. A wall clock on a host with other work is not a measure
+  to hold a ratio to: the next race takes both programs' CPU time (`/usr/bin/time`), as
+  the short race does for g64m.
+- **Two ways are not enough for the whole build**: 78.6 million of 125 million blocks
+  (63%) still lost their entry, against 3.8 of 6.0 million on the three files. The whole
+  build has more code alive at once (the linker, `make`, the shell, more of GCC), and a
+  set with two heads loses one at the third instruction's arrival.
+
+**Next.** Why a block is left, counted by reason (a block is entered every 22
+instructions: the entries are where QEMU, which chains its blocks, is ahead); and the
+cache in four ways, with the count of what two ways lose. `tools/build_race.py` to report
+CPU time for both.
