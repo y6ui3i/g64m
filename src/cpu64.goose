@@ -255,12 +255,7 @@ var j_evicted: u64 = 0;                     // blocks lost to another instructio
 var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
 // Links (E122): the exits that wait for a block at an address, chained from the entry that
 // address has; and which pages hold blocks.
-let LK_MAX = 65536;
 var dc_wait: u32[DC_SIZE] = [0; DC_SIZE];
-var lk_site: i64[LK_MAX] = [0; LK_MAX];
-var lk_to: u64[LK_MAX] = [0; LK_MAX];
-var lk_next: u32[LK_MAX] = [0; LK_MAX];
-var lk_cpl: u8[LK_MAX] = [0; LK_MAX];
 // The privilege level a block was translated at (E133): a machine's loads and stores use
 // that level's tables of the TLB.
 var dc_cpl: u8[DC_SIZE] = [0; DC_SIZE];

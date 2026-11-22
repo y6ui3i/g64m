@@ -10761,3 +10761,41 @@ of waiting exits (65,536 entries, emptied at a flush) is full for most of each s
   - Leavings to a block still over 400 million → which exits: by the kind of exit
     (a jump's two sides, CALL, the end of a block), counted in `--jit-why`
 - **Cut-off**: the short race with `--jit-why`, and once without; the gate.
+
+**Result: the leavings fell from 1,026 million to 574 million, those that go to a block
+from 633 million to 200 million, and the three files run in 104 s of CPU (E142: 113 s).**
+
+| Three of NetHack's files | E144 (the table) | E145 (in the room) |
+|---|---:|---:|
+| CPU seconds with `--jit-why` | 125.6 | 106.3 |
+| CPU seconds without | 113.4 (E142) | **104.0** |
+| Leavings (entries into blocks) | 1,026 million | 574 million |
+| – to a block on the page entered on | 455 million | 131 million |
+| – to a block on another page | 178 million | 69 million |
+| – of the two, a block that reads RFLAGS, a record waiting | 113 million | 117 million |
+| – to a refused instruction | 135 million | 134 million |
+| – not in the TLB's table for fetches | 68 million | 68 million |
+| – not in the decode cache, or cold | 188 million | 167 million |
+| Blocks translated | 6.0 million | 4.8 million |
+| Times the room filled | 17 | 14 |
+
+- **The hypothesis** held on the counts (leavings under 600 million: 574; to a block under
+  250 million: 200) and nearly on the time: 8% against E142's race without the count,
+  15% with the count on both sides, for "a tenth or more".
+- **What changed**: an exit that waits for a block has four words behind its branch (the
+  next in the chain, the address waited for in two, the level), 16 bytes of the room;
+  `dc_wait` is the chain's head as before. When a block is made, the chain from its slot
+  is read out of the room, the exits that waited for it are made branches, and those that
+  wait for another address are chained again (they were dropped). The table and its
+  1.4 MB are gone.
+- **What is left of "a block was there"**: 200 million, of which 117 million are the
+  blocks that read RFLAGS in memory, met with a record waiting. The other leavings are
+  where they were: refused instructions 134 million, the TLB's table for fetches 68
+  million, addresses not remembered or cold 167 million.
+
+All suites pass: `difftest64` 29, `prim64` 23, `systest64` 17 plain, with `--jit` and
+with `--jit-check` (103 `ok`).
+
+**Next.** The record settled on the way into a block that reads RFLAGS (117 million, the
+largest single reason now); the refused instructions in E144's order (`0F 73`, PANDN,
+CMPXCHG, PUNPCKLQDQ, BSF, the group FFh forms); the whole build with CPU times.

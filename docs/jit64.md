@@ -194,7 +194,9 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   three host registers and its kind in a fourth; a conditional jump redoes the
   comparison with the host's flags; RFLAGS itself is made only where it is needed.
   Flags that nothing can see are not made.
-- **Links** between blocks inside a page, a far way to a block in another page (looked up
+- **Links** between blocks inside a page (an exit to an address with no block yet waits in a
+  chain kept in the room itself, four words behind its branch, and is made a branch when
+  the block comes: E145; a table of 65,536 before that, full most of the time), a far way to a block in another page (looked up
   at every arrival, nothing remembered), translation at the eighth arrival (an arrival:
   a jump's landing, or since E137 any instruction the interpreter runs that is in no
   block yet), everything dropped when the room for code (128 MB) is full.
