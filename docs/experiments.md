@@ -10232,3 +10232,31 @@ time by `/usr/bin/time` (the host had other work; load 2.5 to 4):
 **Next.** BT, the 16-bit forms and SHLD/SHRD translated, so that the runs they cut are one
 block: the item next on the list, and what gives this change its worth. The counting of
 arrivals stays as it is here.
+
+----
+## E138: BT, SHLD/SHRD and the 16-bit forms in blocks (2026-11-22)
+
+E137 made the instruction behind a BT or a 16-bit operation a block's head, and found the
+blocks so made two or three instructions long: the BT and the 16-bit forms cut every run,
+and an entry into a block costs about what interpreting the two or three would. E135 read
+`bt rax, r15; jae` off the hottest interpreted address and `shr cx, 6` beside it; E136
+counted SHRD at 2% of Python and Node and 16-bit forms at 4% of gzip; `p_bitfield`'s loop
+(0.05 of QEMU) has `shrw` and `sarw` in it.
+
+- **Hypothesis**: **with BT, BTS, BTR and BTC on registers, SHLD and SHRD on registers,
+  and the 16-bit forms of the ALU operations, CMP, TEST, the shifts by a constant, NOT,
+  NEG and MOV of a constant translated, the three files of E137 run with under 4% of their
+  instructions interpreted and under 1,000 million entries into blocks (from 7.9% and
+  1,488 million), a tenth or more faster; and `p_bitfield` comes from 0.05 of QEMU to
+  QEMU's neighbourhood.**
+- **What changed since last time**: E137's arrivals. The translator gets the three
+  families; the record of the flags gets BT's (CF alone) and the double shift's.
+- **Next move for each result**:
+  - Under 4% interpreted and a tenth faster → the whole build against QEMU, then the
+    rotations with flags and the string instructions
+  - Interpreted down but the time not → entries counted against instructions again; the
+    hottest interpreted addresses read for the next cut
+  - `p_bitfield` still far under QEMU → its block's listing: what else its loop has
+  - A test fails under `--jit-check` → the form at fault, found by `--jit-off`
+- **Cut-off**: the short race twice; the primitives once; one whole build if the short
+  race says so.
