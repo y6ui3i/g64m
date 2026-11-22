@@ -288,6 +288,7 @@ var jk: u8 = 0;              // its kind, its own where it begins a block
 var j_hf: u8 = 0;            // what the host's flags are from: 0 nothing the guest can use
 let HF_SUB = 1; let HF_ADD = 2; let HF_LOGIC = 3; let HF_INCDEC = 4;
 let HF_FCMP = 5;             // the host's FCMP, for UCOMIS and COMIS
+let HF_BT = 6;               // a TST of the bit BT chose (E138): zero when CF is clear
 var j_set = false;           // an instruction of this block has set the flags' record
 var j_dyn = false;           // and whether it did was decided as it ran (a shift by CL)
 var j_end = false;           // the block ended at a jump
@@ -368,6 +369,9 @@ fn j_len() -> u64 {
         // have one but EMMS), with a constant behind it for some.
         if op != 0x0F || m == 0 { return 0; }
         let op2 = mem_rd(j_at + p, 8) as! u8;
+        // BT, BTS, BTR, BTC and the double shifts (E138), a constant behind some.
+        if op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB || op2 == 0xA5 || op2 == 0xAD { return m; }
+        if op2 == 0xBA || op2 == 0xA4 || op2 == 0xAC { return m + 1; }
         if !sse64_is(op2) || op2 == 0x77 || op2 == 0xAE { return 0; }
         let has_imm = op2 == 0x70 || op2 == 0x71 || op2 == 0x72 || op2 == 0x73 || (op2 >= 0xC2 && op2 <= 0xC6 && op2 != 0xC3);
         return if has_imm { m + 1 } else { m };
@@ -539,11 +543,15 @@ fn j_carry_ok() -> bool { return !j_set || (!j_dyn && (j_hf == HF_ADD || j_hf ==
 // An ALU operation on bytes: k as for j_alu, of the byte in host register a and the byte
 // in b, or the constant v if b is ZR. The result's byte is left in S4, and the host's
 // flags are the byte's: the operands are shifted up 24 bits. S2 and S4 are used.
-fn j_alu8(k: u8, test: bool, a: u32, b: u32, v: u64) {
-    if b == ZR { a_imm(S4, v & 0xFF); } else { a_mov(0, S4, b); }
-    j_rec_w(if test { 5 } else { (k as u32) + 1 }, 8, a, S4);
-    a_shifti(4, 0, S2, a, 24);
-    a_shifti(4, 0, S4, S4, 24);
+fn j_alu8(k: u8, test: bool, a: u32, b: u32, v: u64) { j_alu_n(k, test, a, b, v, 8); }
+
+// The same on nb bits, 8 or 16 (E138): the operands are shifted up 32 - nb bits.
+fn j_alu_n(k: u8, test: bool, a: u32, b: u32, v: u64, nb: u8) {
+    let up: u32 = 32 - (nb as u32);
+    if b == ZR { a_imm(S4, v & (((1 as u64) << nb) - 1)); } else { a_mov(0, S4, b); }
+    j_rec_w(if test { 5 } else { (k as u32) + 1 }, nb, a, S4);
+    a_shifti(4, 0, S2, a, up);
+    a_shifti(4, 0, S4, S4, up);
     if test || k == 4 { a_rrr(A_ANDS, 0, S4, S2, S4); j_hf = HF_LOGIC; }
     else if k == 0 { a_rrr(A_ADDS, 0, S4, S2, S4); j_hf = HF_ADD; }
     else if k == 5 || k == 7 { a_rrr(A_SUBS, 0, S4, S2, S4); j_hf = HF_SUB; }
@@ -552,7 +560,119 @@ fn j_alu8(k: u8, test: bool, a: u32, b: u32, v: u64) {
         if j_nohost { j_hf = 0; }
         else { a_rrr(A_ANDS, 0, ZR, S4, S4); j_hf = HF_LOGIC; }
     }
-    a_shifti(5, 0, S4, S4, 24);
+    a_shifti(5, 0, S4, S4, up);
+}
+
+// The low nb bits (8 or 16) of host register rs into the low nb bits of rd: bfi.
+fn a_bfi_low(rd: u32, rs: u32, nb: u8) { e((if nb == 8 { 0xB3401C00 } else { 0xB3403C00 }) | rs << 5 | rd); }
+
+// Whether the register i can be an operand of nb bits: any for 16, for 8 one whose low
+// byte is its byte (j_byte_ok).
+fn j_nok(i: u8, nb: u8) -> bool { return nb == 16 || j_byte_ok(i); }
+
+// ---- BT, BTS, BTR, BTC and the double shifts (E138) ----
+
+// Which bit instruction je is: 0 BT, 1 BTS, 2 BTR, 3 BTC; 255 for none.
+fn j_bt_op() -> u8 {
+    if je.op != 0x0F { return 255; }
+    let op2 = mem_rd(j_at + je.plen, 8) as! u8;
+    if op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB { return op2 >> 3 & 3; }
+    if op2 == 0xBA && je.reg & 7 >= 4 { return je.reg & 3; }
+    return 255;
+}
+
+// tst of bit n of host register rn: ands zr, rn, #(1 << n).
+fn a_tst_bit(sf: u32, rn: u32, n: u32) {
+    let top: u32 = if sf == 1 { 63 } else { 31 };
+    e((if sf == 1 { 0xF2400000 } else { 0x72000000 }) | ((top + 1 - n) & top) << 16 | rn << 5 | ZR);
+}
+
+// BT, BTS, BTR or BTC of a register, at q and len bytes long. CF alone is set, which is
+// handled as INC and DEC's flags are: nothing made of it where it is dead (the host's TST
+// serves a jump right behind), else only as the block's first to set flags, on RFLAGS in
+// memory. The record (50h) is the value and the bit's number.
+fn j_bt(q: u64, len: u64, which: u8) -> bool {
+    if jit_no >> 54 & 1 != 0 || je.mod != 3 { return false; }
+    let w: u32 = je.osz;
+    let sf: u32 = if w == 64 { 1 } else { 0 };
+    let m = hg(je.rm);
+    let imm = (mem_rd(q + je.plen, 8) as! u8) == 0xBA;
+    let n: u32 = if imm { (mem_rd(q + len - 1, 8) & ((w as u64) - 1)) as! u32 } else { 0 };
+    let r = hg(je.reg);
+    if !j_dead {
+        if j_set { return false; }
+        j_needs = true;
+        if imm { a_imm(S1, n); j_rec_w(0x50, w, m, S1); } else { j_rec_w(0x50, w, m, r); }
+    } else { j_stale = true; }
+    // The bit, as one in S2 for BTS, BTR and BTC; and the host's flags from it.
+    if imm {
+        if !j_nohost { a_tst_bit(sf, m, n); j_hf = HF_BT; }
+        if which != 0 { a_imm(S2, (1 as u64) << n); }
+    } else {
+        var by = r;
+        if w == 16 { e(0x12000C00 | r << 5 | S2); by = S2; }          // and w2, wr, #15
+        if !j_nohost || which != 0 { a_shiftv(5, sf, S3, m, by); }     // lsr x3, xm, x(by)
+        if !j_nohost { a_tst_bit(sf, S3, 0); j_hf = HF_BT; }
+        if which != 0 { a_imm(S3, 1); a_shiftv(4, sf, S2, S3, by); }
+    }
+    if which == 0 { return true; }
+    let op: u32 = if which == 1 { A_ORR } else if which == 2 { 0x0A200000 } else { A_EOR };     // orr, bic, eor
+    if w == 16 { a_rrr(op, 0, S4, m, S2); a_bfi_low(m, S4, 16); }
+    else { a_rrr(op, sf, m, m, S2); }
+    return true;
+}
+
+// SHLD or SHRD of a register by a constant or by CL, 32 or 64 bits. The record (60h, 61h)
+// is the two operands with the count above the width; by CL it is made only if the count
+// is not zero, as a shift's is.
+fn j_shd(q: u64, len: u64, op2: u8) -> bool {
+    if jit_no >> 53 & 1 != 0 || je.mod != 3 || je.osz == 16 { return false; }
+    let left = op2 == 0xA4 || op2 == 0xA5;
+    let w: u32 = je.osz;
+    let sf: u32 = if w == 64 { 1 } else { 0 };
+    let m = hg(je.rm);
+    let r = hg(je.reg);
+    let what: u32 = if left { 0x60 } else { 0x61 };
+    if op2 == 0xA4 || op2 == 0xAC {
+        let n: u32 = (mem_rd(q + len - 1, 8) & (if sf == 1 { 63 } else { 31 })) as! u32;
+        if n == 0 { return true; }
+        if j_dead { j_stale = true; }
+        else {
+            a_mov(1, FA, m);
+            a_mov(1, FB, r);
+            a_imm(FK, what | w << 8 | n << 16);
+            j_set = true;
+            j_dyn = false;
+            j_stale = false;
+        }
+        // extr: left, dst:src down by w - n; right, src:dst down by n.
+        let base: u32 = if sf == 1 { 0x93C00000 } else { 0x13800000 };
+        if left { e(base | r << 16 | (w - n) << 10 | m << 5 | m); }
+        else { e(base | m << 16 | n << 10 | r << 5 | m); }
+        j_hf = 0;
+        return true;
+    }
+    e((if sf == 1 { 0x92401400 } else { 0x12001000 }) | hg(1) << 5 | S1);    // and x1, xCL, #63 or #31
+    a_addi(0x71, 1, ZR, S1, 0);                                              // cmp x1, #0
+    if j_dead { j_stale = true; }
+    else {
+        a_csel(1, FA, m, FA, C_NE);
+        a_csel(1, FB, r, FB, C_NE);
+        a_imm(S2, what | w << 8);
+        e(0xAA000000 | S1 << 16 | 16 << 10 | S2 << 5 | S2);                 // orr x2, x2, x1, lsl #16
+        a_csel(1, FK, S2, FK, C_NE);
+        j_set = true;
+        j_dyn = true;
+    }
+    // By a count that is not zero: the other operand's bits come in from the far side,
+    // shifted by w - n, which is -n in the low bits the shift looks at.
+    a_rrr(A_SUB, 1, S4, ZR, S1);
+    if left { a_shiftv(4, sf, S3, m, S1); a_shiftv(5, sf, S4, r, S4); }
+    else { a_shiftv(5, sf, S3, m, S1); a_shiftv(4, sf, S4, r, S4); }
+    a_rrr(A_ORR, sf, S3, S3, S4);
+    a_csel(sf, m, S3, m, C_NE);
+    j_hf = 0;
+    return true;
 }
 
 // The host's condition for the guest's cc as the flags stand, or C_NONE. With no instruction
@@ -610,7 +730,9 @@ fn j_cond_of(hf: u8, cc: u8) -> u32 {
     // After FCMP: below is "less or unordered" (LT), above "greater" (GT), parity
     // "unordered" (VS); equal is "equal or unordered", which no one condition says.
     let fcmp: u8[16] = [255, 255, 11, 10, 255, 255, 13, 12, 255, 255, 6, 7, 255, 255, 255, 255];
-    let c: u8 = if hf == HF_SUB { sub[cc] } else if hf == HF_ADD { add[cc] } else if hf == HF_LOGIC { logic[cc] } else if hf == HF_FCMP { fcmp[cc] } else { incdec[cc] };
+    // After BT's TST (E138): B is "the bit is set", NE; AE is EQ. Nothing else.
+    let bt: u8[16] = [255, 255, 1, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255];
+    let c: u8 = if hf == HF_SUB { sub[cc] } else if hf == HF_ADD { add[cc] } else if hf == HF_LOGIC { logic[cc] } else if hf == HF_FCMP { fcmp[cc] } else if hf == HF_BT { bt[cc] } else { incdec[cc] };
     return c;
 }
 
@@ -686,6 +808,7 @@ fn j_exit_to(r: u32, cnt: u64) {
 fn j_regime() -> u8 {
     let f = je.reg & 7;
     var ak: u8 = 255;
+    if jk == 0 { return if j_bt_op() != 255 { HF_BT } else { 0 }; }
     match jk {
         K_ALU, K_ALUA => { ak = je.op >> 3; },
         K_GRP1 => { ak = f; },
@@ -1150,14 +1273,26 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     let op = je.op;
     let k = jk;
     if k == 0 {
+        // BT, BTS, BTR, BTC and the double shifts (E138), in a machine too.
+        if op == 0x0F && !je.asz32 && je.sg == 0 && je.rep == 0 {
+            let op2 = mem_rd(q + je.plen, 8) as! u8;
+            let bt = j_bt_op();
+            if bt != 255 { return if j_bt(q, len, bt) { len } else { 0 }; }
+            if op2 == 0xA4 || op2 == 0xAC || op2 == 0xA5 || op2 == 0xAD { return if j_shd(q, len, op2) { len } else { 0 }; }
+        }
         // An SSE instruction, in a program without a kernel (in a machine they need the
         // operating system's leave, which the interpreter looks for).
         if machine || je.asz32 || je.sg != 0 || jit_no >> 57 & 1 != 0 { return 0; }
         return if j_sse(q, len) { len } else { 0 };
     }
     // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
-    // (And MOV is taken with it: 16 bits moved.)
-    if je.asz32 || (je.p66 && k != K_NOP && k != K_NOPM && k != K_MOV && k != K_MOVMI) { return 0; }
+    // (And MOV is taken with it: 16 bits moved.) Since E138 the ALU operations, CMP,
+    // TEST, the shifts by a constant, NOT, NEG and MOV of a constant are too, on 16 bits
+    // as the byte forms are on 8: shifted up in a 32-bit host register, and the low bits
+    // of the guest's register put back.
+    if je.asz32 || (je.p66 && je.osz != 16) { return 0; }
+    let n16 = je.p66 && (jit_no >> 52 & 1 == 0) && (k == K_ALU || k == K_GRP1 || k == K_ALUA || k == K_TEST || k == K_TESTA || k == K_GRP3 || k == K_SHIFTI || k == K_SHIFT || k == K_MOVI);
+    if je.p66 && !n16 && k != K_NOP && k != K_NOPM && k != K_MOV && k != K_MOVMI { return 0; }
     if je.rep != 0 && k != K_NOP && k != K_NOPM { return 0; }
     if k < 64 && jit_no >> k & 1 != 0 { return 0; }
     let sf: u32 = if je.osz == 64 { 1 } else { 0 };
@@ -1165,6 +1300,8 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     let m = hg(je.rm);
     let regs = je.mod == 3;
     let wide = op & 1 == 1;              // not a byte, for the opcodes whose low bit says so
+    let narrow = !wide || n16;           // a byte, or 16 bits (E138)
+    let nb: u8 = if wide { 16 } else { 8 };    // and which, where narrow
     // An operand in memory, a push or a pop: in a machine through the TLB (E133), which
     // --jit-off's bit 56 leaves to the interpreter as before.
     let inmem = !regs && (!machine || jit_no >> 56 & 1 == 0);
@@ -1237,20 +1374,20 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             let ak = op >> 3;
             if !(regs || inmem) { return 0; }
             if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
-            if !wide {
+            if narrow {
                 // Bytes: both registers must be ones a byte of which is their low byte.
-                if !j_byte_ok(je.reg) || (regs && !j_byte_ok(je.rm)) { return 0; }
+                if !j_nok(je.reg, nb) || (regs && !j_nok(je.rm, nb)) { return 0; }
                 if regs {
-                    if op & 2 == 0 { j_alu8(ak, false, m, r, 0); if ak != 7 { e(0xB3401C00 | S4 << 5 | m); } }
-                    else { j_alu8(ak, false, r, m, 0); if ak != 7 { e(0xB3401C00 | S4 << 5 | r); } }
+                    if op & 2 == 0 { j_alu_n(ak, false, m, r, 0, nb); if ak != 7 { a_bfi_low(m, S4, nb); } }
+                    else { j_alu_n(ak, false, r, m, 0, nb); if ak != 7 { a_bfi_low(r, S4, nb); } }
                 } else if op & 2 != 0 {
-                    j_addr(); j_chk(false); j_load(8, S3);
-                    j_alu8(ak, false, r, S3, 0);
-                    if ak != 7 { e(0xB3401C00 | S4 << 5 | r); }
+                    j_addr(); j_chk(false); j_load(nb, S3);
+                    j_alu_n(ak, false, r, S3, 0, nb);
+                    if ak != 7 { a_bfi_low(r, S4, nb); }
                 } else {
-                    j_addr(); j_chk(ak != 7); j_load(8, S3);
-                    j_alu8(ak, false, S3, r, 0);
-                    if ak != 7 { j_store(8, S4); }
+                    j_addr(); j_chk(ak != 7); j_load(nb, S3);
+                    j_alu_n(ak, false, S3, r, 0, nb);
+                    if ak != 7 { j_store(nb, S4); }
                 }
             } else if regs {
                 if op & 2 == 0 { j_alu(ak, false, m, m, r); } else { j_alu(ak, false, r, r, m); }
@@ -1270,21 +1407,21 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             let ak = je.reg & 7;
             if !(regs || inmem) { return 0; }
             if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
-            let v = if op == 0x81 { j_const(q + len - 4, 4) } else { j_const(q + len - 1, 1) };
-            if !wide {
-                if regs && !j_byte_ok(je.rm) {
+            let v = if op != 0x81 { j_const(q + len - 1, 1) } else if n16 { j_const(q + len - 2, 2) } else { j_const(q + len - 4, 4) };
+            if narrow {
+                if regs && !j_nok(je.rm, nb) {
                     // AH, CH, DH, BH: the register's second byte out, and the result back.
                     let whole = hg(je.rm - 4);
                     e(0x53083C00 | whole << 5 | S3);                 // ubfx w3, w, #8, #8
                     j_alu8(ak, false, S3, ZR, v);
                     if ak != 7 { e(0xB3781C00 | S4 << 5 | whole); }  // bfi x, x4, #8, #8
                 } else if regs {
-                    j_alu8(ak, false, m, ZR, v);
-                    if ak != 7 { e(0xB3401C00 | S4 << 5 | m); }
+                    j_alu_n(ak, false, m, ZR, v, nb);
+                    if ak != 7 { a_bfi_low(m, S4, nb); }
                 } else {
-                    j_addr(); j_chk(ak != 7); j_load(8, S3);
-                    j_alu8(ak, false, S3, ZR, v);
-                    if ak != 7 { j_store(8, S4); }
+                    j_addr(); j_chk(ak != 7); j_load(nb, S3);
+                    j_alu_n(ak, false, S3, ZR, v, nb);
+                    if ak != 7 { j_store(nb, S4); }
                 }
             } else if regs {
                 j_alu_i(ak, m, m, v, S1);
@@ -1297,24 +1434,24 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         K_ALUA => {
             let ak = op >> 3;
             if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
-            if !wide {
-                j_alu8(ak, false, hg(0), ZR, mem_rd(q + len - 1, 8));
-                if ak != 7 { e(0xB3401C00 | S4 << 5 | hg(0)); }
+            if narrow {
+                j_alu_n(ak, false, hg(0), ZR, if wide { mem_rd(q + len - 2, 16) } else { mem_rd(q + len - 1, 8) }, nb);
+                if ak != 7 { a_bfi_low(hg(0), S4, nb); }
             } else {
                 j_alu_i(ak, hg(0), hg(0), j_const(q + len - 4, 4), S1);
             }
         },
         K_TEST => {
             if !(regs || inmem) { return 0; }
-            if !wide {
-                if !j_byte_ok(je.reg) || (regs && !j_byte_ok(je.rm)) { return 0; }
-                if regs { j_alu8(4, true, m, r, 0); }
-                else { j_addr(); j_chk(false); j_load(8, S3); j_alu8(4, true, S3, r, 0); }
+            if narrow {
+                if !j_nok(je.reg, nb) || (regs && !j_nok(je.rm, nb)) { return 0; }
+                if regs { j_alu_n(4, true, m, r, 0, nb); }
+                else { j_addr(); j_chk(false); j_load(nb, S3); j_alu_n(4, true, S3, r, 0, nb); }
             } else if regs { j_alu(4, true, 0, m, r); }
             else { j_addr(); j_chk(false); j_load(wb, S3); j_alu(4, true, 0, S3, r); }
         },
         K_TESTA => {
-            if !wide { j_alu8(4, true, hg(0), ZR, mem_rd(q + len - 1, 8)); }
+            if narrow { j_alu_n(4, true, hg(0), ZR, if wide { mem_rd(q + len - 2, 16) } else { mem_rd(q + len - 1, 8) }, nb); }
             else {
                 a_imm(S1, j_const(q + len - 4, 4));
                 j_alu(4, true, 0, hg(0), S1);
@@ -1384,6 +1521,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 e(0xB3401C00 | S4 << 5 | hg(low));           // bfi
                 return len;
             }
+            if n16 { a_imm(S4, mem_rd(q + len - 2, 16)); a_bfi_low(hg(low), S4, 16); return len; }
             a_imm(hg(low), if sf == 1 { mem_rd(q + len - 8, 64) } else { mem_rd(q + len - 4, 32) });
         },
         K_MOVMI => {
@@ -1407,7 +1545,9 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_SHIFTI, K_SHIFT => {
             let which = je.reg & 7;
-            if regs && wide && which < 2 {
+            // Sixteen bits (E138): of a register, by a constant, a shift.
+            if n16 && !(regs && which >= 4 && op != 0xD2 && op != 0xD3) { return 0; }
+            if regs && wide && !n16 && which < 2 {
                 // ROL and ROR set CF and OF and leave the rest: translated where what they
                 // set is dead (no record, and the host's flags stay the last setter's), or
                 // by a constant as the first to set flags in the block.
@@ -1434,16 +1574,18 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 e((if sf == 1 { 0x93C00000 } else { 0x13800000 }) | m << 16 | right << 10 | m << 5 | m);     // ror #right
                 return len;
             }
-            if regs && !wide && which >= 4 && op != 0xD2 {
-                // A byte shifted by a constant: on 32 bits, and the byte put back.
-                if !j_byte_ok(je.rm) { return 0; }
-                let n = if op == 0xD0 { 1 } else { mem_rd(q + len - 1, 8) & 0x1F };
+            if regs && narrow && which >= 4 && op != 0xD2 && op != 0xD3 {
+                // A byte, or 16 bits, shifted by a constant: on 32 bits, and the low
+                // bits put back.
+                if !j_nok(je.rm, nb) { return 0; }
+                let n = if op == 0xD0 || op == 0xD1 { 1 } else { mem_rd(q + len - 1, 8) & 0x1F };
                 if n == 0 { return 0; }
                 a_imm(S1, n);
-                j_rec_w(0x20 | (which as u32), 8, m, S1);
-                if which == 7 { e(0x13001C00 | m << 5 | S4); } else { e(0x12001C00 | m << 5 | S4); }     // sxtb, or and #0xFF
+                j_rec_w(0x20 | (which as u32), nb, m, S1);
+                if which == 7 { e((if nb == 8 { 0x13001C00 } else { 0x13003C00 }) | m << 5 | S4); }   // sxtb, sxth
+                else { e((if nb == 8 { 0x12001C00 } else { 0x12003C00 }) | m << 5 | S4); }           // and #0xFF, #0xFFFF
                 a_shifti(which, 0, S4, S4, n as! u32);
-                e(0xB3401C00 | S4 << 5 | m);                 // bfi
+                a_bfi_low(m, S4, nb);
                 j_hf = 0;
                 return len;
             }
@@ -1526,12 +1668,24 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 }
                 return len;
             }
-            if !wide {
-                // TEST of a byte with a constant.
-                if field > 1 || !(regs || inmem) { return 0; }
-                let v = mem_rd(q + len - 1, 8);
-                if !regs { j_addr(); j_chk(false); j_load(8, S3); j_alu8(4, true, S3, ZR, v); }
-                else if j_byte_ok(je.rm) { j_alu8(4, true, m, ZR, v); }
+            if narrow {
+                // TEST of a byte, or of 16 bits, with a constant; NOT and NEG of a register.
+                if field > 3 || (field > 1 && !regs) || !(regs || inmem) { return 0; }
+                if field == 2 {
+                    if !j_nok(je.rm, nb) { return 0; }
+                    e(0x2A2003E0 | m << 16 | S4);            // mvn w4, wm
+                    a_bfi_low(m, S4, nb);
+                    return len;
+                }
+                if field == 3 {
+                    if !j_nok(je.rm, nb) { return 0; }
+                    j_alu_n(5, false, ZR, m, 0, nb);
+                    a_bfi_low(m, S4, nb);
+                    return len;
+                }
+                let v = if wide { mem_rd(q + len - 2, 16) } else { mem_rd(q + len - 1, 8) };
+                if !regs { j_addr(); j_chk(false); j_load(nb, S3); j_alu_n(4, true, S3, ZR, v, nb); }
+                else if j_nok(je.rm, nb) { j_alu_n(4, true, m, ZR, v, nb); }
                 else { e(0x53083C00 | hg(je.rm - 4) << 5 | S3); j_alu8(4, true, S3, ZR, v); }       // AH, CH, DH, BH
                 return len;
             }
@@ -1826,6 +1980,8 @@ fn j_settle() {
         mul_flags(over, lo, w);
     }
     else if what == 0x28 || what == 0x29 { shift(what & 7, jx[1], jx[2], w, true); }
+    else if what == 0x50 { rflags = rflags & ~CF | jx[1] >> (jx[2] & ((w as u64) - 1)) & 1; }       // BT: CF alone
+    else if what == 0x60 || what == 0x61 { shift_double(what == 0x60, jx[1], jx[2], fk >> 16 & 0xFF, w); }
     else if what == 0x40 || what == 0x41 { sse64_comis(what == 0x40, jx[1], jx[2]); }
     else { shift(what & 7, jx[1], jx[2], w, false); }
 }

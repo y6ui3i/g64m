@@ -10232,3 +10232,89 @@ time by `/usr/bin/time` (the host had other work; load 2.5 to 4):
 **Next.** BT, the 16-bit forms and SHLD/SHRD translated, so that the runs they cut are one
 block: the item next on the list, and what gives this change its worth. The counting of
 arrivals stays as it is here.
+
+----
+## E138: BT, SHLD/SHRD and the 16-bit forms in blocks (2026-11-22)
+
+E137 made the instruction behind a BT or a 16-bit operation a block's head, and found the
+blocks so made two or three instructions long: the BT and the 16-bit forms cut every run,
+and an entry into a block costs about what interpreting the two or three would. E135 read
+`bt rax, r15; jae` off the hottest interpreted address and `shr cx, 6` beside it; E136
+counted SHRD at 2% of Python and Node and 16-bit forms at 4% of gzip; `p_bitfield`'s loop
+(0.05 of QEMU) has `shrw` and `sarw` in it.
+
+- **Hypothesis**: **with BT, BTS, BTR and BTC on registers, SHLD and SHRD on registers,
+  and the 16-bit forms of the ALU operations, CMP, TEST, the shifts by a constant, NOT,
+  NEG and MOV of a constant translated, the three files of E137 run with under 4% of their
+  instructions interpreted and under 1,000 million entries into blocks (from 7.9% and
+  1,488 million), a tenth or more faster; and `p_bitfield` comes from 0.05 of QEMU to
+  QEMU's neighbourhood.**
+- **What changed since last time**: E137's arrivals. The translator gets the three
+  families; the record of the flags gets BT's (CF alone) and the double shift's.
+- **Next move for each result**:
+  - Under 4% interpreted and a tenth faster → the whole build against QEMU, then the
+    rotations with flags and the string instructions
+  - Interpreted down but the time not → entries counted against instructions again; the
+    hottest interpreted addresses read for the next cut
+  - `p_bitfield` still far under QEMU → its block's listing: what else its loop has
+  - A test fails under `--jit-check` → the form at fault, found by `--jit-off`
+- **Cut-off**: the short race twice; the primitives once; one whole build if the short
+  race says so.
+
+**Result: `p_bitfield` went from 0.05 of QEMU to 0.73; the three files went from 7.9% to
+6.8% interpreted and no faster, and a count of what is still interpreted says why: the SSE
+moves in a machine, and cold code.** The short race as in E137 (CPU time; the host had
+other work):
+
+| Three of NetHack's files | E137 | E138 |
+|---|---:|---:|
+| CPU seconds (user) | 150.1 | 152.8 |
+| Interpreted | 1.88 billion (7.9%) | 1.63 billion (6.8%) |
+| Entries into blocks | 1,488 million | 1,279 million |
+| Blocks translated | 18.9 million | 18.1 million |
+| Times the room filled | 53 | 54 |
+
+The primitives, the long forms of E131 under `--jit` on this host (QEMU's numbers from E131):
+
+| | g64m, million instructions a second | QEMU | g64m / QEMU | In E131 |
+|---|---:|---:|---:|---:|
+| `p_bitfield` (`shrw`, `sarw` in its loop) | 9,100 | 12,448 | 0.73 | 0.05 |
+| `p_shift` | 16,700 | 16,154 | 1.03 | 1.13 |
+| `p_bytes` | 5,460 | 5,014 | 1.09 | 1.10 |
+| `p_if` | 2,465 | 2,439 | 1.01 | 1.04 |
+
+All 68 tests pass (`difftest64` 29 with the new `j_bits`, `prim64` 23, `systest64` 16).
+`j_bits` goes round BT, BTS, BTR, BTC, SHLD, SHRD and the 16-bit forms fourteen times, with
+its trace from hal; under `--jit` 1,026 of its 2,400 instructions run in blocks, against 666
+with the three families turned off (`--jit-off` bits 52 to 54), in 20 blocks against 45.
+
+**What the interpreter still runs** (a counting copy, `build/count_cov.py`: every
+instruction run from the decode cache by its standing, over the three files; 1.64 billion
+interpreted in all):
+
+| | Instructions | Of the interpreted |
+|---|---:|---:|
+| SSE in a machine (`0F 6F` 140, `0F 11` 121, `0F 6E` 25, `0F 29` 23, PXOR 23, `0F 7E` 20, POR 16 million...) | 461 million | 28% |
+| In no block, of a kind the translator takes (MOV 114, ALU 37, the group 80h 37, FFh 34, Jcc 24 million...): code run fewer than eight times | about 350 million | 21% |
+| Run for the first time (not in the decode cache yet) | 139 million | 8% |
+| Inside a block but interpreted: behind a way out, or a time slice's end | 140 million | 9% |
+| A block's first instruction, the block left before it ran (a TLB miss on its load) | 87 million | 5% |
+| Ports, CLI, STI, PUSHF, POPF, IRET, `rep insw` and `rep outsw` (the disk) | 54 million | 3% |
+| Refused for the time slice | 6 million | |
+
+- **BT, SHLD/SHRD and the 16-bit forms were not what cut the build's runs.** They are
+  real in `p_bitfield` and in E136's gzip, Python and Node; the build's cutter is the SSE
+  moves GCC copies structures with, which a machine's blocks do not have (E119 and E135
+  said so; E137's counting of arrivals made them the head of every run behind them, hence
+  the entries). One in four interpreted instructions is one, and nearly every one ends a
+  block and costs an entry.
+- **Cold code is the other half**: 490 million instructions run from one to seven times
+  (29%). Each of GCC's processes runs its front, its parsing and its passes a few times
+  over; the room's 54 flushes start every count again too.
+- **The hypothesis** was right about `p_bitfield` and wrong about the three files: not
+  under 4%, not faster.
+
+**Next.** SSE in a machine (the moves, PXOR, POR, PAND, the shuffles), through the TLB as
+the integer loads and stores are, with the operating system's leave (CR0.TS and EM) checked
+on the way in: item six of the list, brought forward by this count. Then the cold code:
+the threshold of eight, or the cost of a first run.

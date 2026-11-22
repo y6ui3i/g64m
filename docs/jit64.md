@@ -214,7 +214,13 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   each with pairs).
 - **Operands of 64, 32, 16 and 8 bits.** A 32-bit result clears the upper half, which
   is what a host instruction on a `w` register does. 8 and 16 bits are put into the
-  register with a bit-field insert. The flags' record keeps the width in its kind.
+  register with a bit-field insert. The flags' record keeps the width in its kind. Since
+  E138 the 16-bit ALU operations, CMP, TEST, the shifts by a constant, NOT, NEG and MOV
+  of a constant are translated as the byte forms are: the operands shifted up in a 32-bit
+  host register, so that the host's flags are the narrow result's. BT, BTS, BTR and BTC
+  of registers give a jump right behind them a TST of the bit, and otherwise a record of
+  the value and the bit's number, handled as INC and DEC's flags are; SHLD and SHRD of
+  registers are one EXTR by a constant, or two shifts and an OR by CL.
 - **Addresses relative to RIP, and the return address a CALL pushes.** A block is found
   by its physical address, and one page of a shared library is at different virtual
   addresses in different programs, so RIP cannot be a constant in generated code: it is
