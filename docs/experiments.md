@@ -10067,3 +10067,28 @@ out, made an arrival, so that it becomes a block's head; the room for code made 
 given back; then BT, the 16-bit forms, and SSE in a machine. Each measured on the three
 files (`RACE_SHORT=1 tools/build_race.py`, three minutes), then on the whole build against
 QEMU.
+
+## E136: real amd64 images under QEMU's user mode, before the optimizing goes on (2026-11-22)
+
+The owner's order of 2026-11-22: beat QEMU on everything measured (the primitives, the boot,
+the build in the guest) before the Docker backend (M11). Before starting, the owner asked
+to look at what a Docker backend actually runs: a few real amd64 images, under QEMU's user
+mode as OrbStack or Docker would run them. g64m cannot run them yet (it has three system
+calls), so this measures QEMU's side only, and counts what instructions those programs
+run. Images, by the owner's leave: `alpine:3.22`, `python:3.13-slim`, `node:22-alpine`,
+`redis:alpine`, and Alpine's `build-base` for GCC, all for amd64 from Docker Hub.
+
+- **Hypothesis**: **the instructions real images run are those the primitives and the
+  in-guest build already show (ALU, MOV, Jcc, SSE moves), so E135's list of fixes keeps
+  its order; Node, whose V8 writes code of its own all the time, is the one that differs,
+  by code written while it runs.**
+- **What changed since last time**: E135 measured a build in a machine (system mode). This
+  is user mode, which is what a Docker backend is, on programs other than a compiler.
+- **Next move for each result**:
+  - The mix is what the list assumed → the list as it is, starting with the arrivals and
+    the room for code
+  - Something the list does not have is large (x87, packed SSE, AVX, 16-bit, string
+    instructions, code written at run time) → that moves up the list
+  - Under QEMU a workload is too slow to be worth racing on → it is left out of the races
+- **Cut-off**: one timed run of each workload under QEMU and under Rosetta; one count of
+  the instruction mix for each; this afternoon.
