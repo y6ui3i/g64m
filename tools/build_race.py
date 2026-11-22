@@ -7,7 +7,7 @@
 #
 #   python3 -I tools/build_race.py g64m [options for build/g64m, default --jit]
 #   python3 -I tools/build_race.py qemu
-import subprocess, time, sys, os, shutil, re
+import subprocess, time, sys, os, shutil, re, resource
 os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 K, I, D = 'images/vmlinuz64-lts', 'images/initramfs64-disk', 'images/disk64-dev.img'
 CMD = ('export PATH=/usr/sbin:/usr/bin:/sbin:/bin; cd /root/NetHack-3.6.7; '
@@ -70,5 +70,8 @@ else:
 open('build/race-%s.out' % who, 'wb').write(out)
 text = out.decode(errors='replace')
 tail = text[text.rfind('make-rc='):] if 'make-rc=' in text else text[-400:]
-print('%s: %.1f s' % (who, took))
+# The CPU time of what was run (E143: a wall clock on a host with other work moves more
+# than the changes being measured).
+ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+print('%s: %.1f s, CPU %.1f s user and %.1f s system' % (who, took, ru.ru_utime, ru.ru_stime))
 print(tail.replace('\r', '')[:600])

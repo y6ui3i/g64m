@@ -469,6 +469,7 @@ fn main() {
         else if a[i] == "--jit" { jit_on = true; }
         else if a[i] == "--jit-check" { jit_on = true; jit_check = true; }
         else if a[i] == "--jit-stats" { jit_stats = true; }
+        else if a[i] == "--jit-why" { jit_on = true; jit_stats = true; jit_why = true; }
         else if a[i] == "--jit-time" { jit_on = true; jit_stats = true; jit_time = true; }
         else if a[i] == "--jit-off" && i + 1 < a.len {
             i++;
@@ -637,6 +638,16 @@ fn main() {
         var msg: u8[>..] = [];
         format(msg, "g64m: jit: ", j_blocks, " blocks, ", j_used, " bytes (", j_bytes as! i64, " written in all), entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links, ", j_evicted as! i64, " blocks lost to the cache\n");
         write_stderr(msg);
+        if jit_why {
+            var m3: u8[>..] = [];
+            format(m3, "g64m: jit-why: another page ", jw[0], ", not in the cache ", jw[1], ", cold ", jw[2], ", hot and no block ", jw[3], ", inside a block ", jw[4], ", a block with no time left ", jw[5], ", a block ", jw[6], "\n");
+            format(m3, "g64m: jit-why: on another page: not in the TLB ", jw2[0], ", not in the cache ", jw2[1], ", cold ", jw2[2], ", hot and no block ", jw2[3], ", inside a block ", jw2[4], ", a block with no time left ", jw2[5], ", a block ", jw2[6], " (of another level ", jw2[7], ")\n");
+            format(m3, "g64m: jit-why: a block that reads RFLAGS met with a record waiting: ", jw_rec[0], " on the page, ", jw_rec[1], " on another; exits not chained for the table being full: ", jw_lkfull, "\n");
+            for i in 64 { if jw_kind[i] != 0 { format(m3, "g64m: jit-why: kind ", i, " ", jw_kind[i], "\n"); } }
+            for i in 256 { if jw_0f[i] != 0 { format(m3, "g64m: jit-why: 0F ", i, " ", jw_0f[i], "\n"); } }
+            for i in 256 { if jw_op[i] != 0 { format(m3, "g64m: jit-why: op ", i, " ", jw_op[i], "\n"); } }
+            write_stderr(m3);
+        }
         if jit_time {
             jit_tally();
             var m2: u8[>..] = [];

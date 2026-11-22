@@ -10685,3 +10685,52 @@ an instruction or a run interpreted, and a block not gone on to.
   - Another page the larger part → the far way's misses counted by their reason
   - Cold addresses the larger part → the threshold of eight
 - **Cut-off**: the short race once with the count.
+
+**Result: the hypothesis was wrong. Nine leavings in a hundred go to an instruction the
+translator refuses; nearly half go to an address where a block already is, and was not
+chained to.** The three files, `--jit --jit-why`, 1,026 million leavings (CPU 125.6 s):
+
+| Where the block went | Millions | Share |
+|---|---:|---:|
+| On the page it was entered on: a block's first instruction, time left | 455 | 44% |
+| On another page than the one entered on | 373 | 36% |
+| – of those: a block there, of this level, time left | 178 | |
+| – not in the TLB's table for fetches | 68 | |
+| – not in the decode cache | 67 | |
+| – hot and no block (a refused instruction) | 44 | |
+| – cold | 16 | |
+| On the page: hot and no block (a refused instruction) | 91 | 9% |
+| On the page: not in the decode cache | 79 | 8% |
+| On the page: cold (fewer than eight arrivals) | 26 | 3% |
+| Inside a block; a block with no time left for it | 1.3; 1.0 | |
+
+- **A block was there 633 million times in 1,026 million (62%)**, and the exit went out to
+  the interpreter, which looked it up and entered it. ("Another page" is the page the
+  chain of blocks was entered on, not the page of the block that left: a run of chained
+  blocks goes through many, so most of those 178 million are exits on one page too.)
+- **Why not chained: the table of waiting exits is full.** An exit to an address with no
+  block yet is written into a table (`lk_site` and the rest, 65,536 entries) and made a
+  branch when the block comes; the table is emptied only at a flush. With 6 million
+  blocks between 17 flushes it fills in the first tenth of each stretch: **3.5 million of
+  the 6 million blocks were translated with the table full**, and their exits to blocks
+  not yet made stay ways out for good. When the room filled every few seconds (before
+  E142) the table was emptied as often; with the flushes down to a third it is full most
+  of the time.
+- **A block that reads RFLAGS in memory, met with a record waiting**: 113 million (11%).
+  Such a block (one that begins with INC, DEC, BT, a rotation, or a jump on flags set
+  before it) refuses an entry from another block while a record is waiting, and the
+  interpreter settles the record and enters it.
+- **Refused instructions**: 135 million (13%): `0F 73` (the shifts of an XMM register by
+  a constant) 12.7, PANDN 7.6, CMPXCHG 7.1, PUNPCKLQDQ 6.7, BSF 5.6, PSHUFD 3.0 million;
+  the group FFh 10.6 million (INC and DEC of memory, PUSH of an operand); `rep stos` 3.4,
+  CLI 2.0, OUT 1.8, `rep movs` 1.0 million.
+- **Not in the TLB's table for fetches**: 68 million (7%); not in the decode cache or
+  cold: 188 million (18%).
+
+`tools/build_race.py` prints the CPU time of what it ran from here (E143).
+
+**Next.** E145: the waiting exits kept without a table, in the room itself: four words
+behind each such exit (the next in the chain, the address waited for, the level), so that
+every exit can wait, however many, and the table and its limit go. Then the record
+settled in a block's way in, the refused instructions in this count's order, and the cache
+in four ways (E143).

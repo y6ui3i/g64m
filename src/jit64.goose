@@ -80,6 +80,63 @@ var dc_runs: u32[DC_SIZE] = [0; DC_SIZE];
 var jr_never: i64 = 0;
 var jr_few: i64 = 0;
 var jr_many: i64 = 0;
+// --jit-why (E144): where each block went when it was left, by the standing of that
+// address: 0 another page, 1 not in the decode cache, 2 in it and cold, 3 in it, hot and
+// no block (by kind in jw_kind, and for no kind by the byte behind 0Fh in jw_0f, 256 for
+// one not behind 0Fh), 4 inside a block, 5 a block's first instruction with no time left
+// for it, 6 the same with time.
+var jit_why = false;
+var jw: i64[8] = [0; 8];
+var jw_kind: i64[64] = [0; 64];
+var jw_0f: i64[257] = [0; 257];
+var jw_op: i64[256] = [0; 256];
+
+// The same for an address on another page, found as the far way finds it (the TLB's table
+// for fetches at this level): jw2, with 0 for one not in the TLB; and of the blocks that
+// were there with time left, how many read RFLAGS in memory and had a record waiting
+// (jw_rec), for this page and for another.
+var jw2: i64[8] = [0; 8];
+var jw_rec: i64[2] = [0; 2];
+var jw_lkfull: i64 = 0;
+var dc_needs: u8[DC_SIZE] = [0; DC_SIZE];
+
+fn jit_went() {
+    var ph = rip - code_delta;
+    var far = 0;
+    if rip >> 12 != code_page {
+        far = 1;
+        if !machine || (cpl != 0 && cpl != 3) { jw[0] += 1; return; }
+        let page = rip >> 12;
+        let at = (((if cpl == 0 { 4 } else { 5 }) << 12) | (page & 0xFFF)) as! i64;
+        if tlb_tag[at] != page { jw[0] += 1; jw2[0] += 1; return; }
+        ph = tlb_phys[at] | rip & 0xFFF;
+        jw[0] += 1;
+    }
+    let s = dc_find(ph);
+    if dc[s].tag != ph { if far == 1 { jw2[1] += 1; } else { jw[1] += 1; } return; }
+    if dc_n[s] != 0 {
+        let late = steps + dc_n[s] > rep_until;
+        if far == 1 { if late { jw2[5] += 1; } else { jw2[6] += 1; } }
+        else if late { jw[5] += 1; } else { jw[6] += 1; }
+        if !late && dc_needs[s] != 0 && jx[3] != 0 { jw_rec[far] += 1; }
+        if !late && dc_cpl[s] != cpl { jw2[7] += 1; }
+        return;
+    }
+    if far == 1 {
+        if dc_cov[s] != 0 { jw2[4] += 1; } else if dc_heat[s] < J_HOT { jw2[2] += 1; } else { jw2[3] += 1; }
+        return;
+    }
+    if dc_cov[s] != 0 { jw[4] += 1; return; }
+    if dc_heat[s] < J_HOT { jw[2] += 1; return; }
+    jw[3] += 1;
+    let k: i64 = dc[s].ins.kind;
+    jw_kind[k & 63] += 1;
+    if k == 0 {
+        let op: i64 = dc[s].ins.op;
+        if op == 0x0F { jw_0f[mem_rd(ph + dc[s].ins.plen, 8) as! i64] += 1; }
+        else { jw_0f[256] += 1; jw_op[op] += 1; }
+    }
+}
 var j_bytes: u64 = 0;        // bytes of code written in all, flushed or not (E137)
 let J_SIZE = 134217728;      // 128 MB: as far as a `b` reaches (E137)
 let J_HOT = 8;               // arrivals at a jump's target before it is translated
@@ -1958,7 +2015,7 @@ fn jit_translate_in(ph: u64) {
             // The exits that wait for a block, by the address they wait for; and the ones
             // that waited for this.
             for i in tp_n {
-                if lk_n + 1 >= LK_MAX { break; }
+                if lk_n + 1 >= LK_MAX { jw_lkfull += 1; break; }
                 let ws = dc_slot(tp_to[i]);
                 lk_site[lk_n] = j_used + tp_pos[i];
                 lk_to[lk_n] = tp_to[i];
@@ -1981,6 +2038,7 @@ fn jit_translate_in(ph: u64) {
             dc_code[head_slot] = j_used as! u32;
             dc_n[head_slot] = n as! u8;
             dc_cpl[head_slot] = cpl;
+            dc_needs[head_slot] = if j_needs { 1 } else { 0 };
             dc_k0[head_slot] = dc[head_slot].ins.kind;
             dc[head_slot].ins.kind = 0;
             j_used += jc.len;
@@ -2090,6 +2148,7 @@ fn jit_enter() -> bool {
     steps += ran - 1;
     j_entered += 1;
     j_ran += ran;
+    if jit_why { steps += 1; jit_went(); steps -= 1; }
     if jit_time { let t3 = jit_now(); jt_enter += t3 - t0; jt_body += t2 - t1; }
     return true;
 }
