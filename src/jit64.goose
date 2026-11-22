@@ -97,7 +97,6 @@ var jw_op: i64[256] = [0; 256];
 // (jw_rec), for this page and for another.
 var jw2: i64[8] = [0; 8];
 var jw_rec: i64[2] = [0; 2];
-var jw_lkfull: i64 = 0;
 var dc_needs: u8[DC_SIZE] = [0; DC_SIZE];
 
 fn jit_went() {
@@ -394,7 +393,6 @@ var j_nohost = false;         // and nothing reads them from the host's flags ei
 var j_stale = false;
 var j_needs = false;         // the block reads RFLAGS in memory, or builds on it (INC, DEC)
 var jit_links: u64 = 0;      // exits made into branches to a block
-var lk_n = 0;
 // The exits of the block being translated that could be linked later: where, and to what.
 let TP_MAX = 128;
 var tp_n = 0;
@@ -410,6 +408,16 @@ var ss_pos: i64[SS_MAX] = [0; SS_MAX];
 let BODY_AT = 24;
 
 // Makes the branch at `site` in the mapping go to `to`.
+// Writes the word w at `site` in the mapping.
+fn j_poke32(site: i64, w: u32) {
+    jp = [];
+    jp.push(w as! u8);
+    jp.push((w >> 8) as! u8);
+    jp.push((w >> 16) as! u8);
+    jp.push((w >> 24) as! u8);
+    jit_write(j_mem + site, jp[..]);
+}
+
 fn j_patch(site: i64, to: i64) {
     let w: u32 = 0x14000000 | (((to - site) >> 2) as! u32) & 0x3FFFFFF;
     jp = [];
@@ -846,6 +854,7 @@ fn j_tell() {
 // program without a kernel, where an address is the same wherever it is jumped to from.
 fn j_exit(off: u64, cnt: u64, link: bool) {
     var to = j_out_at;
+    var waits = false;
     // In a machine a link stays on the page: there an address's page is known to be this
     // block's. (And blocks are for one privilege level, which nothing in a block changes.)
     let linked = link && !jit_check && jit_no >> 63 == 0 && (!machine || (j_head + off) >> 12 == j_head >> 12);
@@ -866,12 +875,22 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
         let slot = dc_find(t);
         if t == j_head { to = j_used; jit_links += 1; }
         else if dc[slot].tag == t && dc_n[slot] != 0 && dc_cpl[slot] == cpl { to = dc_code[slot]; jit_links += 1; }
-        else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; }
+        else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; waits = true; }
     }
     // In a machine, an address on another page: looked up as it is jumped to.
     if link && machine && !linked { to = j_far(); }
     let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
+    // An exit that waits for a block carries its own entry behind the branch (E145), which
+    // nothing runs into: the next in the chain (filled in when the block is written), the
+    // address waited for, and the privilege level.
+    if waits {
+        let t = j_head + off;
+        e(0);
+        e(t as! u32);
+        e((t >> 32) as! u32);
+        e(cpl);
+    }
 }
 
 // Where an exit to an address not known to be a block's goes: the far way for this kind
@@ -1924,7 +1943,6 @@ fn jit_flush() {
         dc_cov[slot] = 0;
     }
     for i in MEM_SIZE >> 12 { jit_page[i] = 0; }
-    lk_n = 0;
     j_used = j_keep;
     j_flushes += 1;
 }
@@ -2011,29 +2029,33 @@ fn jit_translate_in(ph: u64) {
                     e_at(at + 4, 0x54000002 | ((((BODY_AT - (at + 4)) >> 2) as! u32) & 0x7FFFF) << 5);    // b.hs the body
                 }
             }
-            jit_write(j_mem + j_used, jc[..]);
-            // The exits that wait for a block, by the address they wait for; and the ones
-            // that waited for this.
+            // The exits that wait for a block are chained by the address they wait for,
+            // from the first way's slot of that address whichever way its entry is in,
+            // through the word behind each (E145: no table, so none is left out).
             for i in tp_n {
-                if lk_n + 1 >= LK_MAX { jw_lkfull += 1; break; }
                 let ws = dc_slot(tp_to[i]);
-                lk_site[lk_n] = j_used + tp_pos[i];
-                lk_to[lk_n] = tp_to[i];
-                lk_cpl[lk_n] = cpl;
-                lk_next[lk_n] = dc_wait[ws];
-                lk_n += 1;
-                dc_wait[ws] = lk_n as! u32;
+                e_at(tp_pos[i] + 4, dc_wait[ws]);
+                dc_wait[ws] = (j_used + tp_pos[i] + 1) as! u32;
             }
-            // (The exits that wait are chained from the first way's slot, whichever way
-            // the entry is in.)
+            jit_write(j_mem + j_used, jc[..]);
+            // The ones that waited for this are made branches to it; the ones in the same
+            // chain that wait for another address are chained again.
             let wk = dc_slot(head);
             var w = dc_wait[wk];
-            dc_wait[wk] = 0;
+            var kept: u32 = 0;
             while w != 0 {
-                let i = (w - 1) as! i64;
-                if lk_to[i] == head && lk_cpl[i] == cpl { j_patch(lk_site[i], j_used); }
-                w = lk_next[i];
+                let site = (w - 1) as! i64;
+                let next = (jit_peek64(j_mem + site + 4) & 0xFFFFFFFF) as! u32;
+                let to = jit_peek64(j_mem + site + 8) as! u64;
+                let lv = (jit_peek64(j_mem + site + 16) & 0xFF) as! u8;
+                if to == head && lv == cpl { j_patch(site, j_used); }
+                else {
+                    if next != kept { j_poke32(site + 4, kept); }
+                    kept = w;
+                }
+                w = next;
             }
+            dc_wait[wk] = kept;
             jit_page[(head >> 12) as! i64] = 1;
             dc_code[head_slot] = j_used as! u32;
             dc_n[head_slot] = n as! u8;
