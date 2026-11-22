@@ -10318,3 +10318,31 @@ interpreted in all):
 the integer loads and stores are, with the operating system's leave (CR0.TS and EM) checked
 on the way in: item six of the list, brought forward by this count. Then the cold code:
 the threshold of eight, or the cost of a first run.
+
+----
+## E139: SSE in a machine (2026-11-22)
+
+E138's count of what the interpreter still runs in the build: one in four instructions is
+an SSE one in a machine, the moves GCC copies structures with (`0F 6F`, `0F 11`, `0F 29`,
+`0F 6E`, `0F 7E`, `0F D6`) and PXOR, POR and PAND. All of them are translated in a program
+without a kernel (E132), through `j_sse`; in a machine `j_one` refuses them, because the
+operating system can take the unit away (CR0.TS, CR0.EM, CR4.OSFXSR) and the interpreter
+looks at that before each. And each refused one ends a block: E137's arrivals make the
+instruction behind it a head, so an SSE move costs an entry as well as its interpretation.
+
+- **Hypothesis**: **with `j_sse` allowed in a machine, its memory operands through the TLB
+  as the integer loads and stores are (`j_chk_n` knows 16 bytes already), and a way out
+  before each SSE instruction when the unit is not to be used (a flag the block is given
+  on entry, from CR0 and CR4), the three files run with under 5% of their instructions
+  interpreted (from 6.8%) and under 900 million entries (from 1,279 million), a tenth
+  faster; Linux boots under `--jit-check`, and the system tests pass, with a new one that
+  moves through XMM registers with the unit taken away and given back.**
+- **What changed since last time**: E138's count said which instructions. Nothing of the
+  SSE translation changes; what changes is where it is allowed and the leave.
+- **Next move for each result**:
+  - Under 5% and a tenth faster → the whole build against QEMU (E135's 914 s); then the
+    cold code (the threshold, the first run), or the packed forms the build has (`0F 73`,
+    `0F 6C`, `0F 62`, `0F 70`)
+  - Interpreted down, entries down, the time not → the entry's cost measured on its own
+  - `--jit-check` differs in the boot → the leave or the TLB's path for 16 bytes, first
+- **Cut-off**: the short race twice; one boot under `--jit-check`; the suites.
