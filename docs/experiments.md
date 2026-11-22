@@ -10457,3 +10457,32 @@ had other work: load 13 as g64m started, 4 to 5 through most of it, 2 to 4 under
 of blocks never entered, on the three files; then whichever is largest: the room given back
 by page (chunks, so a dropped page's blocks make room without a flush), the walk ahead
 cut, or the entry made cheaper. The cold code (E138's 29% of the interpreted) behind that.
+
+----
+## E141: where the time goes with 95% in blocks: the translator, the entry, the blocks (2026-11-22)
+
+E140: the whole build is 2.4 times behind QEMU with 94.9% of its instructions in blocks, a
+block entered every 18 instructions, 157 GB of host code written (55 MB a second) and the
+room flushed 1,169 times. The interpreter's share is bounded now; the rest is unmeasured.
+
+- **Hypothesis**: **on the three files, the translator takes between a fifth and a third
+  of the CPU time, the entries (the way in and out around a block, apart from the block's
+  own code) between a tenth and a fifth, and at least a third of the blocks translated
+  are never entered before the next flush (the walk ahead from every head).**
+- **What changed since last time**: a measurement, no change to what is translated.
+  `--jit-time`: a clock (`clock_gettime`, through `jit.c`) around `jit_translate`, around
+  `jit_enter` and around the call into the block; a count of runs in each block's own
+  code (five host instructions at its body's start), tallied at each flush and at the
+  end into never run, run fewer than eight times, run more.
+- **Next move for each result**:
+  - The translator a fifth or more → the room given back by page (chunks), so a dropped
+    page's blocks make room without a flush and the working set is not translated again
+    every 2.5 seconds; and the walk ahead cut if a third of the blocks never run
+  - The entries a fifth or more → the entry made cheaper (what it does in `jit_enter`,
+    the settle of the record, the arrival), or fewer: the far way in a machine for more
+    kinds of exit
+  - Neither; the blocks' own code is the time → the hot blocks' listings against QEMU's,
+    as E131 did for `p_loop`
+- **Cut-off**: the short race once with the clocks, once with the clocks' own cost
+  measured (`--jit-time` reads the clock a million times at the start and prints what one
+  read costs).
