@@ -80,7 +80,9 @@ var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made 
 // guest's registers are, [11] the decode cache, [12] dc_n, [13] dc_code and [14] the
 // mapping, for the far way, [15] whether the flags are stale (--jit-check), [16] where the
 // XMM registers are, [17] and [18] the bases of FS and GS, [19] and [20] where the TLB's
-// tags and its physical pages are (a machine's loads and stores).
+// tags and its physical pages are (a machine's loads and stores), [21] dc_cpl, [22] not
+// zero when the SSE unit is not to be used (E139: a machine's CR0.TS or EM set, or
+// CR4.OSFXSR clear; the interpreter faults).
 var jx: u64[24] = [0; 24];
 // --jit-check: each store's address and the eight bytes that were there.
 var jlog: u64[256] = [0; 256];
@@ -1280,10 +1282,18 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             if bt != 255 { return if j_bt(q, len, bt) { len } else { 0 }; }
             if op2 == 0xA4 || op2 == 0xAC || op2 == 0xA5 || op2 == 0xAD { return if j_shd(q, len, op2) { len } else { 0 }; }
         }
-        // An SSE instruction, in a program without a kernel (in a machine they need the
-        // operating system's leave, which the interpreter looks for).
-        if machine || je.asz32 || je.sg != 0 || jit_no >> 57 & 1 != 0 { return 0; }
-        return if j_sse(q, len) { len } else { 0 };
+        // An SSE instruction. In a machine (E139) the operating system may have taken the
+        // unit away (CR0.TS, CR0.EM, CR4.OSFXSR): the block is told on entry, and leaves
+        // before the instruction, for the interpreter to fault. The two instructions of
+        // that are put in first and made NOPs if the instruction is not taken after all
+        // (the code's array only grows).
+        if je.asz32 || je.sg != 0 || jit_no >> 57 & 1 != 0 { return 0; }
+        if machine && jit_no >> 51 & 1 != 0 { return 0; }
+        let at = jc.len;
+        if machine { a_ldr(29, CTX, 176); j_leave(29, false); }
+        if j_sse(q, len) { return len; }
+        if machine { e_at(at, 0xD503201F); e_at(at + 4, 0xD503201F); so_n -= 1; }
+        return 0;
     }
     // (A NOP may have the prefix 66h: the compiler's padding in front of a loop.)
     // (And MOV is taken with it: 16 bits moved.) Since E138 the ALU operations, CMP,
@@ -1373,7 +1383,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         K_ALU => {
             let ak = op >> 3;
             if !(regs || inmem) { return 0; }
-            if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
+            if (ak == 2 || ak == 3) && (narrow || !j_carry_ok()) { return 0; }    // (the carry would go in at bit 0 of the shifted-up operands)
             if narrow {
                 // Bytes: both registers must be ones a byte of which is their low byte.
                 if !j_nok(je.reg, nb) || (regs && !j_nok(je.rm, nb)) { return 0; }
@@ -1406,7 +1416,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         K_GRP1 => {
             let ak = je.reg & 7;
             if !(regs || inmem) { return 0; }
-            if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
+            if (ak == 2 || ak == 3) && (narrow || !j_carry_ok()) { return 0; }    // (the carry would go in at bit 0 of the shifted-up operands)
             let v = if op != 0x81 { j_const(q + len - 1, 1) } else if n16 { j_const(q + len - 2, 2) } else { j_const(q + len - 4, 4) };
             if narrow {
                 if regs && !j_nok(je.rm, nb) {
@@ -1433,7 +1443,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         },
         K_ALUA => {
             let ak = op >> 3;
-            if (ak == 2 || ak == 3) && (!wide || !j_carry_ok()) { return 0; }
+            if (ak == 2 || ak == 3) && (narrow || !j_carry_ok()) { return 0; }    // (the carry would go in at bit 0 of the shifted-up operands)
             if narrow {
                 j_alu_n(ak, false, hg(0), ZR, if wide { mem_rd(q + len - 2, 16) } else { mem_rd(q + len - 1, 8) }, nb);
                 if ak != 7 { a_bfi_low(hg(0), S4, nb); }
@@ -1994,6 +2004,7 @@ fn jit_enter() -> bool {
     if jit_hold || steps + n > rep_until || dc_cpl[slot] != cpl { return false; }
     jx[17] = fs_base;
     jx[18] = gs_base;
+    jx[22] = if machine && (cr4 & 0x200 == 0 || cr0 & 0xC != 0) { 1 } else { 0 };
     if jit_check { return jit_both(slot, n); }
     jx[0] = rflags;
     let time = rep_until - steps;

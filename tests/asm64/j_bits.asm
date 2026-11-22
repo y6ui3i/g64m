@@ -178,6 +178,27 @@ top:
     mov ax, 0x1234
     test ax, ax
     jz bad
+    ; ADC and SBB on 16 bits are left to the interpreter (E139 found one translated as
+    ; XOR): the carry must still go in
+    mov ax, 0xFFFF
+    add ax, 1                           ; 0, a carry
+    mov bx, 0x0010
+    adc bx, 0x0001                      ; 12h
+    cmp bx, 0x0012
+    jne bad
+    mov ax, 0
+    sub ax, 1                           ; a borrow
+    mov bx, 0x0100
+    sbb bx, 1                           ; FEh
+    cmp bx, 0x00FE
+    jne bad
+    mov ax, 0xFFFF
+    add ax, 1
+    mov bx, 5
+    mov cx, 7
+    adc bx, cx                          ; 13
+    cmp bx, 13
+    jne bad
     mov ax, 0x00FF
     add ax, 0x0001                      ; the A register and a constant
     cmp ax, 0x0100

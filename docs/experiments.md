@@ -10318,3 +10318,76 @@ interpreted in all):
 the integer loads and stores are, with the operating system's leave (CR0.TS and EM) checked
 on the way in: item six of the list, brought forward by this count. Then the cold code:
 the threshold of eight, or the cost of a first run.
+
+----
+## E139: SSE in a machine (2026-11-22)
+
+E138's count of what the interpreter still runs in the build: one in four instructions is
+an SSE one in a machine, the moves GCC copies structures with (`0F 6F`, `0F 11`, `0F 29`,
+`0F 6E`, `0F 7E`, `0F D6`) and PXOR, POR and PAND. All of them are translated in a program
+without a kernel (E132), through `j_sse`; in a machine `j_one` refuses them, because the
+operating system can take the unit away (CR0.TS, CR0.EM, CR4.OSFXSR) and the interpreter
+looks at that before each. And each refused one ends a block: E137's arrivals make the
+instruction behind it a head, so an SSE move costs an entry as well as its interpretation.
+
+- **Hypothesis**: **with `j_sse` allowed in a machine, its memory operands through the TLB
+  as the integer loads and stores are (`j_chk_n` knows 16 bytes already), and a way out
+  before each SSE instruction when the unit is not to be used (a flag the block is given
+  on entry, from CR0 and CR4), the three files run with under 5% of their instructions
+  interpreted (from 6.8%) and under 900 million entries (from 1,279 million), a tenth
+  faster; Linux boots under `--jit-check`, and the system tests pass, with a new one that
+  moves through XMM registers with the unit taken away and given back.**
+- **What changed since last time**: E138's count said which instructions. Nothing of the
+  SSE translation changes; what changes is where it is allowed and the leave.
+- **Next move for each result**:
+  - Under 5% and a tenth faster → the whole build against QEMU (E135's 914 s); then the
+    cold code (the threshold, the first run), or the packed forms the build has (`0F 73`,
+    `0F 6C`, `0F 62`, `0F 70`)
+  - Interpreted down, entries down, the time not → the entry's cost measured on its own
+  - `--jit-check` differs in the boot → the leave or the TLB's path for 16 bytes, first
+- **Cut-off**: the short race twice; one boot under `--jit-check`; the suites.
+
+**Result: the three files run 14% faster (CPU 152.8 → 131.2 s), with 5.2% interpreted
+(from 6.8%) and 1,148 million entries (from 1,279 million); and the boot under
+`--jit-check` found a wrong translation of E138's, now taken out.** The short race as in
+E137 and E138:
+
+| Three of NetHack's files | E138 | E139 |
+|---|---:|---:|
+| CPU seconds (user) | 152.8 | 131.2 |
+| Interpreted | 1.63 billion (6.8%) | 1.25 billion (5.2%) |
+| Entries into blocks | 1,279 million | 1,148 million |
+| Blocks translated | 18.1 million | 17.8 million |
+| Times the room filled | 54 | 55 |
+
+- **The change**: `j_one` no longer refuses `j_sse` in a machine. A block is given, on
+  entry, whether the unit may be used (`jx[22]`: CR0.TS or EM set, or CR4.OSFXSR clear);
+  before each SSE instruction two host instructions load that and leave the block if it is
+  set, for the interpreter to fault as it did. The memory operands go through the TLB as
+  the integer ones do (`j_chk_n` with 16 bytes). Nothing in `j_sse` itself changed.
+- **The hypothesis** was right about the time (a tenth or more: 14%) and a little short
+  on the counts: 5.2% interpreted for "under 5%", and the entries fell by 130 million,
+  not by 380. An SSE instruction interpreted cost an entry behind it, so the entries
+  should have fallen with the SSE count (461 million); that they fell by less says many
+  of those SSE instructions were in runs cut by something else as well.
+- **A wrong translation found**: `X64=--jit-check tools/systest64.sh` boots Linux with
+  every block compared against the interpreter, and stopped at a block of the kernel's
+  with `adc word [rsp + 0x10], 0` in it: E138's 16-bit forms let ADC and SBB through the
+  narrow path, where `j_alu_n` has no carry and did an XOR. The byte forms had refused
+  them (`!wide`); the 16-bit ones did not. They are refused now (`narrow`), and `j_bits`
+  has 16-bit ADC and SBB with a carry going in. E138's PR was verified without the
+  jit-check boot; it is part of the gate from here.
+- **The new system test** `y_sse` moves through the XMM registers in a loop that is
+  translated (11 SSE instructions in it; with SSE in a machine turned off, `--jit-off`
+  bit 51, 320 fewer of its instructions run in blocks), then with CR0.TS set, when each
+  must trap (48 traps counted, vector 7), then after CLTS. Its text is from hal under KVM.
+  Its buffer had to go to a page of its own: a store to the loop's page dropped the
+  page's entries, and the first form of the test translated nothing.
+
+All suites pass: `difftest64` 29, `prim64` 23, `systest64` 17 three times (plain,
+`--jit`, `--jit-check`), 104 lines of `ok`.
+
+**Next.** The whole build against QEMU (E135: 3,561 s against 914), to see where the
+three files' 14% puts it. Then the cold code (E138's count: 29% of what is interpreted
+is run fewer than eight times), the packed forms the build has (`0F 73`, `0F 6C`,
+`0F 62`, `0F 70`), BSF/BSR and CMPXCHG.

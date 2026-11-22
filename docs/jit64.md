@@ -262,4 +262,4 @@ without `--jit`.
 | 5 (done, E133, with links on a page: the boot 180 → 89 host instructions for a guest instruction, 16.9 s → 8.3 s; the far way in a machine, E134: the boot 2.4 s to QEMU's 2.5) | Memory operands through the TLB, and the stack (PUSH, POP, CALL, RET) | the system tests, the boot |
 | 6 (links done for a program without a kernel, E122: `p_if` 192 → 23, `p_loop` 107 → 28; the far way for the same, E123: `p_recursion` 60 → 37, `p_funcptr` 121 → 40; neither yet in a machine) | Links inside a page and the far way | the boot, NetHack |
 | 7 | What is left by count: the string instructions, MUL and DIV, the rest | the boot, NetHack built in the guest |
-| 8 (done for a program without a kernel, E132, with the XMM registers in memory) | The scalar SSE instructions | `p_dbl_arith`, `p_float` |
+| 8 (done, E132, with the XMM registers in memory; in a machine too since E139, the block leaving before an SSE instruction when CR0.TS or EM is set or CR4.OSFXSR clear) | The scalar SSE instructions | `p_dbl_arith`, `p_float`, `y_sse` |
