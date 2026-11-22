@@ -251,6 +251,7 @@ var dc_cov: u8[DC_SIZE] = [0; DC_SIZE];      // 1: inside a block (E137)
 var jit_land = false;                       // the instruction at hand is where a jump landed
 var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
 var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
+var j_evicted: u64 = 0;                     // blocks lost to another instruction taking the entry
 var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
 // Links (E122): the exits that wait for a block at an address, chained from the entry that
 // address has; and which pages hold blocks.
@@ -270,6 +271,15 @@ var dc_calm: u16[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
 
 
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
+// The cache is in sets of two ways, a slot and its neighbour (E142: one cache line), so
+// that a block's first instruction keeps its entry when another instruction wants the
+// slot. The entry that holds p: its slot, or the first way's, which then does not hold p.
+inline fn dc_find(p: u64) -> i64 {
+    let s = dc_slot(p);
+    if dc[s].tag == p { return s; }
+    if dc[s ^ 1].tag == p { return s ^ 1; }
+    return s;
+}
 
 // A marked page was written to: its entries go.
 inline fn dc_drop(page: i64) {
@@ -279,7 +289,7 @@ inline fn dc_drop(page: i64) {
     let base = (page << 12) as! u64;
     for k in 4096 {
         let at = base + (k as! u64);
-        let slot = dc_slot(at);
+        let slot = dc_find(at);
         if dc[slot].tag == at { dc[slot].tag = DC_NONE; }
     }
     // Blocks run into one another without looking (E122): if any is on this page, all go.
@@ -1168,9 +1178,19 @@ fn exec64() -> bool {
     // The decode cache: found by the instruction's physical address. Where there is no code
     // page, code_fill has left a delta that gives an address no entry has.
     let ph = rip - code_delta;
-    let slot = dc_slot(ph);
+    var slot = dc_slot(ph);
+    if dc[slot].tag != ph {
+        // The set's other way (E142); or, for the new entry, the first way unless a block
+        // begins at the instruction it holds.
+        slot ^= 1;
+        if dc[slot].tag != ph {
+            slot ^= 1;
+            if dc_n[slot] != 0 { slot ^= 1; }
+            dc_cur = slot;
+            return exec64_miss();
+        }
+    }
     dc_cur = slot;
-    if dc[slot].tag != ph { return exec64_miss(); }
     // An instruction run from the cache and no block's first is an arrival (E137): at
     // the J_HOT-th a block is made there, and run at once.
     ins = dc[slot].ins;
@@ -1382,6 +1402,9 @@ fn decode() {
             dc[dc_cur].ins = ins;
             dc_heat[dc_cur] = 0;
             dc_cov[dc_cur] = 0;
+            // A block whose first instruction's entry is taken by another instruction
+            // dies with it (E141 counts how often).
+            if dc_n[dc_cur] != 0 { j_evicted += 1; }
             dc_n[dc_cur] = 0;
             dc_mark[page] = 1;
         } else {

@@ -10457,3 +10457,149 @@ had other work: load 13 as g64m started, 4 to 5 through most of it, 2 to 4 under
 of blocks never entered, on the three files; then whichever is largest: the room given back
 by page (chunks, so a dropped page's blocks make room without a flush), the walk ahead
 cut, or the entry made cheaper. The cold code (E138's 29% of the interpreted) behind that.
+
+----
+## E141: where the time goes with 95% in blocks: the translator, the entry, the blocks (2026-11-22)
+
+E140: the whole build is 2.4 times behind QEMU with 94.9% of its instructions in blocks, a
+block entered every 18 instructions, 157 GB of host code written (55 MB a second) and the
+room flushed 1,169 times. The interpreter's share is bounded now; the rest is unmeasured.
+
+- **Hypothesis**: **on the three files, the translator takes between a fifth and a third
+  of the CPU time, the entries (the way in and out around a block, apart from the block's
+  own code) between a tenth and a fifth, and at least a third of the blocks translated
+  are never entered before the next flush (the walk ahead from every head).**
+- **What changed since last time**: a measurement, no change to what is translated.
+  `--jit-time`: a clock (`clock_gettime`, through `jit.c`) around `jit_translate`, around
+  `jit_enter` and around the call into the block; a count of runs in each block's own
+  code (five host instructions at its body's start), tallied at each flush and at the
+  end into never run, run fewer than eight times, run more.
+- **Next move for each result**:
+  - The translator a fifth or more → the room given back by page (chunks), so a dropped
+    page's blocks make room without a flush and the working set is not translated again
+    every 2.5 seconds; and the walk ahead cut if a third of the blocks never run
+  - The entries a fifth or more → the entry made cheaper (what it does in `jit_enter`,
+    the settle of the record, the arrival), or fewer: the far way in a machine for more
+    kinds of exit
+  - Neither; the blocks' own code is the time → the hot blocks' listings against QEMU's,
+    as E131 did for `p_loop`
+- **Cut-off**: the short race once with the clocks, once with the clocks' own cost
+  measured (`--jit-time` reads the clock a million times at the start and prints what one
+  read costs).
+
+**Result: the translator is 15% of the time and the entries' own cost about 6%; the walk
+ahead is not the waste (0.2% of the blocks never run); the waste is the decode cache, which
+kills four blocks in five by taking their first instruction's entry for another
+instruction.** The short race with `--jit-time` (CPU 233 s, of which the clock's own cost,
+22 ns a reading, four readings an entry, about 100 s; the shares below have it taken out):
+
+| Three of NetHack's files, 131 s of CPU without the clocks | Seconds | Share |
+|---|---:|---:|
+| Translating (17.8 million blocks) | about 20 | 15% |
+| The blocks' own code | about 48 | 36% |
+| The entry around a block, apart from its code (1,145 million entries) | about 8 | 6% |
+| The rest: the interpreter (5.2% of the instructions), the run loop, the devices | about 55 | 43% |
+
+| Blocks, tallied at each flush and at the end | |
+|---|---:|
+| Never run | 7,892 (0.2%) |
+| Run fewer than eight times | 697,664 (19%) |
+| Run eight times or more | 2,972,217 (81%) |
+| Translated in all | 17.8 million |
+
+Of 17.8 million blocks translated, 3.7 million were there to be tallied: the rest had
+gone before any flush. A counter at the place where the decode cache takes an entry for a
+new instruction (`j_evicted`, in the stats line from here) says where: **14.7 million blocks
+of 18.2 million lost their first instruction's entry to another instruction** (the cache
+is 2^18 entries, direct-mapped by the physical address; GCC's code is far more
+instructions than that), and a block whose entry is gone is translated again at its next
+eighth arrival. That is the 157 GB of E140 and the flushes that did not halve.
+
+**What a bigger cache buys** (DC_BITS 20, 2^20 entries, the same race; the binary is the
+same 319,304 bytes, the arrays being zero-filled at the start; the memory is not):
+
+| | 2^18 entries | 2^20 entries |
+|---|---:|---:|
+| CPU seconds (user) | 139.3 | 120.5 |
+| Maximum resident set | 704 MB | 743 MB |
+| Blocks translated | 18.2 million | 6.3 million |
+| Blocks lost to the cache | 14.7 million | 3.5 million |
+| Code written in all | 7.7 GB | 3.1 GB |
+| Times the room filled | 57 | 22 |
+| Entries into blocks | 1,166 million | 1,778 million |
+| Interpreted | 5.3% | 4.0% |
+
+- **The hypothesis** was right about the translator's share (a fifth to a third: 15%,
+  a little under), right that the entries are small (under a tenth), and wrong about the
+  walk ahead: the blocks are run; they are killed.
+- **Entries rose by half with the bigger cache**: more instructions remembered, so more
+  arrivals counted and more heads; the time fell all the same.
+- **The owner's word: the program is not to grow.** A bigger cache is not the fix; the
+  same cache made to keep a block's entry is: two ways to a set (a slot and its
+  neighbour), the entry that is a block's first instruction kept and the other taken
+  (E142).
+
+**Next.** E142: the decode cache in two ways, at 2^18 entries; measured against the two
+columns above.
+
+----
+## E142: the decode cache in two ways, so that a block keeps its first instruction's entry (2026-11-22)
+
+E141: four blocks in five die when another instruction takes the decode cache's entry of
+their first instruction (2^18 entries, direct-mapped by the physical address, and GCC has
+more instructions than that); four times the entries made the three files 13% faster, but
+the owner's word is that the program is not to grow.
+
+- **Hypothesis**: **with each entry's slot paired with its neighbour (two ways to a set,
+  one cache line), a new instruction taking the way that is no block's first instruction,
+  and every look-up (the interpreter's, the translator's, the far way's in generated code,
+  the drop of a page) trying both ways, the blocks lost to the cache fall from 14.7 million
+  to under 3 million, the code written from 7.7 GB to under 4 GB, and the three files run
+  about as fast as with four times the entries (120 s against 139 s), in the same memory.**
+- **What changed since last time**: the cache's size stays 2^18. The way a new entry is
+  placed and found changes; nothing is translated differently.
+- **Next move for each result**:
+  - Lost blocks under 3 million and the time near 120 s → the gate (all suites, the
+    jit-check boot), the PR; then the cold code or the room given back by page
+  - Lost blocks still over 6 million → two ways are not enough for GCC's code: the
+    count of sets where both ways are blocks' heads, and four ways if it says so
+  - The time not down with the blocks → the look-up's second probe costs on the
+    interpreter's path: measured on `p_*` without `--jit`
+- **Cut-off**: the short race twice; the primitives once.
+
+**Result: the three files run in 113 s of CPU, from 139 (and 120 with four times the
+entries), in the same memory; the blocks lost to the cache fell from 14.7 million to 3.8
+million, the code written from 7.7 GB to 2.4 GB, the flushes from 57 to 17.** The short
+race as in E141, the same host and hour:
+
+| Three of NetHack's files | 2^18 entries, one way (E141) | 2^20, one way (E141) | 2^18, two ways |
+|---|---:|---:|---:|
+| CPU seconds (user) | 139.3 | 120.5 | **113.4** |
+| Maximum resident set | 704 MB | 743 MB | 704 MB |
+| Blocks translated | 18.2 million | 6.3 million | 6.0 million |
+| Blocks lost to the cache | 14.7 million | 3.5 million | 3.8 million |
+| Code written in all | 7.7 GB | 3.1 GB | 2.4 GB |
+| Times the room filled | 57 | 22 | 17 |
+| Entries into blocks | 1,166 million | 1,778 million | 995 million |
+| Interpreted | 5.3% | 4.0% | 4.7% |
+
+- **The hypothesis** was right about the code (under 4 GB: 2.4) and the time (about as
+  fast as four times the entries: faster, 113 against 120), and a little short on the
+  blocks lost (under 3 million: 3.8). Of the four times the entries' gain, two ways at the
+  same size give all, and more: fewer entries into blocks (995 million against 1,778),
+  since fewer instructions are remembered and fewer heads made.
+- **What changed**: `dc_find` looks in a slot and its neighbour (one 64-byte line, the
+  entries being 32 bytes); a new instruction takes the first way unless a block begins at
+  the instruction there, then the second. The translator (`j_entry`, the block's head, the
+  links' targets), the drop of a page and the far way in generated code (five more host
+  instructions on a miss of the first way, in the user and the machine forms) look in
+  both. The exits that wait for a block stay chained from the first way's slot.
+- **Still lost: 3.8 million.** Two heads in one set, and a third instruction's entry
+  wanted there: the second way is taken, head or not. Four ways would take more of these;
+  whether they matter is for the count E141 can give.
+
+All suites pass: `difftest64` 29, `prim64` 23, `systest64` 17 plain, with `--jit` and
+with `--jit-check` (103 `ok`).
+
+**Next.** The whole build against QEMU once more, then the cold code (E138: 29% of the
+interpreted run fewer than eight times) and the room given back by page.
