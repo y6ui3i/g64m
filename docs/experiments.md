@@ -10866,3 +10866,29 @@ with `--jit-check` (104 `ok`).
 **Next.** The refused instructions, now the largest reason (133 million of 482): `0F 73`,
 PANDN, CMPXCHG, PUNPCKLQDQ, BSF, the group FFh's forms, `rep stos`; then the addresses not
 remembered or cold, the TLB's table for fetches, and the whole build with CPU times.
+
+----
+## E147: the instructions the translator refuses, in the count's order (2026-11-22)
+
+E146 left the refused instructions as the largest single reason a block is left: 133
+million of 482 million leavings on the three files. The count again, with the forms
+(`--jit-why`, on the page entered on; about half as many again on other pages): the shifts
+of an XMM register by a constant (`0F 73`) 12.5 million, PANDN 8.2, CMPXCHG 7.1, INC of
+memory 5.5, PUNPCKLQDQ 5.4, BSF 5.1, DEC of memory 4.8, `rep stos` 3.3, PSHUFD 2.9, CLI
+2.0, OUT 1.7, TEST of memory with a constant 1.5, PADDD 1.3, `rep movs` 1.1, PUNPCKLDQ 0.9,
+XADD 0.9, PCMPEQB 0.7, BSWAP 0.65.
+
+- **Hypothesis**: **with the packed forms (`0F 73`'s four shifts, PANDN, the PUNPCKL and
+  PUNPCKH family, PSHUFD, PADD and PSUB, PCMPEQ and PCMPGT), BSF and BSR, BSWAP, CMPXCHG,
+  INC and DEC of memory and TEST of memory with a constant translated, the leavings to a
+  refused instruction fall from 133 million to under 75 million, all leavings from 482
+  million to under 430 million, and the CPU time by 3% or more.**
+- **What changed since last time**: E146's count. Each form is one to four host
+  instructions (NEON for the packed ones, RBIT and CLZ, REV, a CMP's record and two
+  CSELs); BSF and BSR get a record of their own (52h, 53h).
+- **Next move for each result**:
+  - As guessed → the string instructions (`rep stos`, `rep movs`: 4.4 million), the
+    system's own (CLI, STI, OUT, PUSHF), then the cold code and the whole build
+  - Leavings down, time not → as E146's second line: the leaving is cheap now
+  - A test fails → that form, by `--jit-off` bit 49 (the integer forms) or 57 (SSE)
+- **Cut-off**: the short race with the count and without; the gate, with two new tests.

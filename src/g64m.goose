@@ -644,6 +644,7 @@ fn main() {
             format(m3, "g64m: jit-why: on another page: not in the TLB ", jw2[0], ", not in the cache ", jw2[1], ", cold ", jw2[2], ", hot and no block ", jw2[3], ", inside a block ", jw2[4], ", a block with no time left ", jw2[5], ", a block ", jw2[6], " (of another level ", jw2[7], ")\n");
             format(m3, "g64m: jit-why: a block that reads RFLAGS met with a record waiting: ", jw_rec[0], " on the page, ", jw_rec[1], " on another\n");
             for i in 256 { if jw_rk[i] != 0 { format(m3, "g64m: jit-why: record ", i, " ", jw_rk[i], "\n"); } }
+            for i in 4096 { if jw_form[i] != 0 { format(m3, "g64m: jit-why: form ", i / 64, " ", i % 64, " ", jw_form[i], "\n"); } }
             for i in 64 { if jw_kind[i] != 0 { format(m3, "g64m: jit-why: kind ", i, " ", jw_kind[i], "\n"); } }
             for i in 256 { if jw_0f[i] != 0 { format(m3, "g64m: jit-why: 0F ", i, " ", jw_0f[i], "\n"); } }
             for i in 256 { if jw_op[i] != 0 { format(m3, "g64m: jit-why: op ", i, " ", jw_op[i], "\n"); } }

@@ -90,6 +90,7 @@ var jw: i64[8] = [0; 8];
 var jw_kind: i64[64] = [0; 64];
 var jw_0f: i64[257] = [0; 257];
 var jw_op: i64[256] = [0; 256];
+var jw_form: i64[4096] = [0; 4096];      // for a kind: kind * 64 + the ModRM's field * 8 + (4 a register, 0 memory) + (2 the prefix 66h) + (1 REP)
 
 // The same for an address on another page, found as the far way finds it (the TLB's table
 // for fetches at this level): jw2, with 0 for one not in the TLB; and of the blocks that
@@ -131,6 +132,7 @@ fn jit_went() {
     jw[3] += 1;
     let k: i64 = dc[s].ins.kind;
     jw_kind[k & 63] += 1;
+    if k != 0 && k < 64 { jw_form[k * 64 + ((dc[s].ins.reg & 7) as i64) * 8 + (if dc[s].ins.mod == 3 { 4 } else { 0 }) + (if dc[s].ins.p66 { 2 } else { 0 }) + (if dc[s].ins.rep != 0 { 1 } else { 0 })] += 1; }
     if k == 0 {
         let op: i64 = dc[s].ins.op;
         if op == 0x0F { jw_0f[mem_rd(ph + dc[s].ins.plen, 8) as! i64] += 1; }
