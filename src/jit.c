@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #ifdef __APPLE__
 #include <pthread.h>
 #include <libkern/OSCacheControl.h>
@@ -15,6 +16,13 @@
 
 typedef struct { const uint8_t *data; int64_t len; } jit_bytes;
 typedef struct { uint32_t *data; int64_t len; } jit_regs;
+
+// The time, in nanoseconds of a clock that only goes forward (--jit-time, E141).
+int64_t jit_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
 
 // Maps size bytes that can hold code. Returns the address, or 0; 0 always on a host that is
 // not arm64, for which jit.goose generates nothing (so --jit does nothing there).

@@ -469,6 +469,7 @@ fn main() {
         else if a[i] == "--jit" { jit_on = true; }
         else if a[i] == "--jit-check" { jit_on = true; jit_check = true; }
         else if a[i] == "--jit-stats" { jit_stats = true; }
+        else if a[i] == "--jit-time" { jit_on = true; jit_stats = true; jit_time = true; }
         else if a[i] == "--jit-off" && i + 1 < a.len {
             i++;
             let n, ok = parse_int(a[i]);
@@ -634,8 +635,14 @@ fn main() {
     }
     if jit_stats {
         var msg: u8[>..] = [];
-        format(msg, "g64m: jit: ", j_blocks, " blocks, ", j_used, " bytes (", j_bytes as! i64, " written in all), entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links\n");
+        format(msg, "g64m: jit: ", j_blocks, " blocks, ", j_used, " bytes (", j_bytes as! i64, " written in all), entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links, ", j_evicted as! i64, " blocks lost to the cache\n");
         write_stderr(msg);
+        if jit_time {
+            jit_tally();
+            var m2: u8[>..] = [];
+            format(m2, "g64m: jit-time: translating ", jt_translate / 1000000, " ms, entries ", jt_enter / 1000000, " ms of which in the blocks' code ", jt_body / 1000000, " ms, a clock reading ", jt_clock, " ns (four for each entry, two for each translation); blocks never run ", jr_never, ", run under eight times ", jr_few, ", eight or more ", jr_many, "\n");
+            write_stderr(m2);
+        }
     }
     if screen_on { screen_close(); }
     if shot_arg > 0 && fb_w != 0 {

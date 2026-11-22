@@ -251,6 +251,7 @@ var dc_cov: u8[DC_SIZE] = [0; DC_SIZE];      // 1: inside a block (E137)
 var jit_land = false;                       // the instruction at hand is where a jump landed
 var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
 var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
+var j_evicted: u64 = 0;                     // blocks lost to another instruction taking the entry
 var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
 // Links (E122): the exits that wait for a block at an address, chained from the entry that
 // address has; and which pages hold blocks.
@@ -1382,6 +1383,9 @@ fn decode() {
             dc[dc_cur].ins = ins;
             dc_heat[dc_cur] = 0;
             dc_cov[dc_cur] = 0;
+            // A block whose first instruction's entry is taken by another instruction
+            // dies with it (E141 counts how often).
+            if dc_n[dc_cur] != 0 { j_evicted += 1; }
             dc_n[dc_cur] = 0;
             dc_mark[page] = 1;
         } else {

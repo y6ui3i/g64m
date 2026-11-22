@@ -10486,3 +10486,58 @@ room flushed 1,169 times. The interpreter's share is bounded now; the rest is un
 - **Cut-off**: the short race once with the clocks, once with the clocks' own cost
   measured (`--jit-time` reads the clock a million times at the start and prints what one
   read costs).
+
+**Result: the translator is 15% of the time and the entries' own cost about 6%; the walk
+ahead is not the waste (0.2% of the blocks never run); the waste is the decode cache, which
+kills four blocks in five by taking their first instruction's entry for another
+instruction.** The short race with `--jit-time` (CPU 233 s, of which the clock's own cost,
+22 ns a reading, four readings an entry, about 100 s; the shares below have it taken out):
+
+| Three of NetHack's files, 131 s of CPU without the clocks | Seconds | Share |
+|---|---:|---:|
+| Translating (17.8 million blocks) | about 20 | 15% |
+| The blocks' own code | about 48 | 36% |
+| The entry around a block, apart from its code (1,145 million entries) | about 8 | 6% |
+| The rest: the interpreter (5.2% of the instructions), the run loop, the devices | about 55 | 43% |
+
+| Blocks, tallied at each flush and at the end | |
+|---|---:|
+| Never run | 7,892 (0.2%) |
+| Run fewer than eight times | 697,664 (19%) |
+| Run eight times or more | 2,972,217 (81%) |
+| Translated in all | 17.8 million |
+
+Of 17.8 million blocks translated, 3.7 million were there to be tallied: the rest had
+gone before any flush. A counter at the place where the decode cache takes an entry for a
+new instruction (`j_evicted`, in the stats line from here) says where: **14.7 million blocks
+of 18.2 million lost their first instruction's entry to another instruction** (the cache
+is 2^18 entries, direct-mapped by the physical address; GCC's code is far more
+instructions than that), and a block whose entry is gone is translated again at its next
+eighth arrival. That is the 157 GB of E140 and the flushes that did not halve.
+
+**What a bigger cache buys** (DC_BITS 20, 2^20 entries, the same race; the binary is the
+same 319,304 bytes, the arrays being zero-filled at the start; the memory is not):
+
+| | 2^18 entries | 2^20 entries |
+|---|---:|---:|
+| CPU seconds (user) | 139.3 | 120.5 |
+| Maximum resident set | 704 MB | 743 MB |
+| Blocks translated | 18.2 million | 6.3 million |
+| Blocks lost to the cache | 14.7 million | 3.5 million |
+| Code written in all | 7.7 GB | 3.1 GB |
+| Times the room filled | 57 | 22 |
+| Entries into blocks | 1,166 million | 1,778 million |
+| Interpreted | 5.3% | 4.0% |
+
+- **The hypothesis** was right about the translator's share (a fifth to a third: 15%,
+  a little under), right that the entries are small (under a tenth), and wrong about the
+  walk ahead: the blocks are run; they are killed.
+- **Entries rose by half with the bigger cache**: more instructions remembered, so more
+  arrivals counted and more heads; the time fell all the same.
+- **The owner's word: the program is not to grow.** A bigger cache is not the fix; the
+  same cache made to keep a block's entry is: two ways to a set (a slot and its
+  neighbour), the entry that is a block's first instruction kept and the other taken
+  (E142).
+
+**Next.** E142: the decode cache in two ways, at 2^18 entries; measured against the two
+columns above.
