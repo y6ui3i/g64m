@@ -10660,3 +10660,28 @@ says its version. Load 3 to 4 throughout.
 instructions: the entries are where QEMU, which chains its blocks, is ahead); and the
 cache in four ways, with the count of what two ways lose. `tools/build_race.py` to report
 CPU time for both.
+
+----
+## E144: where a block goes when it is left (2026-11-22)
+
+E143: 20.4 billion entries into blocks for 450 billion instructions, a block left every 22
+instructions; QEMU chains its blocks and g64m is 1.9 times behind. E141 put the entry's
+own cost at 6% of the time, but every leaving also costs the interpreter's look-up, often
+an instruction or a run interpreted, and a block not gone on to.
+
+- **Hypothesis**: **of the times a block is left on the three files, more than half go to
+  an address where no block will ever begin as things are (an instruction the translator
+  refuses, hot or not), and of those the SSE and string instructions and the system's own
+  (ports, CLI and STI, IRET, SYSCALL) are the larger part; fewer than a tenth are for the
+  time slice.**
+- **What changed since last time**: a count, with `--jit-why`: after each block, the
+  standing of the address it went to (another page; not in the decode cache; in it and
+  cold; in it, hot and no block, by kind; inside a block; a block's first instruction with
+  or without time left for it).
+- **Next move for each result**:
+  - Refused instructions the larger part → those kinds translated, in the count's order
+  - A block's first instruction, with time left, the larger part → links: why the exit
+    was not one (the page, the table of waiting exits, the privilege level)
+  - Another page the larger part → the far way's misses counted by their reason
+  - Cold addresses the larger part → the threshold of eight
+- **Cut-off**: the short race once with the count.
