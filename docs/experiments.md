@@ -10799,3 +10799,70 @@ with `--jit-check` (103 `ok`).
 **Next.** The record settled on the way into a block that reads RFLAGS (117 million, the
 largest single reason now); the refused instructions in E144's order (`0F 73`, PANDN,
 CMPXCHG, PUNPCKLQDQ, BSF, the group FFh forms); the whole build with CPU times.
+
+----
+## E146: the record settled in generated code on the way into a block that reads RFLAGS (2026-11-22)
+
+E145 left 117 million leavings in 574 million at one reason: a block that reads RFLAGS in
+memory (its first reader of the flags comes before any setter: a conditional jump, SETcc,
+CMOV, ADC, INC, DEC, BT, a rotation) refuses an entry from another block while a record of
+the flags is waiting, and the interpreter settles the record and enters it. A count of
+which records wait there (`--jit-why`, the three files, 119 million): CMP 47.3 million,
+TEST and AND 35.5, SHR 19.9, BT 4.5, SUB 3.6, ADD 3.0, DEC 2.0, MUL 0.9, OR 0.8, XOR 0.5.
+
+- **Hypothesis**: **with a piece of generated code that makes RFLAGS in memory from a
+  waiting record of ADD, SUB, CMP, AND, TEST, OR or XOR at any width (about 45 host
+  instructions, called from such a block's way in; any other record goes out as before),
+  three quarters of those leavings go (76% of the records are of these kinds): the
+  leavings fall from 574 million to under 500 million and the CPU time by 3% or more.**
+- **What changed since last time**: E145's count, and the count of records above. A
+  block's way in is one instruction longer (28 bytes for 24); `jit_enter` takes RFLAGS
+  back from what the block was given, since a block can now change it.
+- **Next move for each result**:
+  - Leavings under 500 million → the shifts' record settled the same way (SHR: 17%), if
+    the time followed; then the refused instructions
+  - Leavings down, time not → the cost of a leaving is small now; the interpreter's own
+    share (cold code) and the blocks' code next
+  - A test differs → the flag at fault: the new test reads all six behind a chained entry
+- **Cut-off**: the short race with the count and without; the gate, with a new test
+  (`j_settle`) whose blocks are entered from other blocks with a record of each kind and
+  width waiting, and which reads every flag afterwards.
+
+**Result: the leavings fell from 574 million to 482 million, those at a block that reads
+RFLAGS with a record waiting from 117 million to 28 million, and the three files run in
+100.3 s of CPU (E145: 104.0).**
+
+| Three of NetHack's files | E145 | E146 |
+|---|---:|---:|
+| CPU seconds, without the count | 104.0 | **100.3** |
+| Leavings (entries into blocks) | 574 million | 482 million |
+| – a block that reads RFLAGS, a record waiting | 117 million | 28 million |
+| – to a refused instruction | 134 million | 133 million |
+| Blocks translated | 4.8 million | 4.4 million |
+
+- **The hypothesis** held: under 500 million leavings (482), 3% or more of the time (3.6%).
+- **What changed**: `j_settle_make` writes, once, about 60 host instructions behind the
+  far way: from a record of ADD, SUB, CMP, AND, TEST, OR or XOR it shifts the operands up
+  to the width's top, does the operation, and builds CF, OF, ZF, SF from the host's flags,
+  AF from bit 4 of the three values and PF from the low byte, as `alu` does; RFLAGS in
+  memory takes them, the record is cleared. Any other record (a carry or a count above
+  the width, a shift, MUL, BT, INC and DEC) goes out as before. A block that reads RFLAGS
+  has `cbz x7` over a `bl` to it in its way in, which is 28 bytes now for every block.
+  `jit_enter` takes RFLAGS back from the block's copy. `--jit-off` bit 50 gives the old
+  way in.
+- **The new test** `j_settle`: 38 cases (the seven operations at four widths, and NEG,
+  shifts, IMUL, BT and constants), each setting the flags twice from one pair of operands,
+  once with PUSHFQ behind (the interpreter settles) and once with a jump into a block
+  that begins with a conditional jump (the generated code settles, or for the kinds it
+  does not take, the interpreter); the two RFLAGS are compared, over 24 rounds and eight
+  pairs of operands. Under `--jit` the entries refused for a record fall from 602 to 60
+  in it (the 60 being the kinds not taken). Its trace is from hal.
+- **Left at that reason**: 28 million, the shifts' records (SHR was 17% of E146's count)
+  and BT's.
+
+All suites pass: `difftest64` 30, `prim64` 23, `systest64` 17 plain, with `--jit` and
+with `--jit-check` (104 `ok`).
+
+**Next.** The refused instructions, now the largest reason (133 million of 482): `0F 73`,
+PANDN, CMPXCHG, PUNPCKLQDQ, BSF, the group FFh's forms, `rep stos`; then the addresses not
+remembered or cold, the TLB's table for fetches, and the whole build with CPU times.
