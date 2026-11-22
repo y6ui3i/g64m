@@ -10734,3 +10734,30 @@ behind each such exit (the next in the chain, the address waited for, the level)
 every exit can wait, however many, and the table and its limit go. Then the record
 settled in a block's way in, the refused instructions in this count's order, and the cache
 in four ways (E143).
+
+----
+## E145: the exits that wait for a block kept in the room itself, without a table (2026-11-22)
+
+E144: 62% of the times a block is left, a block is where it went, not chained to: the table
+of waiting exits (65,536 entries, emptied at a flush) is full for most of each stretch, and
+3.5 of 6 million blocks were translated with it full.
+
+- **Hypothesis**: **with each waiting exit carrying its own entry in the room (four words
+  behind the branch: the next in the chain, the address waited for, the level), chained
+  from `dc_wait` as before, every such exit is made a branch when its block comes; on the
+  three files the leavings fall from 1,026 million to under 600 million, those that go to
+  a block from 633 million to under 250 million (what is left being the blocks that read
+  RFLAGS, and the exits on other pages, which the far way has), and the CPU time by a
+  tenth or more (125 s to under 113 s).**
+- **What changed since last time**: E144's count. The table (`lk_site`, `lk_to`,
+  `lk_next`, `lk_cpl`: 1.4 MB) goes; a waiting exit takes 16 bytes of the room.
+  When a block is made, the entries chained from its slot that wait for another address
+  are chained again and not dropped, as they were.
+- **Next move for each result**:
+  - Leavings under 600 million and a tenth faster → the whole build with CPU times; then
+    the record settled on the way into a block that reads RFLAGS (E144: 11%)
+  - Leavings down, time not → the entry's cost was less than E141's bound says; the
+    blocks' own code and the interpreter's share measured again
+  - Leavings to a block still over 400 million → which exits: by the kind of exit
+    (a jump's two sides, CALL, the end of a block), counted in `--jit-why`
+- **Cut-off**: the short race with `--jit-why`, and once without; the gate.
