@@ -223,6 +223,97 @@ fn a_str(rt: u32, rn: u32, off: u32) { e(0xF9000000 | (off >> 3) << 10 | rn << 5
 fn a_ldp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9400000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); }
 fn a_stp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9000000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); }
 
+// Branches to a place already generated: b, b.cond, cbnz.
+fn e_b(to: i64) { e(0x14000000 | (((to - jc.len) >> 2) as! u32) & 0x3FFFFFF); }
+fn e_bc(c: u32, to: i64) { e(0x54000000 | ((((to - jc.len) >> 2) as! u32) & 0x7FFFF) << 5 | c); }
+
+// The record settled in generated code (E146): called (bl) from the way into a block that
+// reads RFLAGS in memory, when a record is waiting. For a record of ADD, SUB, CMP, AND,
+// TEST, OR or XOR at any width it makes the six flags as alu (cpu64.goose) does, puts
+// them into RFLAGS in memory, clears the record and returns; for any other it goes out,
+// as such an entry always did. x2, x3, x4 and x29 are used; x0 (the time), x1 (RIP) and
+// the guest's registers are not touched.
+var j_settle_at = 0;
+fn j_settle_make() {
+    let fail = jc.len;
+    e_b(j_out_at);
+    // The end: the parity of the result's low byte (in x2), the flags (in x7) into
+    // RFLAGS, the record cleared.
+    let parity = jc.len;
+    e(0xCA400000 | S2 << 16 | 4 << 10 | S2 << 5 | S3);       // eor x3, x2, x2, lsr #4
+    e(0xCA400000 | S3 << 16 | 2 << 10 | S3 << 5 | S3);       // eor x3, x3, x3, lsr #2
+    e(0xCA400000 | S3 << 16 | 1 << 10 | S3 << 5 | S3);       // eor x3, x3, x3, lsr #1
+    e(0xD2400000 | S3 << 5 | S3);                            // eor x3, x3, #1: PF is set for an even count
+    e(0x92400000 | S3 << 5 | S3);                            // and x3, x3, #1
+    e(0xAA000000 | S3 << 16 | 2 << 10 | FK << 5 | FK);       // orr x7, x7, x3, lsl #2
+    a_ldr(29, CTX, 0);
+    a_imm(S3, 0x8D5);
+    a_rrr(0x0A200000, 1, 29, 29, S3);                        // bic
+    a_rrr(A_ORR, 1, 29, 29, FK);
+    a_str(29, CTX, 0);
+    a_mov(1, FK, ZR);
+    e(0xD65F03C0);                                           // ret
+    // After ADDS or SUBS of the operands shifted up (x2 the result, x7 the carry, x4 the
+    // shift): OF, ZF and SF from the host's flags, AF from bit 4 of the three values.
+    let arith = jc.len;
+    e(0x1A9F07E0 | (C_VS ^ 1) << 12 | S3);                   // cset w3, vs
+    e(0xAA000000 | S3 << 16 | 11 << 10 | FK << 5 | FK);
+    e(0x1A9F07E0 | (C_EQ ^ 1) << 12 | S3);
+    e(0xAA000000 | S3 << 16 | 6 << 10 | FK << 5 | FK);
+    e(0x1A9F07E0 | (C_MI ^ 1) << 12 | S3);
+    e(0xAA000000 | S3 << 16 | 7 << 10 | FK << 5 | FK);
+    a_shiftv(5, 1, S2, S2, S4);                              // the result, down again
+    a_rrr(A_EOR, 1, S3, FA, FB);
+    a_rrr(A_EOR, 1, S3, S3, S2);
+    e(0x927C0000 | S3 << 5 | S3);                            // and x3, x3, #0x10
+    a_rrr(A_ORR, 1, FK, FK, S3);
+    e_b(parity);
+    // After AND, OR or XOR (x2 the result): ZF and SF of it at its width; no carry.
+    let logic = jc.len;
+    a_shiftv(4, 1, S3, S2, S4);
+    a_rrr(A_ANDS, 1, ZR, S3, S3);
+    e(0x1A9F07E0 | (C_EQ ^ 1) << 12 | FK);
+    a_shifti(4, 1, FK, FK, 6);
+    e(0x1A9F07E0 | (C_MI ^ 1) << 12 | S3);
+    e(0xAA000000 | S3 << 16 | 7 << 10 | FK << 5 | FK);
+    e_b(parity);
+    let add = jc.len;
+    a_rrr(A_ADDS, 1, S2, 29, S3);
+    e(0x1A9F07E0 | (C_HS ^ 1) << 12 | FK);                   // cset w7, cs: a carry out
+    e_b(arith);
+    let sub = jc.len;
+    a_rrr(A_SUBS, 1, S2, 29, S3);
+    e(0x1A9F07E0 | (C_LO ^ 1) << 12 | FK);                   // cset w7, cc: a borrow
+    e_b(arith);
+    let and = jc.len;
+    a_rrr(A_AND, 1, S2, FA, FB);
+    e_b(logic);
+    let or = jc.len;
+    a_rrr(A_ORR, 1, S2, FA, FB);
+    e_b(logic);
+    let xor = jc.len;
+    a_rrr(A_EOR, 1, S2, FA, FB);
+    e_b(logic);
+    // The way in: nothing above the width (ADC's carry, a count); the shift that brings
+    // the width's top bit to bit 63; the operands shifted up; and by the record's kind.
+    j_settle_at = jc.len;
+    a_shifti(5, 1, S2, FK, 16);
+    e(0xB5000000 | ((((fail - jc.len) >> 2) as! u32) & 0x7FFFF) << 5 | S2);      // cbnz x2, fail
+    e(0x92401C00 | FK << 5 | S2);                            // and x2, x7, #0xFF: the kind
+    e(0xD3400000 | 8 << 16 | 15 << 10 | FK << 5 | S3);       // ubfx x3, x7, #8, #8: the width
+    a_imm(S4, 64);
+    a_rrr(A_SUB, 1, S4, S4, S3);
+    a_shiftv(4, 1, 29, FA, S4);
+    a_shiftv(4, 1, S3, FB, S4);
+    a_addi(0x71, 1, ZR, S2, 8); e_bc(C_EQ, sub);             // CMP
+    a_addi(0x71, 1, ZR, S2, 5); e_bc(C_EQ, and);             // AND, TEST
+    a_addi(0x71, 1, ZR, S2, 6); e_bc(C_EQ, sub);
+    a_addi(0x71, 1, ZR, S2, 1); e_bc(C_EQ, add);
+    a_addi(0x71, 1, ZR, S2, 2); e_bc(C_EQ, or);
+    a_addi(0x71, 1, ZR, S2, 7); e_bc(C_EQ, xor);
+    e_b(fail);
+}
+
 // Maps the room for code and writes the way in and the way out. False if there is none
 // (a host that is not arm64).
 fn jit64_init() -> bool {
@@ -362,6 +453,7 @@ fn jit64_init() -> bool {
             e(0xD61F0000 | 29 << 5);
         }
     }
+    j_settle_make();
     jit_write(j_mem, jc[..]);
     j_keep = jc.len;
     j_used = j_keep;
@@ -406,7 +498,7 @@ var ss_n = 0;
 var ss_pos: i64[SS_MAX] = [0; SS_MAX];
 // A block begins with what an entry from another block needs (BODY_AT bytes), and the
 // interpreter enters behind it.
-let BODY_AT = 24;
+let BODY_AT = 28;
 
 // Makes the branch at `site` in the mapping go to `to`.
 // Writes the word w at `site` in the mapping.
@@ -1983,8 +2075,9 @@ fn jit_translate_in(ph: u64) {
         // What an entry from another block needs: time for the whole block, no record
         // waiting if the block reads RFLAGS in memory, and RIP.
         e(0);                                // cmp x0, #n: filled in below
-        e(0x54000083);                       // b.lo to the branch out
-        e(0xD503201F);                       // nop, or cbnz x7 to the branch out
+        e(0x540000A3);                       // b.lo to the branch out
+        e(0xD503201F);                       // nop, or cbz x7 over the next
+        e(0xD503201F);                       // nop, or bl the record's settling (E146)
         a_mov(1, RIPB, S1);
         e(0x14000002);                       // b the body
         e(0x14000000 | (((j_out_at - (j_used + jc.len)) >> 2) as! u32) & 0x3FFFFFF);
@@ -2022,7 +2115,14 @@ fn jit_translate_in(ph: u64) {
             }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
             e_at(0, 0xF100001F | (n as! u32) << 10);         // cmp x0, #n
-            if j_needs { e_at(8, 0xB5000067); }              // cbnz x7, three on
+            if j_needs {
+                // A record waiting, and this block reads RFLAGS in memory: settled here
+                // (E146), or out if it is not of a kind that can be.
+                if jit_no >> 50 & 1 == 0 {
+                    e_at(8, 0xB4000047);                     // cbz x7, two on
+                    e_at(12, 0x94000000 | (((j_settle_at - (j_used + 12)) >> 2) as! u32) & 0x3FFFFFF);       // bl
+                } else { e_at(8, 0xB5000087); }              // cbnz x7, four on: the branch out
+            }
             if !j_needs {
                 for i in ss_n {
                     let at = ss_pos[i];
@@ -2164,6 +2264,8 @@ fn jit_enter() -> bool {
     let ran = time - jx[9];
     // Left before its first instruction: that one is interpreted.
     if ran == 0 { if jit_time { jt_enter += t2 - t0; jt_body += t2 - t1; } return false; }
+    // (RFLAGS as the blocks left it in memory: a record settled on the way into one, E146.)
+    rflags = jx[0];
     rip = jx[4];
     j_settle();
     // Where the block went is where a jump landed.
