@@ -10799,3 +10799,31 @@ with `--jit-check` (103 `ok`).
 **Next.** The record settled on the way into a block that reads RFLAGS (117 million, the
 largest single reason now); the refused instructions in E144's order (`0F 73`, PANDN,
 CMPXCHG, PUNPCKLQDQ, BSF, the group FFh forms); the whole build with CPU times.
+
+----
+## E146: the record settled in generated code on the way into a block that reads RFLAGS (2026-11-22)
+
+E145 left 117 million leavings in 574 million at one reason: a block that reads RFLAGS in
+memory (its first reader of the flags comes before any setter: a conditional jump, SETcc,
+CMOV, ADC, INC, DEC, BT, a rotation) refuses an entry from another block while a record of
+the flags is waiting, and the interpreter settles the record and enters it. A count of
+which records wait there (`--jit-why`, the three files, 119 million): CMP 47.3 million,
+TEST and AND 35.5, SHR 19.9, BT 4.5, SUB 3.6, ADD 3.0, DEC 2.0, MUL 0.9, OR 0.8, XOR 0.5.
+
+- **Hypothesis**: **with a piece of generated code that makes RFLAGS in memory from a
+  waiting record of ADD, SUB, CMP, AND, TEST, OR or XOR at any width (about 45 host
+  instructions, called from such a block's way in; any other record goes out as before),
+  three quarters of those leavings go (76% of the records are of these kinds): the
+  leavings fall from 574 million to under 500 million and the CPU time by 3% or more.**
+- **What changed since last time**: E145's count, and the count of records above. A
+  block's way in is one instruction longer (28 bytes for 24); `jit_enter` takes RFLAGS
+  back from what the block was given, since a block can now change it.
+- **Next move for each result**:
+  - Leavings under 500 million → the shifts' record settled the same way (SHR: 17%), if
+    the time followed; then the refused instructions
+  - Leavings down, time not → the cost of a leaving is small now; the interpreter's own
+    share (cold code) and the blocks' code next
+  - A test differs → the flag at fault: the new test reads all six behind a chained entry
+- **Cut-off**: the short race with the count and without; the gate, with a new test
+  (`j_settle`) whose blocks are entered from other blocks with a record of each kind and
+  width waiting, and which reads every flag afterwards.

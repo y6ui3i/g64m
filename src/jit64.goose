@@ -97,6 +97,7 @@ var jw_op: i64[256] = [0; 256];
 // (jw_rec), for this page and for another.
 var jw2: i64[8] = [0; 8];
 var jw_rec: i64[2] = [0; 2];
+var jw_rk: i64[256] = [0; 256];      // and which records those were (the low byte of the kind), 255 for one with more above the width
 var dc_needs: u8[DC_SIZE] = [0; DC_SIZE];
 
 fn jit_went() {
@@ -117,7 +118,7 @@ fn jit_went() {
         let late = steps + dc_n[s] > rep_until;
         if far == 1 { if late { jw2[5] += 1; } else { jw2[6] += 1; } }
         else if late { jw[5] += 1; } else { jw[6] += 1; }
-        if !late && dc_needs[s] != 0 && jx[3] != 0 { jw_rec[far] += 1; }
+        if !late && dc_needs[s] != 0 && jx[3] != 0 { jw_rec[far] += 1; jw_rk[(if jx[3] >> 16 != 0 { 255 } else { jx[3] & 0xFF }) as! i64] += 1; }
         if !late && dc_cpl[s] != cpl { jw2[7] += 1; }
         return;
     }
