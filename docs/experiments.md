@@ -10603,3 +10603,25 @@ with `--jit-check` (103 `ok`).
 
 **Next.** The whole build against QEMU once more, then the cold code (E138: 29% of the
 interpreted run fewer than eight times) and the room given back by page.
+
+----
+## E143: NetHack built in the guest, raced against QEMU after the two-way cache (2026-11-22)
+
+E140: 2,870 s against QEMU's 1,198, 2.4 times behind, 157 GB of code written and the room
+flushed 1,169 times. E142 found the cause of the code and took most of it away: on the three
+files the blocks translated fell by two thirds, the code written to a third, the flushes to
+a third, and the CPU time from 139 s to 113 s (19%).
+
+- **Hypothesis**: **the whole build takes between 2,200 and 2,450 s under `--jit` (the
+  three files' 19%, give or take the whole build's larger working set, which is where the
+  cache's ways matter most), with the code written under 60 GB and the flushes under 450;
+  QEMU takes 900 to 1,200 s, so g64m is about twice behind.**
+- **What changed since last time**: E141's counters and E142's two ways. Same kernel,
+  initramfs, disk and command (`tools/build_race.py`), QEMU 11.1.3.
+- **Next move for each result**:
+  - Under 2,450 s, flushes under 450 → the cold code (E138: 29% of the interpreted run
+    fewer than eight times) and the room given back by page; the entry's share again
+  - Flushes still over 700 → the whole build's working set does not fit two ways: the
+    count of sets with two heads, and four ways
+  - Under 2,200 s → said so; the ratio stands
+- **Cut-off**: one build under each; the host's load beside the times.
