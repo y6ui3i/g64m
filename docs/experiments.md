@@ -10566,3 +10566,40 @@ the owner's word is that the program is not to grow.
   - The time not down with the blocks → the look-up's second probe costs on the
     interpreter's path: measured on `p_*` without `--jit`
 - **Cut-off**: the short race twice; the primitives once.
+
+**Result: the three files run in 113 s of CPU, from 139 (and 120 with four times the
+entries), in the same memory; the blocks lost to the cache fell from 14.7 million to 3.8
+million, the code written from 7.7 GB to 2.4 GB, the flushes from 57 to 17.** The short
+race as in E141, the same host and hour:
+
+| Three of NetHack's files | 2^18 entries, one way (E141) | 2^20, one way (E141) | 2^18, two ways |
+|---|---:|---:|---:|
+| CPU seconds (user) | 139.3 | 120.5 | **113.4** |
+| Maximum resident set | 704 MB | 743 MB | 704 MB |
+| Blocks translated | 18.2 million | 6.3 million | 6.0 million |
+| Blocks lost to the cache | 14.7 million | 3.5 million | 3.8 million |
+| Code written in all | 7.7 GB | 3.1 GB | 2.4 GB |
+| Times the room filled | 57 | 22 | 17 |
+| Entries into blocks | 1,166 million | 1,778 million | 995 million |
+| Interpreted | 5.3% | 4.0% | 4.7% |
+
+- **The hypothesis** was right about the code (under 4 GB: 2.4) and the time (about as
+  fast as four times the entries: faster, 113 against 120), and a little short on the
+  blocks lost (under 3 million: 3.8). Of the four times the entries' gain, two ways at the
+  same size give all, and more: fewer entries into blocks (995 million against 1,778),
+  since fewer instructions are remembered and fewer heads made.
+- **What changed**: `dc_find` looks in a slot and its neighbour (one 64-byte line, the
+  entries being 32 bytes); a new instruction takes the first way unless a block begins at
+  the instruction there, then the second. The translator (`j_entry`, the block's head, the
+  links' targets), the drop of a page and the far way in generated code (five more host
+  instructions on a miss of the first way, in the user and the machine forms) look in
+  both. The exits that wait for a block stay chained from the first way's slot.
+- **Still lost: 3.8 million.** Two heads in one set, and a third instruction's entry
+  wanted there: the second way is taken, head or not. Four ways would take more of these;
+  whether they matter is for the count E141 can give.
+
+All suites pass: `difftest64` 29, `prim64` 23, `systest64` 17 plain, with `--jit` and
+with `--jit-check` (103 `ok`).
+
+**Next.** The whole build against QEMU once more, then the cold code (E138: 29% of the
+interpreted run fewer than eight times) and the room given back by page.

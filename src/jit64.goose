@@ -239,10 +239,16 @@ fn jit64_init() -> bool {
         j_far_at = jc.len;
         e(0xCA404800 | S1 << 16 | S1 << 5 | S2);             // eor x2, x1, x1, lsr #18
         e(0x92404400 | S2 << 5 | S2);                        // and x2, x2, #0x3FFFF
-        a_ldr(S3, CTX, 88);
-        e(0x8B001400 | S2 << 16 | S3 << 5 | S3);             // add x3, x3, x2, lsl #5
+        // Either way of the set (E142): the slot, then its neighbour.
+        a_ldr(S4, CTX, 88);
+        e(0x8B001400 | S2 << 16 | S4 << 5 | S3);             // add x3, x4, x2, lsl #5
         a_ldr(S3, S3, 0);
         a_rrr(A_SUBS, 1, ZR, S3, S1);                        // cmp x3, x1
+        e(0x54000000 | 6 << 5);                              // b.eq found, six on
+        e(0xD2400000 | S2 << 5 | S2);                        // eor x2, x2, #1
+        e(0x8B001400 | S2 << 16 | S4 << 5 | S3);
+        a_ldr(S3, S3, 0);
+        a_rrr(A_SUBS, 1, ZR, S3, S1);
         e(0x54000001 | ((((to_out - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);     // b.ne out
         a_ldr(S3, CTX, 96);
         e(0x38606800 | S2 << 16 | S3 << 5 | S3);             // ldrb w3, [x3, x2]
@@ -275,8 +281,13 @@ fn jit64_init() -> bool {
             a_rrr(A_ORR, 1, S2, 30, S2);                     // the physical address
             e(0xCA404800 | S2 << 16 | S2 << 5 | S3);         // eor x3, x2, x2, lsr #18
             e(0x92404400 | S3 << 5 | S3);
-            a_ldr(29, CTX, 88);
-            e(0x8B001400 | S3 << 16 | 29 << 5 | 29);         // add x29, x29, x3, lsl #5
+            a_ldr(30, CTX, 88);
+            e(0x8B001400 | S3 << 16 | 30 << 5 | 29);         // add x29, x30, x3, lsl #5
+            a_ldr(29, 29, 0);
+            a_rrr(A_SUBS, 1, ZR, 29, S2);
+            e(0x54000000 | 6 << 5);                          // b.eq found, six on
+            e(0xD2400000 | S3 << 5 | S3);                    // eor x3, x3, #1: the other way
+            e(0x8B001400 | S3 << 16 | 30 << 5 | 29);
             a_ldr(29, 29, 0);
             a_rrr(A_SUBS, 1, ZR, 29, S2);
             e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
@@ -370,9 +381,11 @@ var so_ski: u64[SO_MAX] = [0; SO_MAX];
 var so_skw: u32[SO_MAX] = [0; SO_MAX];
 
 // The entry of the instruction at physical address q, into je and jk. False if there is none.
+var j_eslot: i64 = 0;        // the entry j_entry found
 fn j_entry(q: u64) -> bool {
-    let slot = dc_slot(q);
+    let slot = dc_find(q);
     if dc[slot].tag != q { return false; }
+    j_eslot = slot;
     je = dc[slot].ins;
     jk = if dc_n[slot] != 0 { dc_k0[slot] } else { je.kind };
     j_at = q;
@@ -793,7 +806,7 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
     j_rip(S1, off);
     if linked {
         let t = j_head + off;
-        let slot = dc_slot(t);
+        let slot = dc_find(t);
         if t == j_head { to = j_used; jit_links += 1; }
         else if dc[slot].tag == t && dc_n[slot] != 0 && dc_cpl[slot] == cpl { to = dc_code[slot]; jit_links += 1; }
         else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; }
@@ -1876,7 +1889,7 @@ fn jit_translate_in(ph: u64) {
     var walked = 0;
     while walked < 200 && q < page_end {
         let head = q;
-        let head_slot = dc_slot(head);
+        let head_slot = dc_find(head);
         if dc[head_slot].tag != head || dc_n[head_slot] != 0 { return; }
         jc = [];
         j_hf = 0;
@@ -1911,9 +1924,10 @@ fn jit_translate_in(ph: u64) {
         var n = 0;
         while n < J_MAX {
             if !j_entry(q) { break; }
+            let qs = j_eslot;
             let len = j_one(q, q - head, page_end - q, n as! u64);
             if len == 0 { break; }
-            cv_slot[n] = dc_slot(q);
+            cv_slot[n] = qs;
             q += len;
             n += 1;
             if j_end { break; }
@@ -1953,8 +1967,11 @@ fn jit_translate_in(ph: u64) {
                 lk_n += 1;
                 dc_wait[ws] = lk_n as! u32;
             }
-            var w = dc_wait[head_slot];
-            dc_wait[head_slot] = 0;
+            // (The exits that wait are chained from the first way's slot, whichever way
+            // the entry is in.)
+            let wk = dc_slot(head);
+            var w = dc_wait[wk];
+            dc_wait[wk] = 0;
             while w != 0 {
                 let i = (w - 1) as! i64;
                 if lk_to[i] == head && lk_cpl[i] == cpl { j_patch(lk_site[i], j_used); }
