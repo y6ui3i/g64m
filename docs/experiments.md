@@ -10541,3 +10541,28 @@ same 319,304 bytes, the arrays being zero-filled at the start; the memory is not
 
 **Next.** E142: the decode cache in two ways, at 2^18 entries; measured against the two
 columns above.
+
+----
+## E142: the decode cache in two ways, so that a block keeps its first instruction's entry (2026-11-22)
+
+E141: four blocks in five die when another instruction takes the decode cache's entry of
+their first instruction (2^18 entries, direct-mapped by the physical address, and GCC has
+more instructions than that); four times the entries made the three files 13% faster, but
+the owner's word is that the program is not to grow.
+
+- **Hypothesis**: **with each entry's slot paired with its neighbour (two ways to a set,
+  one cache line), a new instruction taking the way that is no block's first instruction,
+  and every look-up (the interpreter's, the translator's, the far way's in generated code,
+  the drop of a page) trying both ways, the blocks lost to the cache fall from 14.7 million
+  to under 3 million, the code written from 7.7 GB to under 4 GB, and the three files run
+  about as fast as with four times the entries (120 s against 139 s), in the same memory.**
+- **What changed since last time**: the cache's size stays 2^18. The way a new entry is
+  placed and found changes; nothing is translated differently.
+- **Next move for each result**:
+  - Lost blocks under 3 million and the time near 120 s → the gate (all suites, the
+    jit-check boot), the PR; then the cold code or the room given back by page
+  - Lost blocks still over 6 million → two ways are not enough for GCC's code: the
+    count of sets where both ways are blocks' heads, and four ways if it says so
+  - The time not down with the blocks → the look-up's second probe costs on the
+    interpreter's path: measured on `p_*` without `--jit`
+- **Cut-off**: the short race twice; the primitives once.
