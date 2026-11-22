@@ -10952,3 +10952,26 @@ short race ends with `make-rc=0`.
 not remembered or cold (145 million), the TLB's table for fetches (68 million), a block
 that was there (116 million: the shifts' records, and exits on other pages), the string
 instructions and the system's own.
+
+----
+## E148: NetHack built in the guest, raced against QEMU with CPU times (2026-11-23)
+
+E143: 2,441 s against QEMU's 1,303 s by the wall clock, 1.9 times behind, with QEMU's own
+time moving by a third from one afternoon to the next. Since then: the waiting exits kept
+in the room (E145), the record settled on the way into a block (E146), the refused
+instructions (E147). On the three files the CPU time went from 113.4 s (E142) to 97.7 s
+(14%) and the leavings from 1,026 million to 395 million.
+
+- **Hypothesis**: **the whole build takes between 2,000 and 2,200 s of CPU under `--jit`
+  (E143's 2,441 s of wall clock less the three files' 14%), with under 12 billion entries
+  into blocks (from 20.4 billion) and under 300 flushes (from 377); QEMU takes between 900
+  and 1,300 s of CPU, so g64m is between 1.6 and 2.2 times behind.**
+- **What changed since last time**: E145 to E147, and the measure: `tools/build_race.py`
+  prints the CPU time of what it ran (user and system), which a loaded host moves less.
+- **Next move for each result**:
+  - As guessed → the leavings that are left (addresses not remembered or cold, the TLB's
+    table for fetches), then the blocks' own code (36% of the time in E141)
+  - QEMU's CPU time far from its wall clock (its other threads) → both given, and the
+    ratio by CPU time held to from here
+  - The build fails → E147's way: the bits, the kinds, the hash
+- **Cut-off**: one build under each; `make-rc` and the NetHack's version in both.
