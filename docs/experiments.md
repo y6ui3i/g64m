@@ -10067,3 +10067,99 @@ out, made an arrival, so that it becomes a block's head; the room for code made 
 given back; then BT, the 16-bit forms, and SSE in a machine. Each measured on the three
 files (`RACE_SHORT=1 tools/build_race.py`, three minutes), then on the whole build against
 QEMU.
+
+## E136: real amd64 images under QEMU's user mode, before the optimizing goes on (2026-11-22)
+
+The owner's order of 2026-11-22: beat QEMU on everything measured (the primitives, the boot,
+the build in the guest) before the Docker backend (M11). Before starting, the owner asked
+to look at what a Docker backend actually runs: a few real amd64 images, under QEMU's user
+mode as OrbStack or Docker would run them. g64m cannot run them yet (it has three system
+calls), so this measures QEMU's side only, and counts what instructions those programs
+run. Images, by the owner's leave: `alpine:3.22`, `python:3.13-slim`, `node:22-alpine`,
+`redis:alpine`, and Alpine's `build-base` for GCC, all for amd64 from Docker Hub.
+
+- **Hypothesis**: **the instructions real images run are those the primitives and the
+  in-guest build already show (ALU, MOV, Jcc, SSE moves), so E135's list of fixes keeps
+  its order; Node, whose V8 writes code of its own all the time, is the one that differs,
+  by code written while it runs.**
+- **What changed since last time**: E135 measured a build in a machine (system mode). This
+  is user mode, which is what a Docker backend is, on programs other than a compiler.
+- **Next move for each result**:
+  - The mix is what the list assumed → the list as it is, starting with the arrivals and
+    the room for code
+  - Something the list does not have is large (x87, packed SSE, AVX, 16-bit, string
+    instructions, code written at run time) → that moves up the list
+  - Under QEMU a workload is too slow to be worth racing on → it is left out of the races
+- **Cut-off**: one timed run of each workload under QEMU and under Rosetta; one count of
+  the instruction mix for each; this afternoon.
+
+**Result: the hypothesis holds for the mix, and is wrong about Node. What real images run is
+the integer code the list is already about; what is new is the race's own conditions: many
+short processes, a CPU model QEMU gives the guest, and a second QEMU (OrbStack's) that is
+not the same as the first.** (`tools/realimg/`; the Mac was not quiet, load about 4, so the
+times are rough. Redis was timed only on OrbStack's path.)
+
+Seconds for each workload: QEMU 11.0.3's user mode run by hand (`qemu-x86_64 -L`), OrbStack's
+own path with its Rosetta setting off (QEMU through binfmt), with it on (Rosetta), and hal's
+own CPU (an i7-3770K, in a chroot):
+
+| Workload | QEMU 11.0.3 | OrbStack's QEMU | Rosetta | hal |
+|---|---:|---:|---:|---:|
+| busybox `sh`, a loop of 500,000 | 6.22 | 6.82 | 0.90 | 1.20 |
+| busybox `seq` into `gzip`, 4 million lines | 5.56 | 7.58 | 2.82 | 1.12 |
+| busybox `sha256sum`, 200 MB | 3.56 | 13.21 | 3.08 | 3.07 |
+| Python 3.13 (`bench.py 4`: calls, strings, JSON, a sort, SHA-256) | 3.51 | 3.18 | 0.57 | 0.41 |
+| Node 22 (`bench.js 4`, the same in JS) | 2.63 | 2.43 | 0.83 | 0.38 |
+| GCC 14 `cc1 -O2` and `as` on the 23 primitives (46 processes) | 26.34 | 24.26 | 15.12 | 1.98 |
+| Redis 7 `redis-benchmark` SET, GET, LPUSH, LRANGE_100, 20,000 each | segfault | 4.42 (LRANGE_100: 7,067 a second) | (33,613) | |
+
+The instruction mix, sampled on hal (`perf record -e instructions:u`, one sample in 20,011,
+every sample's instruction read from its binary; glibc told not to use AVX, Node's JIT told
+the same), in percent of the samples:
+
+| Class | sh | gzip | sha | Python | Node | GCC |
+|---|---:|---:|---:|---:|---:|---:|
+| Integer (MOV, ALU, LEA, MOVZX, shifts) | 66.9 | 79.4 | 81.7 | 77.6 | 70.1 | 73.2 |
+| CALL, RET, JMP, PUSH, POP | 22.0 | 9.2 | 5.7 | 11.2 | 9.6 | 12.4 |
+| Jcc | 5.6 | 2.8 | 2.1 | 3.0 | 8.0 | 5.5 |
+| Jumps and calls through an operand | 0.8 | 0.6 | 2.0 | 1.7 | 0.6 | 0.5 |
+| 16-bit destinations | 0.3 | 4.0 | | 0.2 | 2.0 | 1.8 |
+| String instructions | 2.0 | 0.2 | 0.5 | 0.2 | 0.1 | 0.3 |
+| SSE moves | 0.2 | 0.7 | | 0.7 | 0.6 | 3.0 |
+| SSE packed | 0.1 | 0.1 | | 0.4 | 0.9 | 1.2 |
+| SSE scalar, x87 | | 0.1, 1.6 | | 0.1 | | |
+| Rotations | | | 5.2 | | | |
+| SHRD, XCHG, CMPXCHG | 0.9 | 0.2 | 2.5 | 1.9 | 1.8 | |
+| AVX (OpenSSL's and Node's own choice, not glibc's) | | | | 1.9 | 1.8 | |
+| BT, CMOV/SETcc, MUL/DIV | 1.2 | 1.0 | 0.1 | 1.0 | 0.5 | 1.9 |
+| Node: code its JIT wrote | | | | | 3.8 | |
+
+What it says:
+
+- **Real images run what the in-guest build ran.** Ordinary integer code and branches are 87
+  to 94 percent everywhere. x87 (1.6% at most) and packed SSE (1.2% at most) are small; the
+  primitives `p_ldbl` and `p_simd` measure things these programs hardly do.
+- **The card's guess about Node was wrong.** V8's own code is 3.8% of Node's samples here;
+  the rest is the `node` binary (its interpreter and builtins), ordinary integer code.
+- **Many short processes.** The GCC workload is 46 processes. There Rosetta is only 1.7
+  times QEMU (elsewhere it is 2 to 7), and hal is 12 times Rosetta: starting a process and
+  translating its code once is a large part of the time. A Docker backend that is fast on a
+  long loop and slow to start loses this.
+- **The CPU the guest is shown decides its code.** Under QEMU's user mode glibc sees AVX2
+  (`ld.so --list-diagnostics`: `AVX_Fast_Unaligned_Load=1`) and takes its AVX2 copies and
+  string functions; OpenSSL and Node choose AVX on their own where they find it. g64m will
+  run whatever its CPUID admits to; without AVX the same programs take their SSE2 paths,
+  which g64m has.
+- **There are two QEMUs.** OrbStack's binfmt QEMU is not the 11.0.3 run by hand: 3.7 times
+  slower on `sha256sum`, 1.4 times on `gzip`, level elsewhere. The race is against the
+  faster of the two. QEMU 11.0.3 run by hand dies on `redis-server` (signal 11) where
+  OrbStack's runs it.
+- **Small but present, and not yet translated**: SHRD (about 2% in Python and Node),
+  rotations (5% in software SHA-256), string instructions (2% in the shell).
+
+**Next.** The card's first branch: the list keeps its order, starting with the arrivals
+behind untranslated instructions and ways out, and the room for code. Added to it from
+here: SHLD/SHRD, the string instructions, and, for the Docker backend's sake, what it costs
+to start a process (to be measured when M11 runs one). x87 and packed SSE stay on the list
+for the primitives, last. OrbStack's Rosetta setting was turned off for the timing and
+turned back on; the container that was running came back by its restart policy.
