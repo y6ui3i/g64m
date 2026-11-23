@@ -198,7 +198,19 @@ let C_VS = 6; let C_VC = 7; let C_HI = 8; let C_LS = 9; let C_GE = 10; let C_LT 
 let C_GT = 12; let C_LE = 13;
 let C_NONE = 255;
 
+// The host registers whose value has been found to be an address a block may read eight
+// bytes at (ck_r), or store eight bytes at (ck_w), since the block's start (E164): a
+// plain move through such a register again needs no test. Every instruction generated
+// takes the register in its low five bits out of both, which is the one it writes if it
+// writes one (and LDP's second is taken out there); a block is one straight line, and
+// the pages' marks do not change while it runs.
+var ck_r: u32 = 0;
+var ck_w: u32 = 0;
+
 fn e(w: u32) {
+    let gone: u32 = ~((1 as u32) << (w & 31));
+    ck_r &= gone;
+    ck_w &= gone;
     jc.push(w as! u8);
     jc.push((w >> 8) as! u8);
     jc.push((w >> 16) as! u8);
@@ -222,6 +234,23 @@ fn a_mov(sf: u32, rd: u32, rm: u32) { a_rrr(A_ORR, sf, rd, ZR, rm); }
 fn a_addi(op: u32, sf: u32, rd: u32, rn: u32, v: u32) { e(op << 24 | sf << 31 | v << 10 | rn << 5 | rd); }
 // mov xd, #v
 fn a_imm(rd: u32, v: u64) {
+    // From all ones (MOVN) where more of its four parts are FFFFh than are zero (E164:
+    // a small negative number is one instruction, not four).
+    var ones = 0;
+    var zeros = 0;
+    for h in 4 {
+        let part = v >> ((h as! u64) * 16) & 0xFFFF;
+        if part == 0xFFFF { ones += 1; } else if part == 0 { zeros += 1; }
+    }
+    if ones > zeros {
+        e(0x92800000 | ((~v & 0xFFFF) as! u32) << 5 | rd);                   // movn
+        for h in 3 {
+            let hw = (h as! u64) + 1;
+            let part = (v >> (hw * 16) & 0xFFFF) as! u32;
+            if part != 0xFFFF { e(0xF2800000 | (hw as! u32) << 21 | part << 5 | rd); }
+        }
+        return;
+    }
     e(0xD2800000 | ((v & 0xFFFF) as! u32) << 5 | rd);
     for h in 3 {
         let hw = (h as! u64) + 1;
@@ -287,7 +316,7 @@ fn a_csel(sf: u32, rd: u32, rn: u32, rm: u32, cond: u32) { e(0x1A800000 | sf << 
 // ldr and str xt, [xn, #off]; ldp and stp x1, x2, [xn, #off]
 fn a_ldr(rt: u32, rn: u32, off: u32) { e(0xF9400000 | (off >> 3) << 10 | rn << 5 | rt); }
 fn a_str(rt: u32, rn: u32, off: u32) { e(0xF9000000 | (off >> 3) << 10 | rn << 5 | rt); }
-fn a_ldp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9400000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); }
+fn a_ldp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9400000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); ck_r = 0; ck_w = 0; }
 fn a_stp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9000000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); }
 
 // Branches to a place already generated: b, b.cond, cbnz.
@@ -563,6 +592,14 @@ var tp_to: u64[TP_MAX] = [0; TP_MAX];
 var jp: u8[>..];
 // The block's branches back to its own first instruction, to be filled in.
 let SS_MAX = 16;
+// The conditional jumps back to the block's own first instruction whose way back is in
+// line (E164): which way out each is (so_pos is the jump, so_at the way out behind the
+// block). Round the loop is then one taken branch: the jump's condition turned round
+// over `sub x0, #cnt; cmp x0, #n; b.hs the body`, where it was a branch to the way out
+// and that one from there.
+var sl_n = 0;
+var sl_so: i64[SS_MAX] = [0; SS_MAX];
+var so_at: i64[SO_MAX] = [0; SO_MAX];
 var ss_n = 0;
 var ss_pos: i64[SS_MAX] = [0; SS_MAX];
 // A block begins with what an entry from another block needs (BODY_AT bytes), and the
@@ -767,6 +804,15 @@ fn j_alu(k: u8, test: bool, dst: u32, a: u32, b: u32) {
         return;
     }
     j_rec_alu(if test { 5 } else { (k as u32) + 1 }, je.osz, if test || k == 7 { ZR } else { dst }, a, b, 0);
+    // Where nothing can read the flags the host's are not set either (E164: the host has
+    // fewer places to run an instruction that sets flags than one that does not, and a
+    // loop of ADDS, CMP and CSEL waits for them). CMP and TEST are then nothing at all.
+    if j_nohost && jit_no >> 40 & 1 == 0 {
+        j_hf = 0;
+        if test || k == 7 { return; }
+        a_rrr(if k == 0 { A_ADD } else if k == 5 { A_SUB } else if k == 4 { 0x0A000000 } else if k == 1 { A_ORR } else { A_EOR }, sf, dst, a, b);
+        return;
+    }
     if test { a_rrr(A_ANDS, sf, ZR, a, b); j_hf = HF_LOGIC; return; }
     match k {
         0 => { a_rrr(A_ADDS, sf, dst, a, b); j_hf = HF_ADD; },
@@ -788,6 +834,12 @@ fn j_alu_i(k: u8, dst: u32, a: u32, v: u64, tmp: u32) {
     if (k == 0 || k == 5 || k == 7) && v < 4096 {
         let sf: u32 = if je.osz == 64 { 1 } else { 0 };
         j_rec_alu((k as u32) + 1, je.osz, if k == 7 { ZR } else { dst }, a, 255, v);
+        if j_nohost && jit_no >> 40 & 1 == 0 {
+            // (No flags wanted, E164: ADD and SUB as they are, and no CMP.)
+            j_hf = 0;
+            if k != 7 { a_addi(if k == 0 { 0x11 } else { 0x51 }, sf, dst, a, v as! u32); }
+            return;
+        }
         a_addi(if k == 0 { 0x31 } else { 0x71 }, sf, if k == 7 { ZR } else { dst }, a, v as! u32);
         j_hf = if k == 0 { HF_ADD } else { HF_SUB };
         return;
@@ -798,7 +850,8 @@ fn j_alu_i(k: u8, dst: u32, a: u32, v: u64, tmp: u32) {
         let c = a_logimm(v, sf);
         if c != 0xFFFFFFFF {
             j_rec_alu((k as u32) + 1, je.osz, dst, a, 255, v);
-            if k == 4 { e(0x72000000 | sf << 31 | c << 10 | a << 5 | dst); j_hf = HF_LOGIC; }       // ands
+            if k == 4 && j_nohost && jit_no >> 40 & 1 == 0 { e(0x12000000 | sf << 31 | c << 10 | a << 5 | dst); j_hf = 0; }      // and
+            else if k == 4 { e(0x72000000 | sf << 31 | c << 10 | a << 5 | dst); j_hf = HF_LOGIC; }  // ands
             else {
                 e((if k == 1 { 0x32000000 } else { 0x52000000 }) | sf << 31 | c << 10 | a << 5 | dst);   // orr, eor
                 if j_nohost { j_hf = 0; }
@@ -1219,14 +1272,20 @@ fn j_dead_past_use(q: u64, page_end: u64, cnt: u64) -> bool {
     let keep_at = j_at;
     var ok = false;
     var after: u64 = 0;
-    if j_entry(q) {
+    var at = q;
+    // Past up to two moves between registers of 32 or 64 bits (E164: `cmp; mov; cmovg`),
+    // which are one host MOV each: no flag changed, no way out, and always taken.
+    for step in 3 {
+        if at >= page_end || !j_entry(at) { break; }
         let k = jk;
         let len = j_len();
-        if k >= K_CMOV && k < K_SETCC + 16 && len != 0 && len <= page_end - q && !je.asz32 && !je.p66 && je.rep == 0
-            && je.mod == 3 && (k < K_SETCC || j_byte_ok(je.rm)) && j_cond_of(hf, k & 15) != C_NONE {
-            ok = true;
-            after = q + len;
+        if len == 0 || len > page_end - at || je.asz32 || je.p66 || je.rep != 0 || je.mod != 3 { break; }
+        if k >= K_CMOV && k < K_SETCC + 16 {
+            if (k < K_SETCC || j_byte_ok(je.rm)) && j_cond_of(hf, k & 15) != C_NONE { ok = true; after = at + len; }
+            break;
         }
+        if step == 2 || k != K_MOV || je.op & 1 == 0 || jit_no >> K_MOV & 1 != 0 || cnt + 3 + (step as! u64) > J_MAX { break; }
+        at += len;
     }
     je = keep;
     jk = keep_k;
@@ -1370,7 +1429,23 @@ fn j_chk_at(ar: u32, write: bool, n: u32) {
         a_shifti(5, 1, S2, S2, 28);
     }
     j_leave_if();
-    if write {
+    if write { j_chk_mark_at(ar, n); }
+}
+
+// A store of n bytes at the address in ar, which is inside memory, changes no remembered
+// instruction.
+fn j_chk_mark_at(ar: u32, n: u32) {
+    if jit_no >> 41 & 1 == 0 {
+        // Its page holds no remembered instructions, and it does not run into the next
+        // page (E164: one look in the table, and a store over a page's end is the
+        // interpreter's, where it was a look for each page).
+        a_shifti(5, 1, S2, ar, 12);
+        e(0x38606800 | S2 << 16 | MARK << 5 | S2);           // ldrb w2, [x28, x2]
+        a_addi(0x11, 1, S3, ar, n - 1);
+        a_rrr(A_EOR, 1, S3, S3, ar);
+        e(0xAA400000 | S3 << 16 | 12 << 10 | S2 << 5 | S2);  // orr x2, x2, x3, lsr #12
+        j_leave_if();
+    } else {
         a_shifti(5, 1, S2, ar, 12);
         e(0x38606800 | S2 << 16 | MARK << 5 | S2);           // ldrb w2, [x28, x2]
         a_addi(0x11, 1, S3, ar, n - 1);
@@ -1388,7 +1463,13 @@ fn j_chk_at(ar: u32, write: bool, n: u32) {
 fn j_ea(write: bool) -> u32 {
     if !machine && !jit_check && je.sg == 0 && je.base < 16 && je.index >= 16 && je.disp == 0 && jit_no >> 32 & 1 == 0 {
         let ar = hg(je.base);
-        j_chk_at(ar, write, 8);
+        let bit: u32 = (1 as u32) << ar;
+        // (Tested already in this block, and not written since: E164.)
+        if jit_no >> 42 & 1 == 0 && (ck_w & bit != 0 || (!write && ck_r & bit != 0)) { return ar; }
+        if jit_no >> 42 & 1 == 0 && ck_r & bit != 0 { j_chk_mark_at(ar, 8); }     // (read here before: only the store's own test)
+        else { j_chk_at(ar, write, 8); }
+        ck_r |= bit;
+        if write { ck_w |= bit; }
         return ar;
     }
     j_addr();
@@ -1724,10 +1805,6 @@ fn j_sse(q: u64, len: u64) -> bool {
             let f = je.reg & 7;
             if f != 2 && f != 3 && f != 6 && f != 7 { return false; }
             let n = mem_rd(q + len - 1, 8) as! u32;
-            if jit_no >> 42 & 1 != 0 && (f == 2 || f == 6) { return false; }
-            if jit_no >> 41 & 1 != 0 && (f == 3 || f == 7) { return false; }
-            if jit_no >> 40 & 1 != 0 && n > (if f == 2 || f == 6 { 63 } else { 15 }) { return false; }
-            if jit_no >> 39 & 1 != 0 && n == 0 { return false; }
             if n == 0 { return true; }
             if n > (if f == 2 || f == 6 { 63 } else { 15 }) {
                 e(0x4F000400 | (16 + (je.rm as u32)));       // movi #0
@@ -1898,6 +1975,8 @@ fn j_x87() -> bool {
     e(0xA8C00000 | 14 << 15 | 5 << 10 | 31 << 5 | 0);            // ldp x0, x5, [sp], #112
     // The call may have changed the host's vectors (E160).
     xv_in = 0;
+    ck_r = 0;
+    ck_w = 0;
     if store {
         j_addr();
         j_store(if n == 2 { 16 } else if n == 4 { 32 } else { 64 }, S4);
@@ -2058,8 +2137,18 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                     so_skw[so_n] = sk_w;
                 }
             }
-            so_n += 1;
-            e(0);
+            // To this block's own first instruction, with no record owed there (E164): room
+            // for the way back in line, which is filled in when the block is whole.
+            if off + len + d == 0 && so_how[so_n] == 0 && !jit_check && jit_no >> 63 == 0 && jit_no >> 39 & 1 == 0 && sl_n < SS_MAX {
+                sl_so[sl_n] = so_n;
+                sl_n += 1;
+                so_n += 1;
+                e(0);
+                for i in 5 { e(0xD503201F); }
+            } else {
+                so_n += 1;
+                e(0);
+            }
             if sk_live {
                 if j_flags_dead(q + len, q + room) { sk_live = false; j_stale = true; }
                 else { j_sink_flush(); }
@@ -2305,9 +2394,17 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 if n == 0 { return 0; }
                 if !j_dead { a_imm(S1, n); }             // (the count, for the record only: E163)
                 j_rec_w(0x20 | (which as u32), nb, m, S1);
-                if which == 7 { e((if nb == 8 { 0x13001C00 } else { 0x13003C00 }) | m << 5 | S4); }   // sxtb, sxth
-                else { e((if nb == 8 { 0x12001C00 } else { 0x12003C00 }) | m << 5 | S4); }           // and #0xFF, #0xFFFF
-                a_shifti(which, 0, S4, S4, n as! u32);
+                let bits: u32 = nb;
+                let by = n as! u32;
+                if jit_no >> 41 & 1 == 0 && (which == 4 || which == 6) { a_shifti(which, 0, S4, m, by); }       // left: what goes above is not put back
+                else if jit_no >> 41 & 1 == 0 && by < bits {
+                    // Right (E164): the bits that stay, taken out in one (ubfx, or sbfx with the sign).
+                    e((if which == 7 { 0x13000000 } else { 0x53000000 }) | by << 16 | (bits - 1) << 10 | m << 5 | S4);
+                } else {
+                    if which == 7 { e((if nb == 8 { 0x13001C00 } else { 0x13003C00 }) | m << 5 | S4); }   // sxtb, sxth
+                    else { e((if nb == 8 { 0x12001C00 } else { 0x12003C00 }) | m << 5 | S4); }           // and #0xFF, #0xFFFF
+                    a_shifti(which, 0, S4, S4, by);
+                }
                 a_bfi_low(m, S4, nb);
                 j_hf = 0;
                 return len;
@@ -2605,6 +2702,9 @@ fn jit_translate_in(ph: u64) {
         so_n = 0;
         sk_live = false;
         ss_n = 0;
+        sl_n = 0;
+        ck_r = 0;
+        ck_w = 0;
         j_stale = false;
         xv_in = 0;
         tp_n = 0;
@@ -2646,6 +2746,7 @@ fn jit_translate_in(ph: u64) {
             // The ways out, behind the block.
             for i in so_n {
                 let at = so_pos[i];
+                so_at[i] = jc.len;
                 e_at(at, so_op[i] | (((jc.len - at) >> 2) as! u32) << 5);
                 j_stale = so_stale[i];
                 if so_how[i] != 0 { j_sink_emit(so_how[i], so_ska[i], so_skb[i], so_ski[i], so_skw[i]); }
@@ -2662,6 +2763,18 @@ fn jit_translate_in(ph: u64) {
                 } else { e_at(8, 0xB5000087); }              // cbnz x7, four on: the branch out
             }
             if !j_needs {
+                for i in sl_n {
+                    let w = sl_so[i];
+                    let at = so_pos[w];
+                    let c = so_op[w] & 15;
+                    let took = so_cnt[w] as! u32;
+                    e_at(at, 0x54000000 | 6 << 5 | (c ^ 1));                                         // b.(not c) over the five
+                    e_at(at + 4, 0xD1000000 | took << 10);                                           // sub x0, x0, #cnt
+                    e_at(at + 8, 0xF100001F | (n as! u32) << 10);                                    // cmp x0, #n
+                    e_at(at + 12, 0x54000002 | ((((BODY_AT - (at + 12)) >> 2) as! u32) & 0x7FFFF) << 5);  // b.hs the body
+                    e_at(at + 16, 0x91000000 | took << 10);                                          // add x0, x0, #cnt: no time for a round
+                    e_at(at + 20, 0x14000000 | (((so_at[w] - (at + 20)) >> 2) as! u32) & 0x3FFFFFF); // b the way out
+                }
                 for i in ss_n {
                     let at = ss_pos[i];
                     e_at(at, 0xF100001F | (n as! u32) << 10);                                        // cmp x0, #n
