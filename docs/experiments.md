@@ -12477,3 +12477,32 @@ a process or copies for it, which are pages of data.
   - `sys_group7` stays → what else it does at INVLPG (the 512 places of six tables)
 - **Cut-off**: one form; `y_table` with the wrong translators again, and one more (the
   bits never set); the gate; the race beside E167.
+
+**Result: `sys_group7` is 0.9% of the sample (it was 3.0%); the three files take 5.4% fewer
+cycles beside E167 with four running at once, and 1.8% fewer alone.**
+
+| The three files | E167 | E168 | |
+|---|---:|---:|---:|
+| Four at once (two of each): host instructions | 372.73 G, 372.74 G | 362.63 G, 362.60 G | −2.7% |
+| cycles | 149.91 G, 149.80 G | 141.87 G, 141.59 G | −5.4% |
+| Alone, the better of two: seconds, cycles | 34.7, 107.29 G | 34.4, 105.37 G | −1.8% |
+| `sys_group7` in the sample | 120 of 4,035 | 39 of 4,370 | |
+
+- **The hypothesis** held, by more than guessed with others running (the emptying wrote
+  128 KB each time, which the other three then did not have in their caches) and by
+  about what was guessed alone.
+- **The form**: `xf_page` (2^16 bits) and `xf_big` (2^12 bits), set where the TLB's table
+  for fetches gets an entry, by the page's size; cleared when the TLB is emptied. INVLPG
+  empties the blocks' table if the address's bit in either is set. `--jit-off2 8` empties
+  it at every INVLPG as E165 did.
+- **The test**: `y_table` has a 2 MB page changed for another with INVLPG given an
+  address elsewhere in it (taken on hal under KVM). Four wrong translators fail it: no
+  emptying at INVLPG; a 4 KB page gets no bit; a larger page gets no bit; INVLPG looks at
+  the next page's bit.
+- **The gate**: 116 ok and `make-rc=0` in 436 s.
+
+**Where this stands, each alone**: KVM on hal 25 s; g64m 34.4 s; QEMU 54.2 s: **1.58**.
+
+**Next.** The 124 million entries into blocks from the interpreter (why each block was
+left, counted again now that the misses are gone) and the 85 million instructions
+refused, by kind.

@@ -197,12 +197,26 @@ fn tlb_unwrite(page: i64) {
 // This says whether any entry made since the last emptying came from a 1 GB page.
 var tlb_has_1g = false;
 
+// The pages code has been fetched from since the TLB was last emptied (E168), as bits: a
+// 4 KB page by its number's low sixteen bits, a larger page's entry by the 2 MB it lies
+// in. The table of where blocks are (jit64.goose) is filled from the TLB's table for
+// fetches, so it holds no address of a page that has no bit here, and INVLPG for such a
+// page leaves it alone.
+var xf_page: u64[1024] = [0; 1024];
+var xf_big: u64[64] = [0; 64];
+var xf_any = false;
+
 var tlb_flushes: u64 = 0;        // how often the TLB was emptied
 
 fn tlb_flush() {
     tlb_flushes += 1;
     code_page = TLB_EMPTY;       // the code page is a translation too (E105)
     jt_clear();                  // and so is every pair of the blocks' table (E165)
+    if xf_any {
+        for i in 1024 { xf_page[i] = 0; }
+        for i in 64 { xf_big[i] = 0; }
+        xf_any = false;
+    }
     code_end = 0;
     for i in 6 * TLB_SIZE { tlb_tag[i] = TLB_EMPTY; }
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
@@ -214,7 +228,9 @@ fn tlb_flush() {
 // with entries of 1 GB pages about, everything. More than asked for is always allowed.
 fn tlb_forget(a: u64) {
     code_page = TLB_EMPTY;
-    jt_clear();
+    let n4 = a >> 12 & 0xFFFF;
+    let n2 = a >> 21 & 0xFFF;
+    if jit_no2 & 8 != 0 || xf_page[(n4 >> 6) as! i64] >> (n4 & 63) & 1 != 0 || xf_big[(n2 >> 6) as! i64] >> (n2 & 63) & 1 != 0 { jt_clear(); }
     code_end = 0;
     if tlb_has_1g { tlb_flush(); return; }
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
@@ -301,6 +317,12 @@ fn walk(a: u64, acc: u8) -> u64 {
         let i = tlb_table(acc) + ((a >> 12 & (TLB_SIZE - 1)) as! i64);
         tlb_tag[i] = a >> 12;
         tlb_tag[TLB_ADD + i] = add;
+    }
+    // (For INVLPG and the blocks' table, E168: code has been fetched from this page.)
+    if acc & ACC_EXEC != 0 {
+        if shift == 12 { let n = a >> 12 & 0xFFFF; xf_page[(n >> 6) as! i64] |= (1 as u64) << (n & 63); }
+        else { let n = a >> 21 & 0xFFF; xf_big[(n >> 6) as! i64] |= (1 as u64) << (n & 63); }
+        xf_any = true;
     }
     if shift == 30 { tlb_has_1g = true; }
     return p;

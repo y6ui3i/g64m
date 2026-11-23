@@ -6,6 +6,8 @@ the page's code written through another address
 0000000000180018
 two addresses that choose the same place in the table
 0000000000181800
+a 2 MB page made another, INVLPG given an address elsewhere in it
+0000000000001818
 a block made at level 0, asked for at level 3
 0000000000000090
 0000000000000019
