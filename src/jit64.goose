@@ -1555,6 +1555,64 @@ fn j_sse(q: u64, len: u64) -> bool {
             }
             x_st(128, 0, je.rm);
         },
+        0x71, 0x72 => {
+            // The shifts of words and doublewords by a constant (E159): /2 right, /4 right
+            // keeping the sign, /6 left. A count of the width or more leaves nothing, or
+            // with the sign kept, the sign in every bit.
+            if p != 1 || !regs || jit_no >> 37 & 1 != 0 { return false; }
+            let f = je.reg & 7;
+            if f != 2 && f != 4 && f != 6 { return false; }
+            let w: u32 = if op2 == 0x71 { 16 } else { 32 };
+            var n = mem_rd(q + len - 1, 8) as! u32;
+            if n == 0 { return true; }
+            x_base();
+            if n >= w {
+                if f != 4 {
+                    e(0x4F000400);                           // movi v0.4s, #0
+                    x_st(128, 0, je.rm);
+                    return true;
+                }
+                n = w - 1;
+            }
+            x_ld(128, 0, je.rm);
+            if f == 2 { e(0x6F000400 | (2 * w - n) << 16); }         // ushr v0, v0, #n
+            else if f == 4 { e(0x4F000400 | (2 * w - n) << 16); }    // sshr v0, v0, #n
+            else { e(0x4F005400 | (w + n) << 16); }                  // shl v0, v0, #n
+            x_st(128, 0, je.rm);
+        },
+        0xF4 => {
+            // PMULUDQ (E159): the low halves of the two quadwords, multiplied to 64 bits.
+            if p != 1 || jit_no >> 37 & 1 != 0 { return false; }
+            x_src(128, 1);
+            x_base();
+            x_ld(128, 0, r);
+            e(0x0EA12800 | 0 << 5 | 0);                      // xtn v0.2s, v0.2d
+            e(0x0EA12800 | 1 << 5 | 1);                      // xtn v1.2s, v1.2d
+            e(0x2EA0C000 | 1 << 16 | 0 << 5 | 0);            // umull v0.2d, v0.2s, v1.2s
+            x_st(128, 0, r);
+        },
+        0xC6 => {
+            // SHUFPS: two of the four from the destination, two from the source; SHUFPD:
+            // one of the two from each (E159).
+            if p > 1 || jit_no >> 37 & 1 != 0 { return false; }
+            let imm = mem_rd(q + len - 1, 8) as! u32;
+            x_src(128, 1);
+            x_base();
+            x_ld(128, 0, r);
+            if p == 0 {
+                for i in 4 {
+                    let sel = imm >> ((i as! u32) * 2) & 3;
+                    let from: u32 = if i < 2 { 0 } else { 1 };
+                    e(0x6E000400 | ((i as! u32) << 3 | 4) << 16 | (sel << 2) << 11 | from << 5 | 2);      // mov v2.s[i], v.s[sel]
+                }
+            } else {
+                for i in 2 {
+                    let sel = imm >> (i as! u32) & 1;
+                    e(0x6E000400 | ((i as! u32) << 4 | 8) << 16 | (sel << 3) << 11 | (i as! u32) << 5 | 2);   // mov v2.d[i], v.d[sel]
+                }
+            }
+            x_st(128, 2, r);
+        },
         0x70 => {
             // PSHUFD: each of the four from the one the constant names.
             if p != 1 || jit_no >> 47 & 1 != 0 { return false; }

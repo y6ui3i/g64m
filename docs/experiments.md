@@ -11712,3 +11712,39 @@ instructions a block.
     vectors over a block is the next form
   - Something still interpreted → that opcode, from `--jit-why`
 - **Cut-off**: one form; the gate, and `p_simd` timed three times beside QEMU's.
+
+**Result: nothing of `p_simd`'s loop is interpreted, and it takes 0.47 s where it took
+5.35 s; QEMU takes 0.31 s, so it is at 0.66 of QEMU's speed, from 0.06: still behind.**
+
+| `p_simd`, thirty rounds | Before | After |
+|---|---:|---:|
+| Instructions in blocks, of 497.9 M | 368.2 M | 497.9 M |
+| Blocks entered | 70,779,272 | 72 |
+| Seconds, less a program that does nothing | 5.347 | 0.472 |
+| QEMU's user mode, the same | 0.333 | 0.31 to 0.33 |
+| g64m / QEMU, by speed | 0.06 | 0.66 |
+
+(g64m five runs, 0.536 to 0.548 s less 0.064 s; QEMU three sets of three, at a load of 3.)
+
+- **The hypothesis** held for what is interpreted (nothing: the 21 left are the system
+  calls) and for the time (0.5 s or less), and missed the distance from QEMU (0.7 to 1.2
+  guessed, 0.66 found).
+- **What the time is now**: 2,864 M host instructions and 1,514 M cycles for 497.9 M
+  guest instructions, less the start: 5.75 host instructions and 3.0 cycles for each.
+  The loop is some 130 packed instructions in a straight line, each of which loads the
+  address of the XMM registers once or twice, loads its operands from the context and
+  stores its result there; under two host instructions a cycle says the stores and the
+  loads behind them are what is waited for.
+- **The forms**: `0F 71` and `0F 72` /2, /4, /6 by a constant are USHR, SSHR and SHL (a
+  count of the width or more: nothing left, or the sign kept in every bit); `0F F4` is
+  two XTN and a UMULL; `0F C6` is element moves, four for SHUFPS and two for SHUFPD.
+  `--jit-off`'s bit 37 leaves them to the interpreter.
+- **The test** `x_packed2` (trace from hal, 747 lines): every form from a register and
+  from memory, counts of nothing, the width and more; one block with the forms, 23
+  without (`--jit-off 137438953472`).
+- **The gate**: 106 ok and `make-rc=0` in 377 s; `difftest64` is 33 with `x_packed2`.
+- E158's "its loop is packed floats" was wrong: it was read off the name, not counted.
+
+**Next.** As the card says for "nothing interpreted and still behind": the XMM registers
+kept in host vectors over a block (loaded at first use, stored on the ways out), so that
+an instruction is its one host instruction. That is a form of its own (E160).
