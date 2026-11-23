@@ -22,10 +22,13 @@ if os.environ.get('RACE_SHORT'):
 who = sys.argv[1] + ('-short' if os.environ.get('RACE_SHORT') else '')
 disk = 'build/race-%s.img' % who
 shutil.copyfile(D, disk)
+# /usr/bin/time -l (macOS) says the instructions the program retired and its cycles (E154):
+# the count of instructions does not depend on which core ran it or what else ran.
+TIME = ['/usr/bin/time', '-l'] if sys.platform == 'darwin' else []
 t0 = time.perf_counter()
 if who.startswith('g64m'):
     opts = sys.argv[2:] or ['--jit']
-    r = subprocess.run([os.environ.get('RACE_X64', 'build/g64m')] + opts + ['--rtc', 'host', '--disk', disk, '--keep', '--initrd', I,
+    r = subprocess.run(TIME + [os.environ.get('RACE_X64', 'build/g64m')] + opts + ['--rtc', 'host', '--disk', disk, '--keep', '--initrd', I,
                         '--wait', 'root on /dev/sda', '--wait', '~ # ', '--type', CMD, '--wait', 'fin42',
                         '--type', 'off\n', '--wait', 'System halted', '--max', '40000000000000', K],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -37,13 +40,13 @@ if who.startswith('g64m'):
     for l in r.stderr.split(b'\n'):
         if b'jit:' in l: print(l.decode(errors='replace')[-200:])
 else:
-    p = subprocess.Popen(['qemu-system-x86_64', '-accel', 'tcg', '-m', '256', '-nographic', '-no-reboot',
+    p = subprocess.Popen(TIME + ['qemu-system-x86_64', '-accel', 'tcg', '-m', '256', '-nographic', '-no-reboot',
                           '-kernel', K, '-initrd', I, '-append', 'console=ttyS0 tsc=reliable',
                           # The disk where the guest's driver (pata_legacy) looks for it: an IDE
                           # controller on the ISA bus, which QEMU's q35 machine can be given.
                           '-M', 'q35', '-device', 'isa-ide,iobase=0x1f0,iobase2=0x3f6,irq=14,id=ide0',
                           '-drive', 'if=none,id=d0,file=%s,format=raw' % disk, '-device', 'ide-hd,drive=d0,bus=ide0.0'],
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open('build/race-%s.err' % who, 'wb'))
     os.set_blocking(p.stdout.fileno(), False)
     out = b''
     def wait(text, limit):
@@ -66,7 +69,9 @@ else:
     took = time.perf_counter() - t0
     if ok:
         p.stdin.write(b'off\n'); p.stdin.flush(); wait(b'System halted', 60)
-    p.kill(); p.wait()
+    # (QEMU ends by itself when the guest powers off; /usr/bin/time then says what it took.)
+    try: p.wait(timeout=20)
+    except subprocess.TimeoutExpired: p.kill(); p.wait()
 open('build/race-%s.out' % who, 'wb').write(out)
 text = out.decode(errors='replace')
 tail = text[text.rfind('make-rc='):] if 'make-rc=' in text else text[-400:]
@@ -74,4 +79,8 @@ tail = text[text.rfind('make-rc='):] if 'make-rc=' in text else text[-400:]
 # than the changes being measured).
 ru = resource.getrusage(resource.RUSAGE_CHILDREN)
 print('%s: %.1f s, CPU %.1f s user and %.1f s system' % (who, took, ru.ru_utime, ru.ru_stime))
+err = open('build/race-%s.err' % who, 'rb').read()
+mi = re.search(rb'(\d+)\s+instructions retired', err)
+mc = re.search(rb'(\d+)\s+cycles elapsed', err)
+if mi and mc: print('%s: %.2f billion host instructions retired, %.2f billion cycles' % (who, int(mi[1]) / 1e9, int(mc[1]) / 1e9))
 print(tail.replace('\r', '')[:600])
