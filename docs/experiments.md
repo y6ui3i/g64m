@@ -11690,3 +11690,25 @@ quarter (E157), the boot by a quarter, 18 primitives past it and two level; thre
 **Next.** The three behind, by distance: `p_simd` (the packed float forms: ADDPS, MULPS
 and the rest), `p_ldbl` (the x87, none of which is translated), `p_bitfield`; and
 `p_bignum`'s ADC chain looked at for what it lost.
+
+## E159: the packed forms `p_simd` is left with: shifts of words and doublewords, PMULUDQ, SHUFPS (2026-11-23)
+
+E158 said `p_simd`'s loop is packed floats. It is not: `--jit-why` on the long program
+counts 129.8 M of its 497.9 M instructions interpreted, all of three opcodes: `0F 72`
+(PSRLD, PSLLD by a constant) 47.2 M, `0F F4` (PMULUDQ) 70.8 M, `0F C6` (SHUFPS) 11.8 M.
+Each is a block's end as well: 70.8 M entries for 368 M instructions in blocks, five
+instructions a block.
+
+- **Hypothesis**: **with `0F 71` and `0F 72` (/2, /4, /6 by a constant), `0F F4` and
+  `0F C6` in blocks, nothing of `p_simd`'s loop is interpreted, and its time goes from
+  5.35 s to 0.5 s or less: between 0.7 and 1.2 of QEMU's 0.333 s.**
+- **What changed since last time**: those four opcodes translated (the host's USHR, SSHR,
+  SHL; XTN and UMULL; element moves), in `j_sse` beside E147's. A test of them with the
+  real CPU's trace.
+- **Next move for each result**:
+  - Past QEMU (1.0 or more) → `p_ldbl`, the x87
+  - Nothing interpreted and still behind → the loop's host code: every XMM register is
+    loaded from and stored to the context at each instruction; the registers kept in host
+    vectors over a block is the next form
+  - Something still interpreted → that opcode, from `--jit-why`
+- **Cut-off**: one form; the gate, and `p_simd` timed three times beside QEMU's.
