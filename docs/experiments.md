@@ -11298,3 +11298,27 @@ are raced together.
 
 All suites pass at 2^20: `difftest64` 32, `prim64` 23, `systest64` 17 plain, with `--jit`
 and with `--jit-check` (106 `ok`).
+
+----
+## E153: NetHack built in the guest, g64m and QEMU raced at the same time (2026-11-23)
+
+E148: 1,987 s of CPU against QEMU's 973 s, twice behind. Since then the short load and
+store (E150) and the decode cache of 2^20 entries (E152): the three files went from 97.7 s
+to about 70 s of CPU (QEMU: 65 s). The whole build has more code alive at once than the
+three files (E143: three blocks in five were still lost to the cache at 2^18 with two
+ways), so the cache's size should count for more there, or for as much.
+
+- **Hypothesis**: **the whole build takes between 1,300 and 1,500 s of CPU under `--jit`
+  (E148's 1,987 s less the three files' 28%), with under 100 flushes (from 293) and under
+  5 billion entries (from 8.2 billion); QEMU takes 950 to 1,050 s of CPU beside it; g64m is
+  between 1.25 and 1.6 times behind.**
+- **What changed since last time**: E150 and E152; and the two programs run at the same
+  time, each on its own core, so that they see the same host (E152: a time taken alone
+  says little here).
+- **Next move for each result**:
+  - As guessed → what is left by E149's profile at this size: the interpreter's share
+    again, the leavings, the XMM registers in memory
+  - Still over 1.7 times → the whole build is not the three files: `--jit-why` on the
+    whole build (the blocks lost, the instructions outside the cache)
+  - Under 1.25 times → said so; the same next
+- **Cut-off**: one build under each, together; `make-rc` and the NetHack's version in both.
