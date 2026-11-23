@@ -11568,3 +11568,39 @@ more processes than the three files (E143, E153).
   - The build fails → E147's way
 - **Cut-off**: one build under each at the same time, one each alone; `make-rc` and the
   NetHack's version in all four.
+
+**Result: g64m builds NetHack in 812 s of CPU alone to QEMU's 1,074 s, and in 877 s to
+1,142 s raced at the same time: a quarter ahead, both ways.** All four builds end at the
+same step (`doc/Guidebook`) with a NetHack that says its version. Load 3 to 4.
+
+| NetHack built in the guest | g64m `--jit` | QEMU 11.1.3 | g64m / QEMU |
+|---|---:|---:|---:|
+| At the same time: CPU seconds (user) | 876.6 | 1,142.3 | 0.77 |
+| At the same time: cycles | 2,702 billion | 3,574 billion | 0.76 |
+| At the same time: host instructions | 8,256 billion | 8,700 billion | 0.95 |
+| Alone: CPU seconds (user) | **811.9** | **1,074.3** | **0.76** |
+| Alone: wall clock | 825.8 s | 1,102.3 s | 0.75 |
+| Alone: cycles | 2,547 billion | 3,391 billion | 0.75 |
+| Alone: host instructions | 8,006 billion | 8,685 billion | 0.92 |
+
+g64m alone: 470.7 billion guest instructions, 97.9% in blocks, 2.8 billion entries into
+blocks, 15.1 million blocks translated (5.0 million lost to the cache), 4.8 GB of code
+written, the room filled 35 times, the TLB emptied 31,165 times.
+
+- **The hypothesis** was too careful: 812 s for "880 to 1,000"; a quarter ahead for
+  "level, or up to a tenth ahead".
+- **The two ways agree this time** (0.77 and 0.76 by CPU seconds), where E153's did not:
+  the host had less on it (load 3 to 4, for 5 to 8).
+- **By host instructions the two are near each other** (0.92 to 0.95): g64m gets through
+  its instructions faster, 3.1 a cycle to QEMU's 2.6.
+- **Against the first race** (E135, two days before: 3,561 s to QEMU's 914 s by the wall
+  clock, with g64m's guest guarding against Meltdown and MDS): 826 s to 1,102 s.
+
+**The owner's first milestone** (2026-11-22: past QEMU on every measured workload, before
+the Docker backend) has three workloads. The build in the guest: past, by a quarter. The
+boot: 2.42 s to 2.53 s in E134, to be taken again on this CPU. The primitives: 18 of 23
+at QEMU's speed or past it in E131, `p_bitfield` since at 0.73; `p_simd`, `p_rotate`,
+`p_sha`, `p_ldbl` and `p_pixel` behind.
+
+**Next.** The boot and the 23 primitives against QEMU again, as they are now; then the
+ones behind, in the order of their distance.
