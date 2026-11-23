@@ -12454,3 +12454,26 @@ QEMU / g64m is **1.56** alone, 1.5 to 1.6 by cycles with three at once. Twice QE
 **Next.** The 124 million entries from the interpreter and what they cost (the way in and
 out: sixteen registers loaded and stored, the record settled, the run loop's questions);
 the 85 million refused, by kind; the translator reading instructions itself.
+
+----
+
+## E168: INVLPG empties the table of blocks only for a page code was fetched from (2026-11-24)
+
+E167 under the sampler (the three files, 4,035 samples): `sys_group7` is 3.0% of the
+time by itself, where it was 0.8% before E165. It is INVLPG: E165 empties its table
+(8,192 pairs) at every one, and the guest's kernel gives one for each page it takes from
+a process or copies for it, which are pages of data.
+
+- **Hypothesis**: **with the pages code has been fetched from since the TLB was last
+  emptied kept as bits (one for a 4 KB page by its number's low sixteen bits, one for the
+  2 MB a larger page's entry lies in), and the table emptied at INVLPG only when the
+  address's bit is set, `sys_group7` goes back under 1% of the sample and the three files
+  take 1.5% fewer cycles beside E167.**
+- **What changed since last time**: the sample. The table can hold an address only if the
+  TLB's table for fetches held its page (the far way fills it from there), so a page with
+  no bit has no pair.
+- **Next move for each result**:
+  - As guessed → the way in and out, and the 85 million refused
+  - `sys_group7` stays → what else it does at INVLPG (the 512 places of six tables)
+- **Cut-off**: one form; `y_table` with the wrong translators again, and one more (the
+  bits never set); the gate; the race beside E167.
