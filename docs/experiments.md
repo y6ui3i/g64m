@@ -11088,3 +11088,36 @@ entry, one comparison for the tag and the crossing, pages that are not plain mem
 pages that hold remembered instructions kept out of the tables that the blocks read, the
 tables' addresses in host registers (E150); (2) blocks kept when the decode cache's entry
 goes, and translating earlier than the eighth arrival; (3) four ways.
+
+----
+## E150: the load and the store in a machine's block made short (2026-11-23)
+
+E149: half of what g64m is behind QEMU on the build is in generated code, 62 s against
+45 s on the three files. A load in a machine's block is about 17 host instructions before
+the load itself, a store about 24: the page's entry found, its tag compared, the access
+kept from crossing a page, the tables' two addresses loaded from the context, the
+physical page put together with the offset, the page's place in memory checked, and for a
+store the two pages looked up among those that hold remembered instructions. QEMU's is
+about seven.
+
+- **Hypothesis**: **with the TLB's entry holding the difference between the physical and
+  the linear page (an addend, added to the address), one comparison of the entry's tag
+  with the page of the access's last byte (which fails for a miss and for a crossing
+  alike), the tables' address in a host register, and the tables the blocks read never
+  holding a page that is not plain memory nor, for writes, a page with remembered
+  instructions (so neither is checked in the block), a load is 9 host instructions and a
+  store 9; the three files' CPU time falls from 97.7 s to under 88 s (a tenth), all in
+  generated code.**
+- **What changed since last time**: E149's profile. `tlb_phys` becomes an addend behind
+  the tags in one array; a page that is not plain memory, or (for a write) holds
+  remembered instructions, is kept in a small table of its own that only the walk looks
+  at; a page that comes to hold remembered instructions is taken out of the write tables.
+- **Next move for each result**:
+  - A tenth or more → the XMM registers kept in host registers across a block's SSE
+    instructions (the other part of E149's 17 s), then the interpreter's share
+  - Under 5% → the generated code's time is not the memory's checks: a block's listing
+    from the build read beside QEMU's, as E131 did
+  - Slower without `--jit` → the walk's look at the small table costs: measured on the
+    boot without the JIT
+- **Cut-off**: the short race (with `make-rc`), the boot's time with and without the
+  JIT, the gate.
