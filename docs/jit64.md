@@ -232,6 +232,12 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   entered only at its start, which is what makes "loaded" something the translator
   knows. `--jit-off`'s bit 36 loads at every use; bit 37 leaves the packed forms of E159
   to the interpreter.
+- **The x87 by a call** (E161): in a program without a kernel an x87 instruction is a
+  call from the block to the interpreter's own routine (`jit_x87`, an `export fn`). The
+  block loads the memory operand and passes it, or stores what comes back, so the call
+  touches no guest memory or register; fourteen host registers are kept on the stack
+  round it, and the host's flags in x29 if a jump may still use them. FCOMI and its kin
+  give a record as UCOMISD's is. `--jit-off`'s bit 35.
 - **Addresses relative to RIP, and the return address a CALL pushes.** A block is found
   by its physical address, and one page of a shared library is at different virtual
   addresses in different programs, so RIP cannot be a constant in generated code: it is

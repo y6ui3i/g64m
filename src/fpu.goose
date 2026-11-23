@@ -63,6 +63,47 @@ fn fpu_reset() {
     for i in 8 { fp[i] = 0.0; fp_raw[i] = false; }
 }
 
+// The whole unit kept in one of two places, put back from one, and compared with one: for
+// the JIT's --jit-check, which runs a block and then the same instructions interpreted.
+var fk_fp: u64[16] = [0; 16];
+var fk_mant: u64[16] = [0; 16];
+var fk_se: u16[16] = [0; 16];
+var fk_raw: bool[16] = [false; 16];
+var fk_misc: u16[8] = [0; 8];
+fn fpu_keep(k: i64) {
+    for i in 8 {
+        fk_fp[k * 8 + i] = bits_of_f64(fp[i]);
+        fk_mant[k * 8 + i] = fp_mant[i];
+        fk_se[k * 8 + i] = fp_se[i];
+        fk_raw[k * 8 + i] = fp_raw[i];
+    }
+    fk_misc[k * 4] = fp_empty;
+    fk_misc[k * 4 + 1] = fp_top;
+    fk_misc[k * 4 + 2] = fp_cond;
+    fk_misc[k * 4 + 3] = fp_cw;
+}
+fn fpu_back(k: i64) {
+    for i in 8 {
+        fp[i] = f64_of_bits(fk_fp[k * 8 + i]);
+        fp_mant[i] = fk_mant[k * 8 + i];
+        fp_se[i] = fk_se[k * 8 + i];
+        fp_raw[i] = fk_raw[k * 8 + i];
+    }
+    fp_empty = fk_misc[k * 4] as! u8;
+    fp_top = fk_misc[k * 4 + 1] as! u8;
+    fp_cond = fk_misc[k * 4 + 2];
+    fp_cw = fk_misc[k * 4 + 3];
+}
+fn fpu_same(k: i64) -> bool {
+    if fk_misc[k * 4] != fp_empty || fk_misc[k * 4 + 1] != fp_top || fk_misc[k * 4 + 2] != fp_cond || fk_misc[k * 4 + 3] != fp_cw { return false; }
+    for i in 8 {
+        if fp_empty >> i & 1 != 0 { continue; }
+        if fk_fp[k * 8 + i] != bits_of_f64(fp[i]) || fk_raw[k * 8 + i] != fp_raw[i] { return false; }
+        if fp_raw[i] && (fk_mant[k * 8 + i] != fp_mant[i] || fk_se[k * 8 + i] != fp_se[i]) { return false; }
+    }
+    return true;
+}
+
 fn bit8(p: u8) -> u8 { let one: u8 = 1; return one << p; }
 fn phys(i: u8) -> u8 { return (fp_top + i) & 7; }
 // ST(i) as an instruction reads it. An empty register reads as the indefinite NaN, which is
@@ -562,19 +603,50 @@ fn soft_mul(am: u64, ase: u16, bm: u64, bse: u16) -> u64, u16, bool {
     return round_pack((ase ^ bse) & 0x8000, e, hi, lo);
 }
 
-// a / b, by long division: 64 quotient bits, one more for the half, and whether anything is left.
+// The 128-bit number u1:u0 divided by v, whose top bit is set and which is more than u1:
+// the quotient, which fits 64 bits, and the remainder. Two divisions of 64 bits, each
+// guessing 32 bits of the quotient from v's upper half and put right at most twice.
+fn fdiv128(u1: u64, u0: u64, v: u64) -> u64, u64 {
+    let b: u64 = 0x100000000;
+    let vn1 = v >> 32;
+    let vn0 = v & 0xFFFFFFFF;
+    let un1 = u0 >> 32;
+    let un0 = u0 & 0xFFFFFFFF;
+    var q1 = u1 / vn1;
+    var rhat = u1 - q1 * vn1;
+    while q1 >= b || q1 * vn0 > (rhat << 32 | un1) {
+        q1 -= 1;
+        rhat += vn1;
+        if rhat >= b { break; }
+    }
+    let un21 = (u1 << 32 | un1) - q1 * v;
+    var q0 = un21 / vn1;
+    rhat = un21 - q0 * vn1;
+    while q0 >= b || q0 * vn0 > (rhat << 32 | un0) {
+        q0 -= 1;
+        rhat += vn1;
+        if rhat >= b { break; }
+    }
+    return q1 << 32 | q0, (un21 << 32 | un0) - q0 * v;
+}
+
+// a / b: 64 quotient bits, one more for the half, and whether anything is left.
 fn soft_div(am: u64, ase: u16, bm: u64, bse: u16) -> u64, u16, bool {
     if !normal80(am, ase) || !normal80(bm, bse) { return 0, 0, false; }
     var e = exp80(ase) - exp80(bse) + 16383 - 1;
+    // Since E161 by the host's division in two steps (div128), where it was a bit at a time.
     var q: u64 = 0;
     var rem = am;
-    var n = 64;
-    if am >= bm { rem = am - bm; q = 1; n = 63; e += 1; }
-    for k in n {
-        let carry = rem >> 63 != 0;
-        rem = rem << 1;
-        q = q << 1;
-        if carry || rem >= bm { rem -= bm; q |= 1; }
+    if am >= bm {
+        let d = am - bm;
+        let q63, r = fdiv128(d >> 1, d << 63, bm);
+        q = TOP_BIT | q63;
+        rem = r;
+        e += 1;
+    } else {
+        let q64, r = fdiv128(am, 0, bm);
+        q = q64;
+        rem = r;
     }
     var lo: u64 = 0;
     let carry = rem >> 63 != 0;
