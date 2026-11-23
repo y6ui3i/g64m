@@ -11604,3 +11604,29 @@ at QEMU's speed or past it in E131, `p_bitfield` since at 0.73; `p_simd`, `p_rot
 
 **Next.** The boot and the 23 primitives against QEMU again, as they are now; then the
 ones behind, in the order of their distance.
+
+----
+## E158: the boot and the primitives against QEMU again (a measurement; 2026-11-23)
+
+The owner's first milestone is past QEMU on every measured workload. The build in the
+guest is (E157). The boot was 2.42 s to QEMU's 2.53 s in E134; the primitives 18 of 23 at
+QEMU's speed or past it in E131. Since then: arrivals at every interpreted instruction
+(E137), BT, SHLD/SHRD and the 16-bit forms (E138), SSE in a machine (E139), the cache's
+two ways and 2^20 entries (E142, E152), the waiting exits in the room (E145), the record
+settled in a block (E146), the refused instructions (E147), the short load and store
+(E150), a block behind a leaving (E155), the CPU not open to Meltdown or MDS (E156).
+
+- **Hypothesis**: **the boot is under 2.0 s to QEMU's 2.5 s (no page table isolation, and
+  a block for most of what was interpreted); of the primitives `p_bitfield` is at 0.7 or
+  more, `p_simd` has moved (the packed forms of E147: from 0.02 to 0.1 or more), and
+  `p_rotate`, `p_sha`, `p_ldbl` and `p_pixel` are where they were; none that was past
+  QEMU has fallen under it.**
+- **What changed since last time**: E137 to E156. `tools/boot_race.py` and
+  `tools/prim64_long.sh` as in E134 and E131, on this host with its load noted.
+- **Next move for each result**:
+  - As guessed → the primitives behind, in the order of their distance: the rotations
+    with flags, the packed SSE that is left, the x87
+  - A primitive that was past QEMU is under it → that one first: what the changes since
+    took from it (the longer way in, the far way's second way)
+  - The boot is not ahead → the boot's `--jit-why`
+- **Cut-off**: one run of each script.
