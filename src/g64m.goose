@@ -481,6 +481,7 @@ fn main() {
         else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }
         else if a[i] == "--keep" { disk_scratch = 0; }
+        else if a[i] == "--cpu-open" { cpu_open = true; }
         else if a[i] == "--rtc" && i + 1 < a.len {
             i++;
             if a[i] == "host" { rtc_base = con_time(); rtc_given = true; }
@@ -637,7 +638,7 @@ fn main() {
     }
     if jit_stats {
         var msg: u8[>..] = [];
-        format(msg, "g64m: jit: ", j_blocks, " blocks, ", j_used, " bytes (", j_bytes as! i64, " written in all), entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links, ", j_evicted as! i64, " blocks lost to the cache\n");
+        format(msg, "g64m: jit: ", j_blocks, " blocks, ", j_used, " bytes (", j_bytes as! i64, " written in all), entered ", j_entered as! i64, " times, ", j_ran as! i64, " of ", steps as! i64, " instructions in blocks, ", j_flushes, " flushes, ", jit_links as! i64, " links, ", j_evicted as! i64, " blocks lost to the cache, the TLB emptied ", tlb_flushes as! i64, " times\n");
         write_stderr(msg);
         if jit_why {
             var m3: u8[>..] = [];

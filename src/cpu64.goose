@@ -1073,14 +1073,21 @@ fn io_level() {
 
 // ---- CPUID ----
 
+// --cpu-open: the CPU as it was until E156, an Ivy Bridge with no word about what it is
+// open to, which a kernel takes as open to Meltdown and MDS and guards against.
+var cpu_open = false;
+
 fn cpuid() {
     let leaf = reg[RAX] & 0xFFFFFFFF;
     var a: u64 = 0;
     var b: u64 = 0;
     var c: u64 = 0;
     var d: u64 = 0;
-    if leaf == 0 { a = 1; b = 0x756E6547; d = 0x49656E69; c = 0x6C65746E; }      // "GenuineIntel"
+    if leaf == 0 { a = if cpu_open { 1 } else { 7 }; b = 0x756E6547; d = 0x49656E69; c = 0x6C65746E; }      // "GenuineIntel"
     else if leaf == 1 { a = 0x000306A9; d = 0x07008111; c = 0x00800000; }        // FPU TSC CX8 CMOV FXSR SSE SSE2; POPCNT
+    // Leaf 7 (E156): IA32_ARCH_CAPABILITIES is there, which says what this CPU is not
+    // open to (sys64.goose, MSR 10Ah). Leaves 2 to 6 are nothing.
+    else if leaf == 7 && !cpu_open && reg[RCX] & 0xFFFFFFFF == 0 { d = 0x20000000; }
     else if leaf == 0x80000000 { a = 0x80000001; }
     else if leaf == 0x80000001 { d = 0x20000800; c = 1; }                        // long mode, SYSCALL; LAHF
     reg[RAX] = a; reg[RBX] = b; reg[RCX] = c; reg[RDX] = d;
