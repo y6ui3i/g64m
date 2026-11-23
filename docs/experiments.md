@@ -11902,3 +11902,64 @@ generated code a few percent.
 **Next.** As the card says: the x87's own cost. The f64 kept beside every 80-bit value
 (`f80_to_f64` at every result), `round_pack` and `fpu_reg`'s way to an operation; then
 the stack's moves as the block's own code.
+
+## E162: the x87's own cost: what every instruction pays before its operation (2026-11-23)
+
+E161 left `p_ldbl` at 0.91 of QEMU with every instruction in a block: 82.9 G host
+instructions for 323 M x87 instructions, 256 for each, and 44 cycles. A sample: `fpu_reg`
+31%, `round_pack` 20%, `jit_x87` 19%, `arith_to` 15%, `soft_add` 11%, `f80_to_f64` 6%.
+`fpu_reg` reads ST(0), ST(i) and ST(1) as f64 and ST(0) and ST(i) as 80 bits before it
+looks at the opcode, for FXCH and FLD as for FSIN; `set_st80` makes an f64 of every
+80-bit result, which only the functions that go through f64 read; `round_pack` gives back
+three values through memory.
+
+- **Hypothesis**: **with the common forms (the arithmetic rows, FLD, FXCH, FST and FSTP of
+  a register, the comparisons) taken before `fpu_reg` reads anything they do not use, the
+  f64 beside an 80-bit value made when it is first read, and `round_pack` and the small
+  functions round it inlined, `p_ldbl` retires 60 G host instructions or fewer (from
+  82.9 G) and takes 3.6 s or less: past QEMU's 3.97 to 4.20 s.**
+- **What changed since last time**: those three, all in `fpu.goose` (shared with the
+  32-bit machine). Nothing in the JIT.
+- **Next move for each result**:
+  - Past QEMU → `p_bitfield` (0.78), the last one behind
+  - 60 G or fewer and not past → cycles, not instructions: the sample again
+  - Over 60 G → the call: the register stack's moves (FLD, FXCH, FSTP of a register) as
+    the block's own code, and what the block saves round a call
+- **Cut-off**: one form; the gate and the 32-bit machine's suite; `p_ldbl` timed beside
+  QEMU's and the old build.
+
+**Result: `p_ldbl` retires 61.0 G host instructions where it retired 83.3 G, and takes
+3.55 to 3.60 s to QEMU's 3.75 to 3.89 s: level with QEMU or a little past it (1.04 to
+1.10), from 0.91.**
+
+| `p_ldbl`, thirty rounds | E161 | E162 |
+|---|---:|---:|
+| Host instructions | 83.28 G | 61.03 G |
+| Host cycles | 14.33 G | 11.22 G |
+| Seconds, less the start: two runs | 4.61 | 3.60, 3.55 |
+| QEMU's user mode, in turn with them | 4.20 | 3.75, 3.89 |
+
+(At a load of 4; g64m's start was 0.10 s in these runs and is taken off.)
+
+- **The hypothesis** was a little too hopeful on both counts: 60 G or fewer guessed and
+  61.0 G found; 3.6 s or less and 3.55 to 3.60 s; "past QEMU" is by four to ten percent,
+  which two runs at this load do not tell from level.
+- **What was done**, all in `fpu.goose`: the arithmetic rows, FLD, FXCH, FST and FSTP of
+  a register and the comparisons leave `fpu_reg` before its five readings of the stack;
+  `fp_late` says the f64 beside an 80-bit value has not been made, and `fp_now` makes it
+  (FLD of 80 bits is `set_st80` now, as FILD of 64 was); `round_pack`, `st80` and
+  `set_st80` are inlined.
+- **A sample now**: `arith_to` 16%, `fpu_reg` 15%, `jit_x87` 15%, `soft_add` 14%,
+  `soft_div` 8%, `fpu_mem` 5%: no one place. It is still 189 host instructions for an
+  x87 instruction, of which the way there and back (the block's fourteen registers, the
+  wrapper, the fields put into globals, `fpu_reg`'s tests) is about half for FLD, FXCH
+  and FSTP, six of the loop's fifteen.
+- **The gate**: 108 ok and `make-rc=0` in 427 s; the 32-bit machine's `difftest.sh` 163
+  ok.
+
+**The primitives now**: 19 past QEMU, three level (`p_bignum`, `p_pixel`, `p_ldbl`), one
+behind: `p_bitfield` 0.78.
+
+**Next.** The card's move for "over 60 G" is the register stack's moves as the block's own
+code; for "past QEMU" it is `p_bitfield`. It is neither clearly: `p_bitfield` first, the
+one that is behind, and the stack's moves when `p_ldbl` is to be more than level.
