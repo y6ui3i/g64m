@@ -11155,3 +11155,29 @@ with `--jit-check` (106 `ok`); the short race ends with `make-rc=0`.
 and its dispatch (26 s then: cold code translated sooner, a block kept when its decode
 entry goes), the XMM registers loaded and stored around every SSE instruction, the
 translating itself (7 s then, less now with half the code).
+
+----
+## E151: a block made sooner than the eighth arrival (2026-11-23)
+
+E149: QEMU has no interpreter; g64m spent 26 s of 98 in its interpreter and on the way to
+it, on the three files. A block is made at the eighth arrival at an instruction (`J_HOT`,
+E120's number, set when the translator was new and a block cost more than it does). The
+translator reads the decode cache's entries, so the first run of an instruction is the
+interpreter's whatever the number; the second is the soonest a block can be made. E138
+counted 21% of the interpreted instructions as run fewer than eight times, and every
+flush and every block lost to the cache (three in four) costs seven runs of its
+instructions before it is a block again.
+
+- **Hypothesis**: **with a block made at the second arrival the three files' interpreted
+  instructions fall from 4.3% to under 3% and the CPU time from 92.5 s to under 88 s; the
+  blocks translated grow by less than half (most code that runs twice runs eight times).**
+- **What changed since last time**: `--jit-hot N` sets the number (8 as it is); the race
+  at 2, 3, 4 and 8.
+- **Next move for each result**:
+  - Faster at 2, 3 or 4 → that number the default; then the blocks kept when their
+    entry goes (four ways)
+  - Slower at every smaller number → translating costs more than seven interpreted
+    runs: the translator's own time, read from the sampler
+  - The blocks translated more than double → cold code is most of the code: the
+    number stays, and the cache's ways first
+- **Cut-off**: four short races; the gate for the number chosen.
