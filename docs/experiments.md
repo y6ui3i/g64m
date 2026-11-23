@@ -12375,3 +12375,34 @@ looks from where the last text was found.
 **Next.** What the 130 million instructions with no entry are (the count of arrivals kept
 when an entry is given up, if the guess holds); the translator reading instructions
 itself where the cache has none (172 thousand blocks cut short); the way in and out.
+
+----
+
+## E167: an instruction that keeps coming with no entry: a block at its eighth time, and a way to it that needs no entry (2026-11-24)
+
+E166 left 130 million instructions interpreted with no entry in the decode cache, and its
+guess was the count of arrivals starting again. Counted (by a hash of the address, no
+tag): of 129.3 million, 1.4 million are an address's first time, 1.8 million its 2nd to
+8th, 1.3 million its 9th to 128th, and **124.9 million are at addresses that have come
+that way more than 128 times**; 125.8 million have no block to be given back. Not pages
+given up (69 thousand) nor instructions across a page's end (1.9 million). They are few
+addresses, decoded again every time: a set of the cache has two entries, an instruction
+is an arrival only when it is run from its entry, and one that shares its set with two
+that are run as often never is. A block's first instruction is in the same place since
+E166: it gets its block back, and loses the entry again.
+
+- **Hypothesis**: **with (1) an address's eighth time with no entry counted in a table by
+  the address, and a block made there when the instruction has been run, and (2) every
+  block the interpreter enters put in E165's table by its address, so that the next jump
+  there from a block needs no entry, the instructions interpreted with no entry fall from
+  129 million to under 40 million and the three files take 5% fewer cycles beside E166.**
+- **What changed since last time**: the count above. Until now only an instruction run
+  from its entry could become a block, and only the far way filled E165's table.
+- **Next move for each result**:
+  - As guessed → the translator reading instructions itself (a block made at a miss has
+    only the instructions the cache still holds behind it), then the way in and out
+  - Blocks are made and the misses stay → who comes to them: the count by where the
+    arrival came from (a block's exit by the far way, the interpreter's own next
+    instruction)
+  - No blocks made at the eighth time → what the instructions are (by kind)
+- **Cut-off**: one form; the gate; the three files raced beside E166 with the counts.
