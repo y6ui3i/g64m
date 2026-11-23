@@ -10952,3 +10952,59 @@ short race ends with `make-rc=0`.
 not remembered or cold (145 million), the TLB's table for fetches (68 million), a block
 that was there (116 million: the shifts' records, and exits on other pages), the string
 instructions and the system's own.
+
+----
+## E148: NetHack built in the guest, raced against QEMU with CPU times (2026-11-23)
+
+E143: 2,441 s against QEMU's 1,303 s by the wall clock, 1.9 times behind, with QEMU's own
+time moving by a third from one afternoon to the next. Since then: the waiting exits kept
+in the room (E145), the record settled on the way into a block (E146), the refused
+instructions (E147). On the three files the CPU time went from 113.4 s (E142) to 97.7 s
+(14%) and the leavings from 1,026 million to 395 million.
+
+- **Hypothesis**: **the whole build takes between 2,000 and 2,200 s of CPU under `--jit`
+  (E143's 2,441 s of wall clock less the three files' 14%), with under 12 billion entries
+  into blocks (from 20.4 billion) and under 300 flushes (from 377); QEMU takes between 900
+  and 1,300 s of CPU, so g64m is between 1.6 and 2.2 times behind.**
+- **What changed since last time**: E145 to E147, and the measure: `tools/build_race.py`
+  prints the CPU time of what it ran (user and system), which a loaded host moves less.
+- **Next move for each result**:
+  - As guessed → the leavings that are left (addresses not remembered or cold, the TLB's
+    table for fetches), then the blocks' own code (36% of the time in E141)
+  - QEMU's CPU time far from its wall clock (its other threads) → both given, and the
+    ratio by CPU time held to from here
+  - The build fails → E147's way: the bits, the kinds, the hash
+- **Cut-off**: one build under each; `make-rc` and the NetHack's version in both.
+
+**Result: g64m 1,987 s of CPU, QEMU 973 s: 2.0 times behind. The entries into blocks fell
+from 20.4 billion to 8.2 billion.** Both builds end at the same step (`doc/Guidebook`,
+`make-rc=2` as always) with a NetHack that says its version. Load 35 as g64m started (the
+host just woken), 3 to 7 after the first minutes.
+
+| NetHack built in the guest | E135 | E143 | E148 |
+|---|---:|---:|---:|
+| g64m `--jit`, wall clock | 3,561 s | 2,441 s | 2,021 s |
+| g64m `--jit`, CPU (user) | | | **1,987 s** |
+| QEMU 11.1.3, wall clock | 914 s | 1,303 s | 994 s |
+| QEMU 11.1.3, CPU (user) | | | **973 s** |
+| g64m / QEMU | 3.9 | 1.9 | **2.0** (CPU) |
+| In blocks | 85.5% | 95.4% | 96.0% |
+| Entries into blocks | 18.8 billion | 20.4 billion | 8.2 billion |
+| Blocks translated | | 125.0 million | 91.2 million |
+| Blocks lost to the cache | | 78.6 million | 54.4 million |
+| Code written in all | about 95 GB | 50.6 GB | 39.4 GB |
+| Times the room filled | 1,493 | 377 | 293 |
+
+- **The hypothesis** held: 1,987 s for "2,000 to 2,200" (a little under), 8.2 billion
+  entries for "under 12 billion", 293 flushes for "under 300", QEMU's 973 s for "900 to
+  1,300", twice behind for "1.6 to 2.2".
+- **QEMU's CPU time is its wall clock** (973 s and 994 s): one thread does the work. Its
+  1,198 s and 1,303 s of E140 and E143 were the host's load; by CPU the ratio was never
+  1.9. Against E135's first race (3.9 times, both by the wall clock on a quieter hour)
+  g64m has gone from 3,561 s to 2,021 s and the distance from 3.9 to 2.0.
+- **Three blocks in five are still lost to the cache** in the whole build (54.4 of 91.2
+  million), and translated again.
+
+**Next.** The owner's proposal: look at how QEMU runs the same build (its blocks, its
+chaining, where its host time goes) and bring over what makes the difference; and the
+cache in four ways.
