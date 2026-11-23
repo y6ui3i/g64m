@@ -11406,3 +11406,37 @@ the CPU time went from 66.8 s to 88.4 s.**
 leavings, the XMM registers in memory; each change measured by host instructions on the
 three files (three variants at once), and by seconds alone before it is called a gain
 on QEMU.
+
+----
+## E155: a block for what lies behind the place a block was left (2026-11-23)
+
+At 2^20 entries (E152) the sampler has 66% of g64m's time in generated code on the three
+files, 10% in `exec64` (finding what to run), about 9% in the interpreter proper, 3.5% in
+page walks, 2.7% clearing the TLB, 2% translating. `--jit-why` on what the interpreter
+runs (about 450 million instructions): a block's first instruction, the block left at
+once, 113 million; an instruction inside a block, 90 million; not in the decode cache,
+124 million; refused, 93 million; cold, 27 million.
+
+A block is left in its middle when a load or store finds no entry in the TLB (after each
+write of CR3 every page is met so once), and what follows the place is interpreted to the
+next jump: E137 keeps an instruction inside a block from counting arrivals (a block
+refused for the time slice would be made again from every place, E137's first form), so
+no block is ever made there.
+
+- **Hypothesis**: **with the instruction behind the one a block was left at (not for
+  time) counted as a jump's landing is, so that after eight leavings at one place a block
+  is made for the rest of the run, the instructions interpreted inside a block fall from
+  90 million to under 30 million, the host instructions for the three files by 2% or more
+  (668 billion to under 655 billion), with fewer than a fifth more blocks.**
+- **What changed since last time**: the profile at 2^20. `jit_enter` says when a block
+  came back before its end with time left; the second instruction interpreted after that
+  is taken as landed on. `--jit-off` bit 38 turns it off, so that the two are raced from
+  one build at the same time.
+- **Next move for each result**:
+  - 2% or more → the same for a block left before its first instruction ran (113
+    million), if that count did not fall with it; then the TLB's clearing (2.7%)
+  - Under 1% → the leavings are spread over too many places for eight at one: the count
+    of places against leavings
+  - More than a fifth more blocks → E137's trouble again: the places counted only for
+    the ways out that are a memory's
+- **Cut-off**: the two raced at once by host instructions; the gate.
