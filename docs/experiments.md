@@ -11088,3 +11088,70 @@ entry, one comparison for the tag and the crossing, pages that are not plain mem
 pages that hold remembered instructions kept out of the tables that the blocks read, the
 tables' addresses in host registers (E150); (2) blocks kept when the decode cache's entry
 goes, and translating earlier than the eighth arrival; (3) four ways.
+
+----
+## E150: the load and the store in a machine's block made short (2026-11-23)
+
+E149: half of what g64m is behind QEMU on the build is in generated code, 62 s against
+45 s on the three files. A load in a machine's block is about 17 host instructions before
+the load itself, a store about 24: the page's entry found, its tag compared, the access
+kept from crossing a page, the tables' two addresses loaded from the context, the
+physical page put together with the offset, the page's place in memory checked, and for a
+store the two pages looked up among those that hold remembered instructions. QEMU's is
+about seven.
+
+- **Hypothesis**: **with the TLB's entry holding the difference between the physical and
+  the linear page (an addend, added to the address), one comparison of the entry's tag
+  with the page of the access's last byte (which fails for a miss and for a crossing
+  alike), the tables' address in a host register, and the tables the blocks read never
+  holding a page that is not plain memory nor, for writes, a page with remembered
+  instructions (so neither is checked in the block), a load is 9 host instructions and a
+  store 9; the three files' CPU time falls from 97.7 s to under 88 s (a tenth), all in
+  generated code.**
+- **What changed since last time**: E149's profile. `tlb_phys` becomes an addend behind
+  the tags in one array; a page that is not plain memory, or (for a write) holds
+  remembered instructions, is kept in a small table of its own that only the walk looks
+  at; a page that comes to hold remembered instructions is taken out of the write tables.
+- **Next move for each result**:
+  - A tenth or more → the XMM registers kept in host registers across a block's SSE
+    instructions (the other part of E149's 17 s), then the interpreter's share
+  - Under 5% → the generated code's time is not the memory's checks: a block's listing
+    from the build read beside QEMU's, as E131 did
+  - Slower without `--jit` → the walk's look at the small table costs: measured on the
+    boot without the JIT
+- **Cut-off**: the short race (with `make-rc`), the boot's time with and without the
+  JIT, the gate.
+
+**Result: the three files run in 92.5 s of CPU, from 97.7 s (5.3%), and the code written
+is half: 1.0 GB for 1.9 GB.** Half of what was guessed for the time.
+
+| Three of NetHack's files | E147 | E150 |
+|---|---:|---:|
+| CPU seconds | 97.7 | **92.5** |
+| Code written in all | 1.88 GB | 1.00 GB |
+| Times the room filled | 14 | 7 |
+| Blocks translated | 4.38 million | 4.06 million |
+| Entries into blocks | 395 million | 427 million |
+
+- **The hypothesis** was right about the instructions (a load's way is 9 host
+  instructions, 8 for a byte, one more in a table that is not the first; it was 17, and a
+  store's 24) and short on the time: 5.3% for "a tenth". The blocks are half as long in
+  bytes; the time in them did not halve, the checks that went being ones that were never
+  taken and cost little beside the load they stand in front of.
+- **What changed**: `tlb_tag` holds the tags and, `TLB_ADD` entries on, the addend
+  (physical page less linear page); `xlate` adds it. A page that is not plain memory, or
+  for a write one that holds remembered instructions, goes into a table of 64 entries for
+  each kind (`sp_tag`, `sp_add`) that only `walk` looks at, and is looked at again on each
+  use; a page that comes to hold remembered instructions is taken out of the tables for
+  writes (`tlb_unwrite`, from where `dc_mark` is set). In a block: UBFX for the index, the
+  tag loaded through x28, the page of the access's last byte compared with it by one EOR
+  with a shift, one way out, the addend loaded and added. The far way adds the addend too.
+- **Without the JIT** the boot to the shell is where it was (24 s in the console test).
+
+All suites pass: `difftest64` 32, `prim64` 23, `systest64` 17 plain, with `--jit` and
+with `--jit-check` (106 `ok`); the short race ends with `make-rc=0`.
+
+**Next.** The other things E149's profile has on g64m's side, by size: the interpreter
+and its dispatch (26 s then: cold code translated sooner, a block kept when its decode
+entry goes), the XMM registers loaded and stored around every SSE instruction, the
+translating itself (7 s then, less now with half the code).

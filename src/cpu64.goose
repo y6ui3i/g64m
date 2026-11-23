@@ -1401,6 +1401,9 @@ fn decode() {
             // dies with it (E141 counts how often).
             if dc_n[dc_cur] != 0 { j_evicted += 1; }
             dc_n[dc_cur] = 0;
+            // (A page that comes to hold remembered instructions leaves the TLB's tables
+            // for writes, E150: a block's store there is not checked any more.)
+            if machine && dc_mark[page] == 0 { tlb_unwrite(page); }
             dc_mark[page] = 1;
         } else {
             dc_cur = -1;

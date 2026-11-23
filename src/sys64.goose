@@ -162,8 +162,36 @@ let TLB_BITS = 12;
 let TLB_SIZE = 1 << TLB_BITS;
 let TLB_EMPTY: u64 = 0xFFFFFFFFFFFFFFFF;       // no page has this number
 
-var tlb_tag: u64[6 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 6 * TLB_SIZE];
-var tlb_phys: u64[6 * TLB_SIZE] = [0; 6 * TLB_SIZE];
+// The tags, and behind them (TLB_ADD on) what is added to a linear address to make the
+// physical one: the physical page less the linear page (E150; one array, so that
+// generated code finds both from one address).
+let TLB_ADD = 6 * TLB_SIZE;
+var tlb_tag: u64[12 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 12 * TLB_SIZE];
+
+// The six tables hold only what a block may use with nothing more to check (E150): a page
+// of plain memory, and in the tables for writes a page that holds no remembered
+// instructions. Any other page is kept here, in a small table of the same kind that only
+// the walk looks at, so that the interpreter does not walk for each access to a device's
+// page; an entry here is looked at again each time, since a page can stop being special.
+let SP_SIZE = 64;
+var sp_tag: u64[6 * SP_SIZE] = [0xFFFFFFFFFFFFFFFF; 6 * SP_SIZE];
+var sp_add: u64[6 * SP_SIZE] = [0; 6 * SP_SIZE];
+
+// Whether the physical page p is one a block may not use through the table for acc.
+inline fn tlb_special(p: u64, acc: u8) -> bool {
+    if p >= MEM_SIZE - 0x2000 { return true; }
+    return acc & ACC_WRITE != 0 && dc_mark[(p >> 12) as! i64] != 0;
+}
+
+// The physical page `page` has come to hold remembered instructions: it leaves the tables
+// for writes, so that a block's store to it goes the long way.
+fn tlb_unwrite(page: i64) {
+    let want = (page as! u64) << 12;
+    for i in 2 * TLB_SIZE {
+        let k = 2 * TLB_SIZE + i;
+        if tlb_tag[k] != TLB_EMPTY && (tlb_tag[k] << 12) + tlb_tag[TLB_ADD + k] == want { tlb_tag[k] = TLB_EMPTY; }
+    }
+}
 
 // An entry stands for 4 KB even when the page is larger, so a large page has many entries.
 // This says whether any entry made since the last emptying came from a 1 GB page.
@@ -173,6 +201,7 @@ fn tlb_flush() {
     code_page = TLB_EMPTY;       // the code page is a translation too (E105)
     code_end = 0;
     for i in 6 * TLB_SIZE { tlb_tag[i] = TLB_EMPTY; }
+    for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
     tlb_has_1g = false;
 }
 
@@ -183,6 +212,7 @@ fn tlb_forget(a: u64) {
     code_page = TLB_EMPTY;
     code_end = 0;
     if tlb_has_1g { tlb_flush(); return; }
+    for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
     let first = a >> 12 & 0xFFFFFFFFFFFFFE00;
     for k in 512 {
         let i = ((first + (k as! u64)) & (TLB_SIZE - 1)) as! i64;
@@ -204,12 +234,19 @@ inline fn tlb_table(acc: u8) -> i64 {
 inline fn xlate(a: u64, acc: u8) -> u64 {
     let page = a >> 12;
     let i = tlb_table(acc) + ((page & (TLB_SIZE - 1)) as! i64);
-    if tlb_tag[i] == page { return tlb_phys[i] | a & 0xFFF; }
+    if tlb_tag[i] == page { return a + tlb_tag[TLB_ADD + i]; }
     return walk(a, acc);
 }
 
 // The walk of the four levels, which fills the TLB when it succeeds.
 fn walk(a: u64, acc: u8) -> u64 {
+    // A page kept in the small table, if it is still one that belongs there.
+    let si = tlb_table(acc) / TLB_SIZE * SP_SIZE + ((a >> 12 & (SP_SIZE - 1)) as! i64);
+    if sp_tag[si] == a >> 12 {
+        let p = a + sp_add[si];
+        if tlb_special(p, acc) { return p; }
+        sp_tag[si] = TLB_EMPTY;
+    }
     let top = a >> 47;
     if top != 0 && top != 0x1FFFF { fault(13, true, 0); }
     let user = cpl == 3 && acc & ACC_SYSTEM == 0;
@@ -251,9 +288,15 @@ fn walk(a: u64, acc: u8) -> u64 {
     let low: u64 = ((1 as u64) << shift) - 1;
     let p = e & ADDR_BITS & ~low | a & low;
     // One entry, for this 4 KB of it, whatever the page's size.
-    let i = tlb_table(acc) + ((a >> 12 & (TLB_SIZE - 1)) as! i64);
-    tlb_tag[i] = a >> 12;
-    tlb_phys[i] = p & 0xFFFFFFFFFFFFF000;
+    let add = (p & 0xFFFFFFFFFFFFF000) - (a & 0xFFFFFFFFFFFFF000);
+    if tlb_special(p, acc) {
+        sp_tag[si] = a >> 12;
+        sp_add[si] = add;
+    } else {
+        let i = tlb_table(acc) + ((a >> 12 & (TLB_SIZE - 1)) as! i64);
+        tlb_tag[i] = a >> 12;
+        tlb_tag[TLB_ADD + i] = add;
+    }
     if shift == 30 { tlb_has_1g = true; }
     return p;
 }
