@@ -12282,3 +12282,35 @@ the time for 2.5% of the instructions: 168 million entries, 149 million instruct
 in the decode cache, 85 million refused), then the blocks' own code (12 host instructions
 for a guest instruction in a machine). The three files under KVM on hal, once, for the
 reference.
+
+----
+
+## E166: a block outlives its entry in the decode cache: a table of blocks of their own (2026-11-24)
+
+E165's count again, on the three files: 149 million instructions come to the interpreter
+with no entry in the decode cache, 72 million times a block is left for such an address,
+and 265 thousand blocks are lost because another instruction took the entry of their
+first (E141, E152). A block lives in its first instruction's entry: about 820 thousand
+blocks stand between two flushes in a cache of 2^20 entries, so four entries in five are
+a block's first instruction, and every other instruction the interpreter meets takes one
+of them. A lost block's address is then interpreted eight times over and translated
+again (1.76 million translations for the 820 thousand that stand; 252 MB of code written
+for 118 MB kept). New counts: 388 thousand blocks end where the next instruction has no
+entry (the translator reads its instructions from the cache), 67 thousand at one that is
+not translated.
+
+- **Hypothesis**: **with the blocks also kept in a table of their own (by physical
+  address: where the code is, the length, the level, whether it reads RFLAGS), and an
+  instruction that comes to the interpreter with no entry given its block back from that
+  table, the instructions interpreted with no entry fall from 149 million to under 75
+  million, the code written from 252 MB to under 200 MB, and the three files take 4% fewer
+  cycles beside E165.**
+- **What changed since last time**: E152 changed which entry is given up, and then the
+  size; the blocks stayed in the entries. Here a block no longer dies with its entry.
+- **Next move for each result**:
+  - As guessed → the translator reads the instructions itself where the cache has none
+    (the 388 thousand blocks cut short), then the decode cache's size asked again: it
+    holds the interpreter's instructions only
+  - Misses do not fall → what the 149 million are, by whether a block was ever there
+  - Misses fall and the cycles do not → the sample again: the way in and out
+- **Cut-off**: one form; the gate; the three files raced beside E165 with the counts.
