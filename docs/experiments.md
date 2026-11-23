@@ -11121,3 +11121,37 @@ about seven.
     boot without the JIT
 - **Cut-off**: the short race (with `make-rc`), the boot's time with and without the
   JIT, the gate.
+
+**Result: the three files run in 92.5 s of CPU, from 97.7 s (5.3%), and the code written
+is half: 1.0 GB for 1.9 GB.** Half of what was guessed for the time.
+
+| Three of NetHack's files | E147 | E150 |
+|---|---:|---:|
+| CPU seconds | 97.7 | **92.5** |
+| Code written in all | 1.88 GB | 1.00 GB |
+| Times the room filled | 14 | 7 |
+| Blocks translated | 4.38 million | 4.06 million |
+| Entries into blocks | 395 million | 427 million |
+
+- **The hypothesis** was right about the instructions (a load's way is 9 host
+  instructions, 8 for a byte, one more in a table that is not the first; it was 17, and a
+  store's 24) and short on the time: 5.3% for "a tenth". The blocks are half as long in
+  bytes; the time in them did not halve, the checks that went being ones that were never
+  taken and cost little beside the load they stand in front of.
+- **What changed**: `tlb_tag` holds the tags and, `TLB_ADD` entries on, the addend
+  (physical page less linear page); `xlate` adds it. A page that is not plain memory, or
+  for a write one that holds remembered instructions, goes into a table of 64 entries for
+  each kind (`sp_tag`, `sp_add`) that only `walk` looks at, and is looked at again on each
+  use; a page that comes to hold remembered instructions is taken out of the tables for
+  writes (`tlb_unwrite`, from where `dc_mark` is set). In a block: UBFX for the index, the
+  tag loaded through x28, the page of the access's last byte compared with it by one EOR
+  with a shift, one way out, the addend loaded and added. The far way adds the addend too.
+- **Without the JIT** the boot to the shell is where it was (24 s in the console test).
+
+All suites pass: `difftest64` 32, `prim64` 23, `systest64` 17 plain, with `--jit` and
+with `--jit-check` (106 `ok`); the short race ends with `make-rc=0`.
+
+**Next.** The other things E149's profile has on g64m's side, by size: the interpreter
+and its dispatch (26 s then: cold code translated sooner, a block kept when its decode
+entry goes), the XMM registers loaded and stored around every SSE instruction, the
+translating itself (7 s then, less now with half the code).

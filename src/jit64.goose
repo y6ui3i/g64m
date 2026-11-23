@@ -110,7 +110,7 @@ fn jit_went() {
         let page = rip >> 12;
         let at = (((if cpl == 0 { 4 } else { 5 }) << 12) | (page & 0xFFF)) as! i64;
         if tlb_tag[at] != page { jw[0] += 1; jw2[0] += 1; return; }
-        ph = tlb_phys[at] | rip & 0xFFF;
+        ph = rip + tlb_tag[TLB_ADD + at];
         jw[0] += 1;
     }
     let s = dc_find(ph);
@@ -236,6 +236,7 @@ fn e_bc(c: u32, to: i64) { e(0x54000000 | ((((to - jc.len) >> 2) as! u32) & 0x7F
 // as such an entry always did. x2, x3, x4 and x29 are used; x0 (the time), x1 (RIP) and
 // the guest's registers are not touched.
 var j_settle_at = 0;
+var j_mark_at: u64 = 0;
 fn j_settle_make() {
     let fail = jc.len;
     e_b(j_out_at);
@@ -324,12 +325,13 @@ fn jit64_init() -> bool {
     j_regs = jit_addr_u64(reg[..]);
     j_ctx = jit_addr_u64(jx[..]);
     jx[5] = jit_addr8(mem[..]) as! u64;
-    jx[6] = jit_addr8(dc_mark[..]) as! u64;
+    j_mark_at = jit_addr8(dc_mark[..]) as! u64;
+    jx[6] = j_mark_at;
     jx[8] = jit_addr_u64(jlog[..]) as! u64;
     jx[10] = j_regs as! u64;
     jx[16] = jit_addr_u64(xmm[..]) as! u64;
     jx[19] = jit_addr_u64(tlb_tag[..]) as! u64;
-    jx[20] = jit_addr_u64(tlb_phys[..]) as! u64;
+    jx[20] = (jit_addr_u64(tlb_tag[..]) + TLB_ADD * 8) as! u64;
     jx[23] = jit_addr32(dc_runs[..]) as! u64;
     if jit_time {
         let t0 = jit_now();
@@ -427,8 +429,7 @@ fn jit64_init() -> bool {
             e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
             a_ldr(29, CTX, 160);
             e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
-            e(0x92402C00 | S1 << 5 | S2);                    // and x2, x1, #0xFFF
-            a_rrr(A_ORR, 1, S2, 30, S2);                     // the physical address
+            a_rrr(A_ADD, 1, S2, S1, 30);                     // the physical address: the entry's addend on
             e(0xCA404800 | S2 << 16 | S2 << 5 | S3);         // eor x3, x2, x2, lsr #18
             e(0x92404400 | S3 << 5 | S3);
             a_ldr(30, CTX, 88);
@@ -1209,31 +1210,33 @@ fn j_chk_n(write: bool, n: u32) {
         // A miss leaves the block (the interpreter walks the tables, or faults); so does
         // an access that may lie across two pages, and a page not in memory. x29, x30,
         // S2 and S3 are used; the host's flags are not.
+        //
+        // Since E150 in nine host instructions: the entry's tag is compared with the
+        // page of the access's last byte, which differs for a page not in the table and
+        // for an access that crosses into the next page alike; what the entry holds
+        // behind its tag is added to the address; and the tables' address is in a host
+        // register (x28, which a program without a kernel uses for dc_mark). A page that
+        // is not plain memory is never in these tables, nor in those for writes a page
+        // with remembered instructions (sys64.goose), so neither is looked for here.
         let table: u32 = (if write { 2 } else { 0 }) + (if cpl == 3 { 1 } else { 0 });
-        a_shifti(5, 1, S2, S1, 12);
-        e(0x92402C00 | S2 << 5 | S3);                        // and x3, x2, #0xFFF
+        e(0xD3400000 | 12 << 16 | 23 << 10 | S1 << 5 | S3);  // ubfx x3, x1, #12, #12
         if table != 0 { e(0x91400000 | table << 10 | S3 << 5 | S3); }        // add x3, x3, #table, lsl #12
-        a_ldr(29, CTX, 152);
-        e(0xF8607800 | S3 << 16 | 29 << 5 | 30);             // ldr x30, [x29, x3, lsl #3]
-        a_rrr(A_EOR, 1, S2, S2, 30);
+        e(0xF8607800 | S3 << 16 | MARK << 5 | 30);           // ldr x30, [x28, x3, lsl #3]: the tag
+        if n > 1 {
+            a_addi(0x11, 1, S2, S1, n - 1);
+            e(0xCA400000 | S2 << 16 | 12 << 10 | 30 << 5 | S2);              // eor x2, x30, x2, lsr #12
+        } else { e(0xCA400000 | S1 << 16 | 12 << 10 | 30 << 5 | S2); }
         j_leave(S2, false);
-        e(0x92402C00 | S1 << 5 | S2);                        // and x2, x1, #0xFFF
-        a_addi(0x11, 1, 30, S2, n - 1);
-        a_shifti(5, 1, 30, 30, 12);
-        j_leave(30, false);
-        a_ldr(29, CTX, 160);
-        e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
-        a_rrr(A_ORR, 1, S1, 30, S2);
-        e(0x91400400 | S1 << 5 | S2);                        // add x2, x1, #1, lsl #12
-        a_shifti(5, 1, S2, S2, 28);
-        j_leave(S2, false);
+        e(0x91400000 | 6 << 10 | S3 << 5 | S3);              // add x3, x3, #6, lsl #12: TLB_ADD on
+        e(0xF8607800 | S3 << 16 | MARK << 5 | 30);
+        a_rrr(A_ADD, 1, S1, S1, 30);
     } else {
         a_addi(0x11, 1, S2, S1, n);
         a_rrr(A_ORR, 1, S2, S2, S1);
         a_shifti(5, 1, S2, S2, 28);
         j_leave_if();
+        j_chk_mark(write, n);
     }
-    j_chk_mark(write, n);
 }
 
 // For a store to the physical address in S1: neither page it may touch holds remembered
@@ -2423,6 +2426,8 @@ fn jit_enter() -> bool {
     if jit_hold || steps + n > rep_until || dc_cpl[slot] != cpl { return false; }
     jx[17] = fs_base;
     jx[18] = gs_base;
+    // (x28 for the blocks: the TLB's tables in a machine, dc_mark in a program, E150.)
+    jx[6] = if machine { jx[19] } else { j_mark_at };
     jx[22] = if machine && (cr4 & 0x200 == 0 || cr0 & 0xC != 0) { 1 } else { 0 };
     if jit_check { return jit_both(slot, n); }
     var t0: i64 = 0;
