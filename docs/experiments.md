@@ -11846,3 +11846,59 @@ software too, by calls from its blocks.
   - In blocks and over 6 s → the call's cost: what is saved and loaded round it
   - Not in blocks → `--jit-why`
 - **Cut-off**: one form; the gate; `p_ldbl` timed beside QEMU's.
+
+**Result: `p_ldbl` takes 4.61 s where it took 12.0 s (12.7 s beside this run), to QEMU's
+4.20 s: 0.91 of QEMU's speed, from 0.33. Every instruction of it is in a block.**
+
+| `p_ldbl`, thirty rounds | Before | After |
+|---|---:|---:|
+| Instructions in blocks, of 416.4 M | 93.1 M | 416.4 M |
+| Blocks entered | 46,456,490 | 107 |
+| Host instructions, less the start | 211.0 G | 82.9 G |
+| Host cycles, less the start | 37.8 G | 14.2 G |
+| Seconds, less the start | 12.55 | 4.61 |
+| QEMU's user mode, the same | | 4.20 |
+
+(One run of each after the other at a load of 5; QEMU's was 3.97 s in E158 at a load of
+3, by which g64m is at 0.86.)
+
+- **The hypothesis** held: 6 s or less (4.61), the loop in blocks, entries under a
+  million (107), and not past QEMU.
+- **The steps, by the time of the long program**: the division alone 12.0 s to 10.8 s;
+  the x87 in blocks 5.6 s, with the JA behind `FCOMI; FSTP` still interpreted at every
+  round (the call lost the host's flags, and a jump on a record of a float comparison is
+  not translated); the flags kept over the call in x29, 4.8 s; the buffer in 64-bit
+  words where it was bytes, 4.5 s.
+- **What had to change for a call to be possible**: `fpu_escape` left by a fault
+  (`return ... from exec64`, through `rd`, `wr` and `stop64`), which Goose does not let a
+  function called from C do. Its memory operand now goes through a buffer (`fp_buf`,
+  `frd`, `fwr`): the interpreter fills it before and writes it out after (`fp_run`,
+  `fp_shape`: the bytes and the direction of each form), having tried a store's first
+  and last byte first so that a fault comes before the register stack has moved; an
+  opcode not written is noted (`fp_bad`) and stopped at afterwards. FXSAVE and FXRSTOR
+  used the same two functions for their 512 bytes and have their own now (the first
+  gate found it: `x_fxsave`, and the guest's kernel at its start).
+- **In a block** (`j_x87`): the operand's sixteen bytes loaded and passed, or what comes
+  back stored (2, 4, 8 or 10 bytes); fourteen host registers kept on the stack round the
+  call; FCOMI, FUCOMI and the popping two give a record as UCOMISD's is and the host's
+  flags from an FCMP. A program without a kernel only; FNSTSW AX, FCMOVcc and the forms
+  that save or load the whole unit are left. `--jit-off`'s bit 35. `--jit-check` keeps,
+  puts back and compares the x87's registers.
+- **The division** (`fdiv128`): two host divisions of 64 bits with the quotient's halves
+  put right, where there were 64 rounds of shift and subtract.
+- **The test** `j_x87` (trace from hal, 721 lines): loads and stores of every size,
+  arithmetic with registers and memory, the stack's moves, FNSTCW, and FCOMI and FUCOMIP
+  with JA, SETB, CMOVP, JP and JBE behind them.
+- **The gate**: 108 ok and `make-rc=0` in 441 s; the 32-bit machine's `difftest.sh`,
+  which shares `fpu.goose`, 163 ok as before.
+
+A sample of the run now: `fpu_reg` 23%, `round_pack` 17%, `jit_x87` 16% (before the
+buffer's words), `arith_to` 11%, `soft_add` 9%, `f80_to_f64` 4%, `soft_div` 3.5%; the
+generated code a few percent.
+
+**The primitives now**: 19 past QEMU, two level, two behind: `p_ldbl` 0.91 (or 0.86),
+`p_bitfield` 0.78.
+
+**Next.** As the card says: the x87's own cost. The f64 kept beside every 80-bit value
+(`f80_to_f64` at every result), `round_pack` and `fpu_reg`'s way to an operation; then
+the stack's moves as the block's own code.

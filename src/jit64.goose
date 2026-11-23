@@ -49,6 +49,7 @@ extern fn jit_addr8(a: const u8[:]) -> i64;
 extern fn jit_addr32(a: const u32[:]) -> i64;
 extern fn jit_addr_any(a: const Entry[:]) -> i64;
 extern fn jit_peek64(at: i64) -> i64;
+extern fn jit_x87_addr() -> i64;
 extern fn jit_call4(enter: i64, a: i64, b: i64, c: i64, d: i64) -> i64;
 
 var jit_on = false;
@@ -354,6 +355,7 @@ fn jit64_init() -> bool {
     jx[19] = jit_addr_u64(tlb_tag[..]) as! u64;
     jx[20] = (jit_addr_u64(tlb_tag[..]) + TLB_ADD * 8) as! u64;
     jx[23] = jit_addr32(dc_runs[..]) as! u64;
+    jx[25] = jit_x87_addr() as! u64;
     if jit_time {
         let t0 = jit_now();
         for i in 1000000 { jit_now(); }
@@ -583,6 +585,7 @@ fn j_len() -> u64 {
     if jk == 0 {
         // No kind: an SSE instruction's length is known if its operand's is (all of them
         // have one but EMMS), with a constant behind it for some.
+        if op >= 0xD8 && op <= 0xDF { return m; }                // the x87 (E161): ModRM and nothing behind it
         if op != 0x0F { return 0; }
         let op2 = mem_rd(j_at + p, 8) as! u8;
         if op2 >= 0xC8 && op2 <= 0xCF { return p + 1; }      // BSWAP (E147): no operand's bytes
@@ -1715,6 +1718,89 @@ fn j_sse(q: u64, len: u64) -> bool {
     return true;
 }
 
+// An x87 instruction (E161): a call to the interpreter's own routine (jit_x87, cpu64.goose),
+// in a program without a kernel. The block reads the operand in memory and passes it, or
+// stores what comes back, so the call touches none of the guest's memory or registers;
+// the fourteen host registers a call may change that hold the guest's are kept on the
+// stack round it. FCOMI and its kin get a record as UCOMISD's is, of a double that
+// compares with 1.0 as the two registers do, and the host's flags from the same.
+// FNSTSW AX, FCMOVcc and the forms that save or load the whole unit are not taken.
+// --jit-off's bit 35 leaves all of it to the interpreter.
+fn j_x87() -> bool {
+    if machine || je.asz32 || je.sg != 0 || je.p66 || je.rep != 0 || jit_no >> 35 & 1 != 0 { return false; }
+    let op = je.op;
+    let r = je.reg & 7;
+    var w: u64 = op;
+    w |= (je.mod as u64) << 8 | (r as u64) << 10 | ((je.rm & 7) as u64) << 13;
+    var n: u32 = 0;
+    var store = false;
+    var cmp = false;
+    if je.mod == 3 {
+        if op == 0xDF && r == 4 { return false; }                    // FNSTSW AX
+        if (op == 0xDA || op == 0xDB) && r < 4 { return false; }     // FCMOVcc
+        if (op == 0xDB || op == 0xDF) && (r == 5 || r == 6) {
+            cmp = true;
+            w |= 1 << 16;
+            if op == 0xDF { w |= 1 << 17; }
+        }
+    } else {
+        let bytes, st = fp_shape(op & 7, r, true);
+        if bytes == 0 || bytes > 10 { return false; }
+        n = bytes;
+        store = st;
+        w |= if st { 1 << 19 } else { 1 << 18 };
+        j_addr();
+        j_chk_n(st, 16);
+    }
+    e(0xA9800000 | 0x72 << 15 | 5 << 10 | 31 << 5 | 0);          // stp x0, x5, [sp, #-112]!
+    a_stp(6, 7, 31, 16);
+    for i in 5 { a_stp(8 + (i as! u32) * 2, 9 + (i as! u32) * 2, 31, 32 + (i as! u32) * 16); }
+    if n != 0 && !store {
+        a_rrr(A_ADD, 1, S3, MEMR, S1);
+        a_ldp(1, 2, S3, 0);                                      // the sixteen bytes at the operand
+    }
+    a_imm(0, w);
+    a_ldr(30, CTX, 200);
+    // The host's flags, if a jump behind this may use them (FCOMI, FSTP, JA): kept in
+    // x29, which a function gives back as it found it.
+    let keep = j_hf != 0 && !cmp;
+    if keep { e(0xD53B4200 | 29); }                              // mrs x29, nzcv
+    e(0xD63F0000 | 30 << 5);                                     // blr x30
+    if keep { e(0xD51B4200 | 29); }                              // msr nzcv, x29
+    a_mov(1, S4, 0);
+    for i in 5 { a_ldp(8 + (i as! u32) * 2, 9 + (i as! u32) * 2, 31, 32 + (i as! u32) * 16); }
+    a_ldp(6, 7, 31, 16);
+    e(0xA8C00000 | 14 << 15 | 5 << 10 | 31 << 5 | 0);            // ldp x0, x5, [sp], #112
+    // The call may have changed the host's vectors (E160).
+    xv_in = 0;
+    if store {
+        j_addr();
+        j_store(if n == 2 { 16 } else if n == 4 { 32 } else { 64 }, S4);
+        if n == 10 {
+            a_ldr(S4, CTX, 208);
+            a_addi(0x11, 1, S1, S1, 8);
+            j_store(16, S4);
+        }
+    }
+    if cmp {
+        if j_dead { j_stale = true; j_dyn = false; }
+        else {
+            a_mov(1, FA, S4);
+            a_imm(FB, 0x3FF0000000000000);
+            a_imm(FK, 0x41);
+            j_set = true;
+            j_dyn = false;
+            j_stale = false;
+        }
+        a_imm(S3, 0x3FF0000000000000);
+        e(0x9E670000 | S4 << 5 | 0);                             // fmov d0, x4
+        e(0x9E670000 | S3 << 5 | 1);                             // fmov d1, x3
+        e(0x1E602000 | 1 << 16 | 0 << 5);                        // fcmp d0, d1
+        j_hf = HF_FCMP;
+    }
+    return true;
+}
+
 // A register that is a byte: false for AH, CH, DH and BH, which are not translated.
 fn j_byte_ok(i: u8) -> bool { return je.rex != 0 || i < 4 || i >= 8; }
 
@@ -1759,6 +1845,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 return len;
             }
         }
+        if op >= 0xD8 && op <= 0xDF { return if j_x87() { len } else { 0 }; }
         // BSF and BSR, with F3h in front or not (the interpreter's CPU has no TZCNT).
         if op == 0x0F && !je.asz32 && je.sg == 0 {
             let op2 = mem_rd(q + je.plen, 8) as! u8;
@@ -2584,6 +2671,8 @@ fn jit_enter() -> bool {
     if jit_time { t1 = jit_now(); }
     jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + BODY_AT, rip as! i64);
     if jit_time { t2 = jit_now(); }
+    // (An x87 opcode that is not written, met in a block: stopped at here, E161.)
+    if fp_bad != 0 { stop64("an x87 instruction not written yet, opcode and ModRM", fp_bad as! u64); }
     let ran = time - jx[9];
     // An instruction was left to the interpreter (a page not in the TLB, mostly): the
     // one behind it is taken as landed on, so that after eight leavings at one place a
@@ -2631,6 +2720,7 @@ fn jit_both(slot: i64, n: u64) -> bool {
     var x0: u64[32] = [0; 32];
     for i in 16 { r0[i] = reg[i]; }
     for i in 32 { x0[i] = xmm[i]; }
+    fpu_keep(0);
     let f0 = rflags;
     jx[0] = rflags;
     jx[7] = 0;
@@ -2648,6 +2738,8 @@ fn jit_both(slot: i64, n: u64) -> bool {
     }
     for i in 16 { jv_reg[i] = reg[i]; reg[i] = r0[i]; }
     for i in 32 { jv_xmm[i] = xmm[i]; xmm[i] = x0[i]; }
+    fpu_keep(1);
+    fpu_back(0);
     jv_flags = rflags;
     jv_stale = jx[15] != 0;
     jv_ip = jx[4];
@@ -2671,6 +2763,8 @@ fn jit_tick() {
     for i in 16 { if reg[i] != jv_reg[i] { bad = true; } }
     var bad_xmm = -1;
     for i in 32 { if xmm[i] != jv_xmm[i] { bad = true; bad_xmm = i; } }
+    let bad_x87 = !fpu_same(1);
+    if bad_x87 { bad = true; }
     var bad_at: u64 = 0;
     for i in jv_stores {
         if mem_rd(jlog[i * 2], 64) != jv_new[i] { bad = true; bad_at = jlog[i * 2]; }

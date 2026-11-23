@@ -124,6 +124,13 @@ fn farith64(op: u8, p: u8, r: i64) {
     }
 }
 
+// FXSAVE's and FXRSTOR's 512 bytes are read and written at the operand's address itself
+// (the x87's own operands go through a buffer since E161: frd and fwr, cpu64.goose).
+fn xrd(k: u32, w: u8) -> u32 { return rd(m_ea + k, w) as! u32; }
+fn xwr(k: u32, w: u8, v: u32) { wr(m_ea + k, w, v); }
+fn xrd64(k: u32) -> u64 { return rd(m_ea + k, 64); }
+fn xwr64(k: u32, v: u64) { wr(m_ea + k, 64, v); }
+
 // FXSAVE and FXRSTOR: the x87's and SSE's state in 512 bytes of memory, which is how a
 // kernel keeps it for a program that is not running. The control and status words, a bit
 // for each x87 register in use, MXCSR and the bits of it that exist, the eight x87
@@ -131,32 +138,32 @@ fn farith64(op: u8, p: u8, r: i64) {
 // last x87 instruction's address and operand are not kept, and are written as zero.
 fn fxsave64() {
     let used: u8 = ~fp_empty;
-    fwr(0, 16, fp_cw);
-    fwr(2, 16, status());
-    fwr(4, 16, used);
-    fwr(6, 16, 0);
-    for k: u32 in 4 { fwr(8 + k * 4, 32, 0); }
-    fwr(24, 32, mxcsr);
-    fwr(28, 32, 0xFFFF);
+    xwr(0, 16, fp_cw);
+    xwr(2, 16, status());
+    xwr(4, 16, used);
+    xwr(6, 16, 0);
+    for k: u32 in 4 { xwr(8 + k * 4, 32, 0); }
+    xwr(24, 32, mxcsr);
+    xwr(28, 32, 0xFFFF);
     for i: u8 in 8 {
         let m, se = raw80(i);
         let at: u32 = 32 + (i as u32) * 16;
-        fwr64(at, m);
-        fwr(at + 8, 32, se);
-        fwr(at + 12, 32, 0);
+        xwr64(at, m);
+        xwr(at + 8, 32, se);
+        xwr(at + 12, 32, 0);
     }
     for i in 16 {
         let at: u32 = 160 + (i as! u32) * 16;
-        fwr64(at, xmm[i * 2]);
-        fwr64(at + 8, xmm[i * 2 + 1]);
+        xwr64(at, xmm[i * 2]);
+        xwr64(at + 8, xmm[i * 2 + 1]);
     }
 }
 
 fn fxrstor64() {
-    let cw = frd(0, 16) as! u16;
-    let sw = frd(2, 16) as! u16;
-    let used = frd(4, 16) as! u8;
-    let mx = frd(24, 32);
+    let cw = xrd(0, 16) as! u16;
+    let sw = xrd(2, 16) as! u16;
+    let used = xrd(4, 16) as! u8;
+    let mx = xrd(24, 32);
     if mx & 0xFFFF0000 != 0 { fault(13, true, 0); }
     mxcsr = mx;
     fp_cw = cw;
@@ -164,14 +171,14 @@ fn fxrstor64() {
     fp_cond = sw & (C0 | C1 | C2 | C3);
     for i: u8 in 8 {
         let at: u32 = 32 + (i as u32) * 16;
-        let m = frd64(at);
-        set_st80(i, m, frd(at + 8, 16) as! u16);
+        let m = xrd64(at);
+        set_st80(i, m, xrd(at + 8, 16) as! u16);
     }
     fp_empty = ~used;
     for i in 16 {
         let at: u32 = 160 + (i as! u32) * 16;
-        xmm[i * 2] = frd64(at);
-        xmm[i * 2 + 1] = frd64(at + 8);
+        xmm[i * 2] = xrd64(at);
+        xmm[i * 2 + 1] = xrd64(at + 8);
     }
 }
 

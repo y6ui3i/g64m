@@ -361,12 +361,115 @@ fn wr(a: u64, w: u8, v: u64) {
 
 // ---- What the x87 file needs of this CPU (see fpu.goose's head) ----
 
-fn frd(k: u32, w: u8) -> u32 { return rd(m_ea + k, w) as! u32; }
-fn fwr(k: u32, w: u8, v: u32) { wr(m_ea + k, w, v); }
+// Since E161 the operand in memory goes through a buffer: the interpreter fills it before
+// fpu_escape and writes it out after (fp_shape says how many bytes, and which way), and an
+// opcode that is not written is noted and stopped at afterwards. So fpu_escape never leaves
+// by a fault, and the JIT's blocks can call it (jit_x87).
+var fp_buf: u64[16] = [0; 16];       // 112 bytes and one word more, as 64-bit words
+var fp_bad: i64 = 0;
+fn frd(k: u32, w: u8) -> u32 {
+    let i = (k >> 3) as! i64;
+    let sh: u64 = (k & 7) * 8;
+    var v = fp_buf[i] >> sh;
+    if sh + w > 64 { v |= fp_buf[i + 1] << (64 - sh); }
+    return (v & mask(w)) as! u32;
+}
+fn fwr(k: u32, w: u8, v: u32) {
+    let i = (k >> 3) as! i64;
+    let sh: u64 = (k & 7) * 8;
+    let m = mask(w);
+    fp_buf[i] = fp_buf[i] & ~(m << sh) | (v & m) << sh;
+    if sh + w > 64 {
+        let up = 64 - sh;
+        fp_buf[i + 1] = fp_buf[i + 1] & ~(m >> up) | (v & m) >> up;
+    }
+}
+// n bytes at the operand's address into the buffer, and out of it: eight at a time, then
+// four, two and one, so that nothing past the operand is touched.
+fn fp_fill(n: u32) {
+    var k: u32 = 0;
+    while k < n {
+        let w: u8 = if n - k >= 8 && k & 7 == 0 { 64 } else if n - k >= 4 && k & 3 == 0 { 32 } else if n - k >= 2 && k & 1 == 0 { 16 } else { 8 };
+        let v = rd(m_ea + k, w);
+        let i = (k >> 3) as! i64;
+        let sh: u64 = (k & 7) * 8;
+        fp_buf[i] = fp_buf[i] & ~(mask(w) << sh) | v << sh;
+        k += w >> 3;
+    }
+}
+fn fp_flush(n: u32) {
+    var k: u32 = 0;
+    while k < n {
+        let w: u8 = if n - k >= 8 && k & 7 == 0 { 64 } else if n - k >= 4 && k & 3 == 0 { 32 } else if n - k >= 2 && k & 1 == 0 { 16 } else { 8 };
+        wr(m_ea + k, w, fp_buf[(k >> 3) as! i64] >> ((k & 7) * 8) & mask(w));
+        k += w >> 3;
+    }
+}
+// The bytes of the memory operand of the x87 instruction in row (the opcode's low three
+// bits) with ModRM's field r, and whether they are stored; 0 for one that is not written.
+fn fp_shape(row: u8, r: u8, env32: bool) -> u32, bool {
+    if row & 1 == 0 { return (if row == 4 { 8 } else if row == 6 { 2 } else { 4 }), false; }
+    let env: u32 = if env32 { 28 } else { 14 };
+    match row << 3 | r {
+        0x08, 0x18 => { return 4, false; },
+        0x0A, 0x0B, 0x19, 0x1A, 0x1B => { return 4, true; },
+        0x0C => { return env, false; },
+        0x0D, 0x38 => { return 2, false; },
+        0x0E => { return env, true; },
+        0x0F, 0x2F, 0x39, 0x3A, 0x3B => { return 2, true; },
+        0x1D => { return 10, false; },
+        0x1F => { return 10, true; },
+        0x28, 0x3D => { return 8, false; },
+        0x29, 0x2A, 0x2B, 0x3F => { return 8, true; },
+        0x2C => { return env + 80, false; },
+        0x2E => { return env + 80, true; },
+        _ => { return 0, false; },
+    }
+}
+// The x87 instruction op, whose ModRM is decoded and whose unit is available.
+fn fp_run(op: u8) {
+    if m_mod == 3 { fpu_escape(op); }
+    else {
+        let n, store = fp_shape(op & 7, m_reg, !ins.p66);
+        if store {
+            // A store that cannot be made faults here, before anything has changed.
+            if n > 0 { wr(m_ea, 8, rd(m_ea, 8)); wr(m_ea + n - 1, 8, rd(m_ea + n - 1, 8)); }
+        } else { fp_fill(n); }
+        fpu_escape(op);
+        if store { fp_flush(n); }
+    }
+    if fp_bad != 0 {
+        let code = fp_bad;
+        fp_bad = 0;
+        stop64("an x87 instruction not written yet, opcode and ModRM", code as! u64);
+    }
+}
+// An x87 instruction for a block of the JIT (E161), called from generated code: the opcode
+// in w's low byte and ModRM's fields above it (mod at bit 8, reg at 10, r/m at 13). Bit 18:
+// lo and hi are the sixteen bytes at its operand. Bit 19: it stores, and what it stores
+// comes back (the upper half in jx[26]). Bit 16: it is FCOMI or one of its kin (bit 17:
+// and pops), and what comes back is the bits of a double that compares with 1.0 as ST(0)
+// does with ST(i): RFLAGS is the block's to make.
+export fn jit_x87(w: u64, lo: u64, hi: u64) -> u64 {
+    m_mod = (w >> 8 & 3) as! u8;
+    m_reg = (w >> 10 & 7) as! u8;
+    m_rm = (w >> 13 & 7) as! u8;
+    if w >> 16 & 1 != 0 {
+        let rel = cmp_st(m_rm);
+        if w >> 17 & 1 != 0 { fpop(); }
+        if rel == 2 { return 0x7FF8000000000000; }
+        return if rel > 0 { 0x4000000000000000 } else if rel == 0 { 0x3FF0000000000000 } else { 0 };
+    }
+    if w >> 18 & 1 != 0 { fp_buf[0] = lo; fp_buf[1] = hi; }
+    fpu_escape((w & 0xFF) as! u8);
+    if w >> 19 & 1 == 0 { return 0; }
+    jx[26] = fp_buf[1];
+    return fp_buf[0];
+}
 fn fp_env32() -> bool { return !ins.p66; }
 fn fp_set_ax(v: u16) { sr(RAX, 16, v); }
 fn fp_set_zpc(bits: u32) { rflags = rflags & ~ARITH | bits; }
-fn fp_stop(code: i64) { stop64("an x87 instruction not written yet, opcode and ModRM", code as! u64); }
+fn fp_stop(code: i64) { fp_bad = code; }
 
 // ---- Fetching ----
 
@@ -1716,7 +1819,7 @@ fn exec64_rest() -> bool {
                     m_reg = ins.reg & 7;
                     m_rm = ins.rm & 7;
                     if machine && cr0 & 0x0C != 0 { fault(7, false, 0); }
-                    fpu_escape(op);
+                    fp_run(op);
                 } else { stop64("an instruction not written yet,", op); }
             },
             0xE => {
