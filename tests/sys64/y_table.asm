@@ -4,7 +4,8 @@
 ; be translated and the table to hold both, then changes what the address means and calls
 ; again: the address made another page and the TLB told by INVLPG, and by CR3 written;
 ; the page's code written through another address; two addresses that choose the same
-; place in the table, in turn; a block made at privilege level 0, asked for at level 3.
+; place in the table, in turn; a 2 MB page changed, and INVLPG given another address in
+; it (E168); a block made at privilege level 0, asked for at level 3.
 %include "sys.inc"
     jmp test
 %include "idt.inc"
@@ -85,6 +86,36 @@ test:
     add r12, rax
     sub r13d, 1
     jnz .two
+    PRINT r12
+
+    PUTS "a 2 MB page made another, INVLPG given an address elsewhere in it"
+    mov rax, 0x805000                           ; (memory's first gigabyte is mapped to itself)
+    mov dword [rax], 0x000001B8                 ; MOV EAX, 1
+    mov word [rax + 4], 0xC300                  ; RET
+    mov rax, 0xA05000
+    mov dword [rax], 0x000100B8                 ; MOV EAX, 100h
+    mov word [rax + 4], 0xC300
+    mov rdi, V + 0x200000
+    mov ecx, 21
+    call entry
+    mov r15, rax                                ; the entry for the 2 MB at V + 200000h
+    mov qword [r15], 0x800000 + 0x83
+    xor r12, r12
+    mov r14d, ROUNDS
+.big1:
+    call V + 0x205000
+    add r12, rax
+    sub r14d, 1
+    jnz .big1
+    mov qword [r15], 0xA00000 + 0x83
+    mov rax, V + 0x200000
+    invlpg [rax]
+    mov r14d, ROUNDS
+.big2:
+    call V + 0x205000
+    add r12, rax
+    sub r14d, 1
+    jnz .big2
     PRINT r12
 
     PUTS "a block made at level 0, asked for at level 3"
