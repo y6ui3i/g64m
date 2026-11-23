@@ -12375,3 +12375,82 @@ looks from where the last text was found.
 **Next.** What the 130 million instructions with no entry are (the count of arrivals kept
 when an entry is given up, if the guess holds); the translator reading instructions
 itself where the cache has none (172 thousand blocks cut short); the way in and out.
+
+----
+
+## E167: an instruction that keeps coming with no entry: a block at its eighth time, and a way to it that needs no entry (2026-11-24)
+
+E166 left 130 million instructions interpreted with no entry in the decode cache, and its
+guess was the count of arrivals starting again. Counted (by a hash of the address, no
+tag): of 129.3 million, 1.4 million are an address's first time, 1.8 million its 2nd to
+8th, 1.3 million its 9th to 128th, and **124.9 million are at addresses that have come
+that way more than 128 times**; 125.8 million have no block to be given back. Not pages
+given up (69 thousand) nor instructions across a page's end (1.9 million). They are few
+addresses, decoded again every time: a set of the cache has two entries, an instruction
+is an arrival only when it is run from its entry, and one that shares its set with two
+that are run as often never is. A block's first instruction is in the same place since
+E166: it gets its block back, and loses the entry again.
+
+- **Hypothesis**: **with (1) an address's eighth time with no entry counted in a table by
+  the address, and a block made there when the instruction has been run, and (2) every
+  block the interpreter enters put in E165's table by its address, so that the next jump
+  there from a block needs no entry, the instructions interpreted with no entry fall from
+  129 million to under 40 million and the three files take 5% fewer cycles beside E166.**
+- **What changed since last time**: the count above. Until now only an instruction run
+  from its entry could become a block, and only the far way filled E165's table.
+- **Next move for each result**:
+  - As guessed → the translator reading instructions itself (a block made at a miss has
+    only the instructions the cache still holds behind it), then the way in and out
+  - Blocks are made and the misses stay → who comes to them: the count by where the
+    arrival came from (a block's exit by the far way, the interpreter's own next
+    instruction)
+  - No blocks made at the eighth time → what the instructions are (by kind)
+- **Cut-off**: one form; the gate; the three files raced beside E166 with the counts.
+
+**Result: the instructions interpreted with no entry fell from 129 to 23 million; the three
+files take 8% fewer cycles and 16% fewer host instructions beside E166. All of it is the
+block at the eighth time; putting entered blocks in E165's table did nothing and is not
+kept.**
+
+| The three files | E166 | E167 |
+|---|---:|---:|
+| Interpreted with no entry | 129.3 million | 22.9 million |
+| of them at an address's 129th time or later | 124.9 million | 19.4 million |
+| Blocks made at the eighth time | | 52,049 |
+| Blocks entered from the interpreter | 163.5 million | 123.7 million |
+| Guest instructions not in blocks | 583 million | 473 million |
+| Host instructions, cycles: three at once (QEMU the third: 197.56 G cycles) | 442.09 G, 142.54 G | 371.42 G, 130.48 G (−16%, −8.5%) |
+| the same, another race (QEMU 211.03 G) | 463.76 G, 142.64 G | 394.64 G, 131.27 G (−15%, −8.0%) |
+
+- **The hypothesis** held (under 40 million; 5% fewer cycles). 52 thousand blocks did
+  it: few addresses, as the count said.
+- **The two parts apart** (three at once, the new build against itself): without the
+  entered blocks put in E165's table 127.34 G cycles, with both 127.98 G, without the
+  block at the eighth time 140.14 G. The table's part is taken out again: a block that
+  has a block before it is reached by a link or by the far way's own filling already.
+- **The form**: `jh`, a byte for each of 2^22 hashes of the address, counted in `decode`
+  where an entry is made and no block comes back; at the eighth, `exec64_miss` runs the
+  instruction (its entry then knows its operand) and translates from where it began, if
+  the entry is still that instruction's and the privilege level is what it was. Counted
+  from nothing when the blocks are forgotten. Not under `--jit-check`. `--jit-off2 4`
+  leaves it out.
+- **What is left**: 19 million arrivals with no entry at addresses that had their eighth
+  time and got no block (not translated, or cut off by what the cache held behind them);
+  85 million run from their entry and refused; 124 million entries into blocks from the
+  interpreter.
+- **The test**: `y_evict` has the three routines called in turn (each then comes with no
+  entry every time), and again with the first one's page written; `--jit-why` says one
+  block is made at the eighth time in it. E166's four wrong translators still fail it.
+  No wrong translator was made for this part: what it adds is when a block is made, and
+  the two conditions it checks (the entry still the instruction's, the level the same)
+  have no test that reaches them.
+- **The gate**: 116 ok and `make-rc=0` in 431 s.
+
+**Where this stands, each alone on its host** (as under E166): KVM on hal 25 s; **g64m
+34.7 and 36.6 s** (107.29 and 110.81 G cycles; E166 40.4 s, E164 45.6 s); QEMU 54.2 s.
+QEMU / g64m is **1.56** alone, 1.5 to 1.6 by cycles with three at once. Twice QEMU is
+27 s.
+
+**Next.** The 124 million entries from the interpreter and what they cost (the way in and
+out: sixteen registers loaded and stored, the record settled, the run loop's questions);
+the 85 million refused, by kind; the translator reading instructions itself.

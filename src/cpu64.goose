@@ -1313,7 +1313,7 @@ fn exec64() -> bool {
             slot ^= 1;
             if dc_n[slot] != 0 { slot ^= 1; }
             dc_cur = slot;
-            if jit_why { ji[0] += 1; }
+            if jit_why { ji[0] += 1; jit_missed(ph); }
             return exec64_miss();
         }
     }
@@ -1334,9 +1334,24 @@ fn exec64() -> bool {
 
 // An instruction that was not in the decode cache: decoded, and run as any other.
 fn exec64_miss() -> bool {
+    jit_miss_hot = false;
     decode();
-    if ins.kind == 0 { return exec64_rest(); }
-    return run_kind();
+    if !jit_miss_hot {
+        if ins.kind == 0 { return exec64_rest(); }
+        return run_kind();
+    }
+    // The instruction is run, so that its entry knows its operand, and a block is made
+    // where it began: if the entry is still its own and the level the same.
+    let slot = dc_cur;
+    let ph = dc[slot].tag;
+    let lv = cpl;
+    var r = false;
+    if ins.kind == 0 { r = exec64_rest(); } else { r = run_kind(); }
+    if dc[slot].tag == ph && dc_n[slot] == 0 && cpl == lv && !jit_check {
+        jit_translate(ph);
+        if dc_n[slot] != 0 { jh_made += 1; }
+    }
+    return r;
 }
 
 // A jump has gone somewhere. (Until E137 the arrival was counted here; now every
@@ -1540,12 +1555,20 @@ fn decode() {
             if jit_on {
                 let b = bt_find(ph);
                 if b >= 0 { bt_attach(b, dc_cur); ins.kind = 0; }
+                else {
+                    if jit_why { jm_hist[5] += 1; }
+                    // Its J_HOT-th time with no entry (E167): a block, when it has run.
+                    let h = ((ph ^ ph >> JH_BITS) & ((1 << JH_BITS) - 1)) as! i64;
+                    if jh[h] < 255 { jh[h] += 1; }
+                    jit_miss_hot = jh[h] == J_HOT && jit_no2 & 4 == 0;
+                }
             }
             // (A page that comes to hold remembered instructions leaves the TLB's tables
             // for writes, E150: a block's store there is not checked any more.)
             if machine && dc_mark[page] == 0 { tlb_unwrite(page); }
             dc_mark[page] = 1;
         } else {
+            if jit_why { jm_why[if dc_mark[page] == 2 { 0 } else { 1 }] += 1; }
             dc_cur = -1;
             // A page given up is taken back when it has been run from DC_CALM times with
             // no write to it in between (E134): a kernel patches its code as it starts,

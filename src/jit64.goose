@@ -213,7 +213,30 @@ fn jit_ran_one(slot: i64, ph: u64) {
         else { ji_0f[256] += 1; }
     }
 }
+// How often each address has come to the interpreter with no entry (E167), by a hash of
+// the address with no tag: at the J_HOT-th time a block is made there, once the
+// instruction has been run and its entry knows its operand. An instruction is otherwise an
+// arrival only when it is run from its entry, and one that shares its set of the cache
+// with two that are run as often never is. (Two addresses with one count: the block is
+// made for whichever comes at that time, and the other's is made when it is run from its
+// entry, as before.) Counted from nothing when the blocks are forgotten.
+let JH_BITS = 22;
+var jh: u8[1 << JH_BITS] = [0; 1 << JH_BITS];
+var jit_miss_hot = false;    // the instruction just decoded is at its J_HOT-th time
+var jh_made: u64 = 0;        // blocks made that way
 var jw_rec: i64[2] = [0; 2];
+// --jit-why: how often each address has come to the interpreter with no entry (by a hash
+// of the address, with no tag: a count, not a proof), and the arrivals by that number; and
+// of those, how many got a block back (E166).
+var jm_n: u8[4194304] = [0; 4194304];
+var jm_hist: i64[6] = [0; 6];
+var jm_why: i64[2] = [0; 2];
+fn jit_missed(ph: u64) {
+    let h = ((ph ^ ph >> 22) & 4194303) as! i64;
+    let c = jm_n[h];
+    jm_hist[if c == 0 { 0 } else if c < 8 { 1 } else if c < 32 { 2 } else if c < 128 { 3 } else { 4 }] += 1;
+    if c < 255 { jm_n[h] = c + 1; }
+}
 var jq: i64[8] = [0; 8];
 var jq_k: i64[64] = [0; 64];
 var jw_rk: i64[256] = [0; 256];      // and which records those were (the low byte of the kind), 255 for one with more above the width
@@ -2822,6 +2845,7 @@ fn jit_flush() {
     }
     for i in MEM_SIZE >> 12 { jit_page[i] = 0; }
     bt_clear();
+    for i in 1 << JH_BITS { jh[i] = 0; }
     jt_clear();
     j_used = j_keep;
     j_flushes += 1;
