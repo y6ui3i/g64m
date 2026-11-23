@@ -64,6 +64,39 @@ var j_keep = 0;              // how much of that is the way in and out
 var j_out_at = 0;
 var j_fark_at: i64[2] = [0; 2];      // the far way in a machine, for privilege levels 0 and 3; 0 if not built
 var j_far_at = 0;            // the far way: to the block at the address in x1, if there is one; 0 if not built
+// The table of where blocks are (E165): JT_SIZE pairs for each privilege level of a machine
+// (a program uses the first), the address jumped to and where its block's code is, chosen
+// by the address's low bits. An exit that would take the far way calls jt_at's routine,
+// which leaves the block's address in x29 and comes back for the exit's own `br` (so the
+// host learns each exit's jumps by itself); an address the table does not hold goes on to
+// the far way, which puts what it finds in the table. Emptied (jt_clear) when the TLB is,
+// when a page with blocks is written to and when the blocks are forgotten: an address may
+// then mean another page, or the code there be wrong. A block whose entry the decode cache
+// gave up stays in the table: it is right code for its page until the page is written.
+let JT_BITS = 12;
+let JT_SIZE = 1 << JT_BITS;
+var jt: u64[4 * JT_SIZE] = [0; 4 * JT_SIZE];
+var jt_at: i64[3] = [0; 3];          // the routines: a machine's levels 0 and 3, a program
+var jit_no2: u64 = 0;                // --jit-off2: bit 0 the table of where blocks are
+
+// x2: which pair the address in x1 chooses.
+let JT_FOLD = 0;
+fn jt_idx() {
+    if JT_FOLD == 0 { e(0x92400000 | ((JT_BITS - 1) as! u32) << 10 | S1 << 5 | S2); return; }     // and x2, x1, #(JT_SIZE - 1)
+    e(0xCA400000 | S1 << 16 | (JT_FOLD as! u32) << 10 | S1 << 5 | S2);                             // eor x2, x1, x1, lsr #JT_FOLD
+    e(0x92400000 | ((JT_BITS - 1) as! u32) << 10 | S2 << 5 | S2);
+}
+
+// No pair holds an address: each tag is one its own place is not chosen by.
+fn jt_clear() {
+    // (Only if the far way has put something in since the last time: jx[32].)
+    if jx[32] == 0 { return; }
+    jx[32] = 0;
+    for i in 2 * JT_SIZE { jt[i * 2] = 0; }
+    // (Place 0 is chosen by 0 with or without the fold; 1 chooses place 1.)
+    jt[0] = 1;
+    jt[JT_SIZE * 2] = 1;
+}
 var j_regs = 0;
 var j_ctx = 0;
 var j_blocks = 0;            // blocks translated
@@ -120,6 +153,8 @@ fn jit_ran_one(slot: i64, ph: u64) {
     }
 }
 var jw_rec: i64[2] = [0; 2];
+var jq: i64[8] = [0; 8];
+var jq_k: i64[64] = [0; 64];
 var jw_rk: i64[256] = [0; 256];      // and which records those were (the low byte of the kind), 255 for one with more above the width
 var dc_needs: u8[DC_SIZE] = [0; DC_SIZE];
 
@@ -178,7 +213,7 @@ var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made 
 // zero when the SSE unit is not to be used (E139: a machine's CR0.TS or EM set, or
 // CR4.OSFXSR clear; the interpreter faults), [23] dc_runs (--jit-time), [24] set by a way
 // out that leaves an instruction to the interpreter (E155).
-var jx: u64[32] = [0; 32];
+var jx: u64[40] = [0; 40];
 // --jit-check: each store's address and the eight bytes that were there.
 var jlog: u64[256] = [0; 256];
 
@@ -504,7 +539,16 @@ fn jit64_init() -> bool {
         e(0xB8607800 | S2 << 16 | S3 << 5 | S3);             // ldr w3, [x3, x2, lsl #2]
         a_ldr(S4, CTX, 112);
         a_rrr(A_ADD, 1, S3, S4, S3);
-        e(0xD61F0000 | S3 << 5);                             // br x3
+        if jit_no2 & 1 == 0 {
+            // Into the table, and back to the exit that called (x30 is still its).
+            a_ldr(29, CTX, 232);
+            jt_idx();
+            e(0x8B001000 | S2 << 16 | 29 << 5 | 29);                             // add x29, x29, x2, lsl #4
+            a_stp(S1, S3, 29, 0);
+            a_str(S3, CTX, 256);                             // the table holds something
+            a_mov(1, 29, S3);
+            e(0xD65F03C0);                                   // ret
+        } else { e(0xD61F0000 | S3 << 5); }                  // br x3
         // The far way in a machine (E134), one for privilege level 0 and one for 3: the
         // address in x1 is a linear one. The TLB's entry for fetching instructions at
         // that level gives its page (a miss goes out, and the interpreter finds it);
@@ -515,25 +559,27 @@ fn jit64_init() -> bool {
             let out2 = jc.len;
             e(0x14000000 | (((j_out_at - jc.len) >> 2) as! u32) & 0x3FFFFFF);
             j_fark_at[lv] = jc.len;
+            // (x30 is the exit's that called the table's routine: x4 and x29 are used.)
+            if jit_why { a_ldr(29, CTX, 248); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 248); }
             a_shifti(5, 1, S2, S1, 12);
             e(0x92402C00 | S2 << 5 | S3);                    // and x3, x2, #0xFFF
             e(0x91400000 | ((4 + lv) as! u32) << 10 | S3 << 5 | S3);         // the table for fetches
             a_ldr(29, CTX, 152);
-            e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
-            a_rrr(A_SUBS, 1, ZR, 30, S2);
+            e(0xF8607800 | S3 << 16 | 29 << 5 | S4);
+            a_rrr(A_SUBS, 1, ZR, S4, S2);
             e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
             a_ldr(29, CTX, 160);
-            e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
-            a_rrr(A_ADD, 1, S2, S1, 30);                     // the physical address: the entry's addend on
+            e(0xF8607800 | S3 << 16 | 29 << 5 | S4);
+            a_rrr(A_ADD, 1, S2, S1, S4);                     // the physical address: the entry's addend on
             e(0xCA400000 | S2 << 16 | (DC_BITS as! u32) << 10 | S2 << 5 | S3);       // eor x3, x2, x2, lsr #DC_BITS
             e(0x92400000 | ((DC_BITS - 1) as! u32) << 10 | S3 << 5 | S3);
-            a_ldr(30, CTX, 88);
-            e(0x8B001400 | S3 << 16 | 30 << 5 | 29);         // add x29, x30, x3, lsl #5
+            a_ldr(S4, CTX, 88);
+            e(0x8B001400 | S3 << 16 | S4 << 5 | 29);         // add x29, x4, x3, lsl #5
             a_ldr(29, 29, 0);
             a_rrr(A_SUBS, 1, ZR, 29, S2);
             e(0x54000000 | 6 << 5);                          // b.eq found, six on
             e(0xD2400000 | S3 << 5 | S3);                    // eor x3, x3, #1: the other way
-            e(0x8B001400 | S3 << 16 | 30 << 5 | 29);
+            e(0x8B001400 | S3 << 16 | S4 << 5 | 29);
             a_ldr(29, 29, 0);
             a_rrr(A_SUBS, 1, ZR, 29, S2);
             e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
@@ -546,9 +592,36 @@ fn jit64_init() -> bool {
             e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
             a_ldr(29, CTX, 104);
             e(0xB8607800 | S3 << 16 | 29 << 5 | 29);         // ldr w29, [x29, x3, lsl #2]
-            a_ldr(30, CTX, 112);
-            a_rrr(A_ADD, 1, 29, 30, 29);
-            e(0xD61F0000 | 29 << 5);
+            a_ldr(S4, CTX, 112);
+            a_rrr(A_ADD, 1, 29, S4, 29);
+            if jit_why { a_ldr(S4, CTX, 224); a_addi(0x11, 1, S4, S4, 1); a_str(S4, CTX, 224); }
+            if jit_no2 & 1 == 0 {
+                a_ldr(S4, CTX, (232 + lv * 8) as! u32);
+                jt_idx();
+                e(0x8B001000 | S2 << 16 | S4 << 5 | S4);                         // add x4, x4, x2, lsl #4
+                a_stp(S1, 29, S4, 0);
+                a_str(29, CTX, 256);
+                e(0xD65F03C0);                               // ret: to the exit's `br x29`
+            } else { e(0xD61F0000 | 29 << 5); }
+        }
+        // The table's routines (E165): x1 the address jumped to; x29 comes back the
+        // block's, from the table or from the far way.
+        if jit_no2 & 1 == 0 {
+            jx[32] = 1;
+            jt_clear();
+            jx[29] = jit_addr_u64(jt[..]) as! u64;
+            jx[30] = (jit_addr_u64(jt[..]) + JT_SIZE * 16) as! u64;
+            for k in 3 {
+                jt_at[k] = jc.len;
+                if jit_why { a_ldr(29, CTX, 216); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 216); }
+                a_ldr(29, CTX, if k == 1 { 240 } else { 232 });
+                jt_idx();
+                e(0x8B001000 | S2 << 16 | 29 << 5 | 29);                         // add x29, x29, x2, lsl #4
+                a_ldp(S2, 29, 29, 0);
+                a_rrr(A_SUBS, 1, ZR, S2, S1);
+                e_bc(C_NE, if k == 2 { j_far_at } else { j_fark_at[k] });
+                e(0xD65F03C0);                               // ret
+            }
         }
     }
     j_settle_make();
@@ -1164,12 +1237,15 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
         else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; waits = true; }
     }
     // In a machine, an address on another page: looked up as it is jumped to.
-    if link && machine && !linked { to = j_far(); }
+    let far = link && machine && !linked;
     // A way out that leaves the instruction it stands at to the interpreter says so
     // (E155): what lies behind that instruction is where a block is wanted.
     if !link { a_imm(30, 1); a_str(30, CTX, 192); }
-    let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
-    e(0x14000000 | d & 0x3FFFFFF);
+    if far { e_far(); }
+    else {
+        let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
+        e(0x14000000 | d & 0x3FFFFFF);
+    }
     // An exit that waits for a block carries its own entry behind the branch (E145), which
     // nothing runs into: the next in the chain (filled in when the block is written), the
     // address waited for, and the privilege level.
@@ -1193,13 +1269,27 @@ fn j_far() -> i64 {
     return j_out_at;
 }
 
+// The jump to the block at the address in x1, if there is one: through the table (E165:
+// the routine leaves the block's address, or the way out's, in x29), or by the far way.
+fn e_far() {
+    let to = j_far();
+    var k = 2;
+    if machine { k = if cpl == 0 { 0 } else { 1 }; }
+    if to != j_out_at && jt_at[k] != 0 {
+        e(0x94000000 | (((jt_at[k] - (j_used + jc.len)) >> 2) as! u32) & 0x3FFFFFF);        // bl the routine
+        e(0xD61F0000 | 29 << 5);                                                           // br x29
+        return;
+    }
+    let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
+    e(0x14000000 | d & 0x3FFFFFF);
+}
+
 // The way out to the address in host register r.
 fn j_exit_to(r: u32, cnt: u64) {
     a_mov(1, S1, r);
     j_tell();
     a_addi(0x51, 1, 0, 0, cnt as! u32);
-    let d: u32 = ((j_far() - (j_used + jc.len)) >> 2) as! u32;
-    e(0x14000000 | d & 0x3FFFFFF);
+    e_far();
 }
 
 // What the host's flags are from behind the instruction in je, as j_one will translate it:
@@ -2670,6 +2760,7 @@ fn jit_flush() {
         dc_cov[slot] = 0;
     }
     for i in MEM_SIZE >> 12 { jit_page[i] = 0; }
+    jt_clear();
     j_used = j_keep;
     j_flushes += 1;
 }
@@ -2921,7 +3012,10 @@ fn j_settle() {
 fn jit_enter() -> bool {
     let slot = dc_cur;
     let n: u64 = dc_n[slot];
-    if jit_hold || steps + n > rep_until || dc_cpl[slot] != cpl { return false; }
+    if jit_hold || steps + n > rep_until || dc_cpl[slot] != cpl {
+        if jit_why { if steps + n > rep_until { jq[0] += 1; } else if dc_cpl[slot] != cpl { jq[1] += 1; } }
+        return false;
+    }
     jx[17] = fs_base;
     jx[18] = gs_base;
     // (x28 for the blocks: the TLB's tables in a machine, dc_mark in a program, E150.)
@@ -2951,6 +3045,7 @@ fn jit_enter() -> bool {
     if ran == 0 {
         if jit_time { jt_enter += t2 - t0; jt_body += t2 - t1; }
         if left { jit_land = true; }
+        if jit_why { jq[if left { 2 } else { 3 }] += 1; jq_k[(dc_k0[slot] & 63) as i64] += 1; if dc_needs[slot] != 0 { jq[4] += 1; } }
         return false;
     }
     // (RFLAGS as the blocks left it in memory: a record settled on the way into one, E146.)

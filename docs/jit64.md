@@ -241,6 +241,15 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   touches no guest memory or register; fourteen host registers are kept on the stack
   round it, and the host's flags in x29 if a jump may still use them. FCOMI and its kin
   give a record as UCOMISD's is. `--jit-off`'s bit 35.
+- **The table of where blocks are** (E165): a jump, call or return that leaves its page
+  (in a program: a RET, or a jump through an operand) asks a table of 4,096 pairs for
+  each privilege level, chosen by the low bits of the address jumped to: the address,
+  and where its block's code is. The exit calls a short routine that leaves the block's
+  address in x29 and comes back for the exit's own `br`; an address the table does not
+  hold goes on to the far way, which puts what it finds in the table. The table is
+  emptied when the TLB is, at INVLPG, when a page with blocks is written to and when
+  the blocks are forgotten. `--jit-off2`'s bit 0 (a second word of switches: the first
+  is full).
 - **Addresses relative to RIP, and the return address a CALL pushes.** A block is found
   by its physical address, and one page of a shared library is at different virtual
   addresses in different programs, so RIP cannot be a constant in generated code: it is

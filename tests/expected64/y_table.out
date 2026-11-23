@@ -1,0 +1,15 @@
+an address made another page, the TLB told by INVLPG
+0000000000001818
+and back, by CR3 written
+0000000000001818
+the page's code written through another address
+0000000000180018
+two addresses that choose the same place in the table
+0000000000181800
+a block made at level 0, asked for at level 3
+0000000000000090
+0000000000000019
+0000000000000000
+0000000000000090
+0000000000000019
+0000000000000000
