@@ -1182,10 +1182,12 @@ fn exec64() -> bool {
             slot ^= 1;
             if dc_n[slot] != 0 { slot ^= 1; }
             dc_cur = slot;
+            if jit_why { ji[0] += 1; }
             return exec64_miss();
         }
     }
     dc_cur = slot;
+    if jit_why { jit_ran_one(slot, ph); }
     // An instruction run from the cache and no block's first is an arrival (E137): at
     // the J_HOT-th a block is made there, and run at once.
     ins = dc[slot].ins;

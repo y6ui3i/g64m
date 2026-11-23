@@ -11181,3 +11181,68 @@ instructions before it is a block again.
   - The blocks translated more than double → cold code is most of the code: the
     number stays, and the cache's ways first
 - **Cut-off**: four short races; the gate for the number chosen.
+
+**Result: sooner is not faster, and the interpreted instructions are not cold code: a third
+of them are instructions whose entry the decode cache has given up.** The three files,
+CPU seconds (the host's own spread between runs is about 3%):
+
+| A block at arrival | CPU seconds | Blocks translated | Code written | Interpreted |
+|---|---:|---:|---:|---:|
+| 1 | 100.8 | | | |
+| 2 | 92.2 | 7.6 million | 1.79 GB | 0.99 billion |
+| 4 | 89.6 | 5.7 million | 1.38 GB | 0.99 billion |
+| 8 (as it is) | 89.2 | 4.1 million | 1.01 GB | 1.04 billion |
+
+- **The hypothesis was wrong on each count.** The interpreted instructions hardly move
+  with the number (1.04 to 0.99 billion, for "4.3% to under 3%"); the blocks nearly double
+  at 2 (for "less than half more"); the time is no better and at 1 is a tenth worse. The
+  number stays 8; `--jit-hot N` stays as an option.
+- **What the interpreter runs** (`--jit-why` counts each instruction it runs by its
+  standing; 1,130 million through the run loop, of which 428 million are entries into
+  blocks; the rest of the 1,032 million "interpreted" are repetitions of string
+  instructions):
+
+| | Millions |
+|---|---:|
+| Not in the decode cache (a first run, or an entry given up) | 373 |
+| A block's first instruction, the block refused or left at once | about 103 |
+| In no block, and cold | 99 |
+| In no block, hot: refused (ports and the rest 48, RDTSC 4, BT of memory 2, ...) | 89 |
+| Inside a block | 38 |
+
+- **The cache is what the interpreter runs for.** 373 million instructions were not in
+  the decode cache when run; the program has about 0.4 million blocks' worth of code (QEMU's
+  count, E149), so nearly all of those are entries given up and met again: decoded again,
+  their arrivals counted from nothing again, so that an instruction whose entry does not
+  last eight arrivals is never a block's first. The "cold" 99 million are the same
+  instructions on their way. E141 saw the same from the blocks' side (three in four lost).
+
+**Next.** E152: which entry the cache gives up. An entry of an instruction inside a block
+is of no more use once the block is made (the translator read it; the interpreter runs it
+only when a block is left in its middle), and most entries are such; they go first, then
+the coldest, and a block's first only when the other way holds one too.
+
+----
+## E152: which entry the decode cache gives up (2026-11-23)
+
+E151: 373 million of the instructions the interpreter runs on the three files are not in
+the decode cache when they come, nearly all of them entries given up and met again; three
+blocks in four are lost the same way (E141, E148). The cache is 2^18 entries in sets of
+two ways (E142); a new instruction takes the first way unless a block begins there, then
+the second, whatever the second holds.
+
+- **Hypothesis**: **with the way to give up chosen by what it holds (an empty one; else
+  one whose instruction is inside a block; else the one with fewer arrivals; a block's
+  first instruction only when both ways hold one), the instructions run from outside the
+  cache fall from 373 million to under 150 million, the blocks lost to the cache from 3.0
+  million to under 1.5 million, and the CPU time by 4% or more (89 s to under 86 s), in the
+  same memory.**
+- **What changed since last time**: E151's count. Only the choice of the way, on a miss.
+- **Next move for each result**:
+  - As guessed → four ways with the same choice, if the count says sets of two still
+    lose; then the whole build
+  - Misses not under 250 million → the code alive at once does not fit 2^18 entries
+    however chosen: the size (2^19, 16 MB more) put to the owner with this count
+  - More entries into blocks cut short (a block needs the entries of its instructions)
+    → the blocks' lengths counted before and after
+- **Cut-off**: the short race with the count and without; the gate.
