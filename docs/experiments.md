@@ -11356,3 +11356,26 @@ builds end at the same step with a NetHack that says its version.
 **Next.** The measure first: `tools/build_race.py` to print the host instructions retired
 beside the CPU time, so that a ratio does not depend on which core ran what. Then what
 E149's profile has left at this size.
+
+----
+## E154: a measure the host does not move: instructions retired (2026-11-23)
+
+E153: the same build took QEMU 973 s of CPU alone and 1,293 s beside g64m; g64m 1,389 s
+and 1,537 s. E152: one race alone took 106.9 s of CPU for work that takes 69 s on a quiet
+hour. The host has four fast cores and four slow ones and other work on it; CPU time
+counts seconds on whichever core, and a second on a slow core does less.
+
+- **Hypothesis**: **the host instructions a program retires for the three files
+  (`/usr/bin/time -l` gives them on this system) differ by under 1% between a run alone
+  and a run with two more of the same beside it, where the CPU time differs by 5% or
+  more; so two builds of g64m, or g64m and QEMU, can be compared by it at any hour, and
+  three such runs can go at once.**
+- **What changed since last time**: `tools/build_race.py` runs the program under
+  `/usr/bin/time -l` and prints instructions retired and cycles beside the seconds.
+- **Next move for each result**:
+  - Under 1% → comparisons by instructions from here, up to three runs at once; the
+    seconds beside them for what they are worth
+  - Over 1% → what moves it (the guest's own clock: `--rtc host`, interrupts by the
+    host's time) looked for; the count with the guest's clock by instructions
+  - `time -l` gives no count for QEMU (its threads) → the count read another way
+- **Cut-off**: the short race once alone and once three at once; QEMU once.
