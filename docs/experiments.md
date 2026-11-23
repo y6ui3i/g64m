@@ -11504,3 +11504,43 @@ Meltdown, MDS_NO, SSB_NO and the rest.
   - A system test prints differently (one that prints CPUID) → the expected text from
     hal's KVM is a real Ivy Bridge's: the test given `--cpu-open`, or its leaf not printed
 - **Cut-off**: the two raced at once by host instructions; the kernel's log; the gate.
+
+**Result: 30% fewer host instructions for the three files (647.7 to 456.0 billion), the
+TLB emptied 23 thousand times for 1.5 million; and g64m is past QEMU on them: 50.5 s of
+CPU against 61.4 s, raced at the same time.**
+
+| Three of NetHack's files | The CPU as it was (`--cpu-open`) | The CPU now | QEMU 11.1.3 |
+|---|---:|---:|---:|
+| Host instructions retired | 647.7 billion | **456.0 billion** | 499.2 billion |
+| Cycles | 221.6 billion | 153.3 billion | 192.2 billion |
+| CPU seconds (the pair raced at once) | 71.5 | 49.7 | |
+| CPU seconds (g64m and QEMU raced at once) | | **50.5** | 61.4 |
+| The TLB emptied | 1,519,120 times | 23,421 times | |
+| Entries into blocks | 301 million | 162 million | |
+| Blocks translated | 1.25 million | 0.82 million | |
+
+- **The hypothesis** held and was too small: 8% guessed, 30% found; the TLB emptied a
+  sixty-fifth as often (a tenth guessed).
+- **The kernel's log**: with the CPU as it was, `Kernel/User page tables isolation:
+  enabled`, `MDS: Vulnerable: Clear CPU buffers attempted, no microcode`, `Speculative
+  Store Bypass: Vulnerable`; now none of the three lines, and `Spectre V2 : Mitigation:
+  Retpolines` as under QEMU.
+- **What it was costing**: 1.5 million writes of CR3 in the three files, each one clearing
+  196 KB of tags and leaving every page to be walked for again and every block that
+  touched one to be left; and VERW, which no block has, on every way out of the kernel.
+  That is the 2.7% of clearing and the 3.5% of walks, and most of what E149 to E155 were
+  cutting at from the other side (the leavings to "another page, not in the TLB", the
+  instructions left to the interpreter).
+- **Every race against QEMU until now was of two different works.** E135's 3.9 times,
+  E148's 2.0, E153's 1.2 to 1.45 were g64m with a guest that guards against Meltdown and
+  MDS, against QEMU with a guest that does not. The changes between them were real (they
+  are measured build against build, on the same guest); the distances to QEMU were not
+  of like with like.
+- **What changed**: CPUID's highest basic leaf is 7 and leaf 7's EDX has bit 29; MSR 10Ah
+  reads 0D100171h (RDCL_NO, SSB_NO, MDS_NO, PSCHANGE_MC_NO, TAA_NO, BHI_NO, PBRSB_NO,
+  GDS_NO, RFDS_NO). `--cpu-open` gives the CPU as it was. `--jit-stats` says how often the
+  TLB was emptied.
+
+All suites pass (`tools/gate.sh`: 106 `ok`, `make-rc=0`, 435 s).
+
+**Next.** The whole build, g64m and QEMU, both ways (at the same time, and each alone).

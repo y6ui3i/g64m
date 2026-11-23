@@ -197,7 +197,10 @@ fn tlb_unwrite(page: i64) {
 // This says whether any entry made since the last emptying came from a 1 GB page.
 var tlb_has_1g = false;
 
+var tlb_flushes: u64 = 0;        // how often the TLB was emptied
+
 fn tlb_flush() {
+    tlb_flushes += 1;
     code_page = TLB_EMPTY;       // the code page is a translation too (E105)
     code_end = 0;
     for i in 6 * TLB_SIZE { tlb_tag[i] = TLB_EMPTY; }
@@ -493,6 +496,14 @@ fn msr_get(n: u64) -> u64 {
         // The platform's id and the microcode's revision, which an Intel CPU has and the
         // kernel reads without asking whether it may: none, and none loaded.
         0x17, 0x8B => { return 0; },
+        // IA32_ARCH_CAPABILITIES (E156): an emulator runs nothing ahead of time and so
+        // leaks nothing that way. RDCL_NO (Meltdown, L1TF), SSB_NO, MDS_NO,
+        // PSCHANGE_MC_NO, TAA_NO, BHI_NO, PBRSB_NO, GDS_NO, RFDS_NO. A kernel that
+        // reads them leaves page table isolation and the clearing of buffers off.
+        0x10A => {
+            if cpu_open { msr_asked = n; fault(13, true, 0); return 0; }
+            return 0x0D100171;
+        },
         _ => { msr_asked = n; fault(13, true, 0); return 0; },
     }
 }
