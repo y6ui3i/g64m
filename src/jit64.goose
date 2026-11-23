@@ -1319,13 +1319,50 @@ fn j_push(rt: u32) {
 fn x_base() { a_ldr(29, CTX, 128); }
 // A load of n bits (32, 64, 128) of XMM register i into host vector vt, the rest of vt
 // cleared; a store of vt's low n bits there.
-fn x_ld(n: u32, vt: u32, i: u8) {
+fn x_ld_raw(n: u32, vt: u32, i: u8) {
     let at: u32 = (i as u32) * 16;
     e((if n == 64 { 0xFD400000 | (at >> 3) << 10 } else if n == 32 { 0xBD400000 | (at >> 2) << 10 } else { 0x3DC00000 | (at >> 4) << 10 }) | 29 << 5 | vt);
 }
-fn x_st(n: u32, vt: u32, i: u8) {
+fn x_st_raw(n: u32, vt: u32, i: u8) {
     let at: u32 = (i as u32) * 16;
     e((if n == 64 { 0xFD000000 | (at >> 3) << 10 } else if n == 32 { 0xBD000000 | (at >> 2) << 10 } else { 0x3D800000 | (at >> 4) << 10 }) | 29 << 5 | vt);
+}
+// Since E160 XMM register i is in host vector 16 + i from its first use in a block to the
+// block's end (xv_in: which are; a block is one straight line, so what the translator has
+// loaded stays loaded). A result is stored to the context at once as well, so the context
+// is right at every way out. --jit-off's bit 36 loads every time.
+var xv_in: u32 = 0;
+fn x_mov(d: u32, s: u32) { if d != s { e(0x4EA01C00 | s << 16 | s << 5 | d); } }     // mov vd.16b, vs.16b
+// The host vector XMM register i is in, loaded if it was not.
+fn x_get(i: u8) -> u32 {
+    let h: u32 = 16 + (i as u32);
+    if xv_in >> i & 1 == 0 {
+        x_base();
+        x_ld_raw(128, h, i);
+        if jit_no >> 36 & 1 == 0 { xv_in |= 1 << i; }
+    }
+    return h;
+}
+// XMM register i has been given a new value in its host vector: stored.
+fn x_put(i: u8) {
+    x_base();
+    x_st_raw(128, 16 + (i as u32), i);
+    if jit_no >> 36 & 1 == 0 { xv_in |= 1 << i; }
+}
+// For the forms that work in the scratch vectors: a copy from the register's vector if it
+// is in one, and the copy given back with the store.
+fn x_ld(n: u32, vt: u32, i: u8) {
+    let h: u32 = 16 + (i as u32);
+    if xv_in >> i & 1 == 0 { x_ld_raw(n, vt, i); return; }
+    if n == 128 { x_mov(vt, h); }
+    else { e((if n == 64 { 0x1E604000 } else { 0x1E204000 }) | h << 5 | vt); }      // fmov d or s: the rest cleared
+}
+fn x_st(n: u32, vt: u32, i: u8) {
+    let h: u32 = 16 + (i as u32);
+    x_st_raw(n, vt, i);
+    if xv_in >> i & 1 == 0 { return; }
+    if n == 128 { x_mov(h, vt); }
+    else { e((if n == 64 { 0x6E080400 } else { 0x6E040400 }) | vt << 5 | h); }      // mov vh.d[0] or .s[0], vt's
 }
 // The same at the guest address in S1.
 fn m_ld(n: u32, vt: u32) {
@@ -1340,6 +1377,33 @@ fn m_st(n: u32, vt: u32) {
 fn x_src(n: u32, vt: u32) {
     if je.mod == 3 { x_base(); x_ld(n, vt, je.rm); }
     else { j_addr(); j_chk_n(false, if n == 128 { 16 } else { 8 }); m_ld(n, vt); }
+}
+// The 128-bit operand in r/m: its host vector, or vt loaded from memory.
+fn x_srcv(vt: u32) -> u32 {
+    if je.mod == 3 { return x_get(je.rm); }
+    j_addr();
+    j_chk_n(false, 16);
+    m_ld(128, vt);
+    return vt;
+}
+// The 128-bit moves to XMM register r, and from it.
+fn x_mov_in(r: u8) {
+    let h: u32 = 16 + (r as u32);
+    let s = x_srcv(h);
+    x_mov(h, s);
+    x_put(r);
+}
+fn x_mov_out(r: u8) {
+    if je.mod == 3 {
+        let s = x_get(r);
+        x_mov(16 + (je.rm as u32), s);
+        x_put(je.rm);
+    } else {
+        j_addr();
+        j_chk_n(true, 16);
+        let s = x_get(r);
+        m_st(128, s);
+    }
 }
 // Leaves the block, before the instruction has changed anything, if the double (or single)
 // in vt is not a finite number: what the chip gives then is the interpreter's to say. The
@@ -1370,7 +1434,7 @@ fn j_sse(q: u64, len: u64) -> bool {
     match op2 {
         0x10 => {
             // To the register. From memory a scalar clears the rest; from a register not.
-            if p < 2 { x_src(128, 0); x_base(); x_st(128, 0, r); }
+            if p < 2 { x_mov_in(r); }
             else {
                 let n: u32 = if p == 2 { 32 } else { 64 };
                 x_src(n, 0);
@@ -1379,44 +1443,38 @@ fn j_sse(q: u64, len: u64) -> bool {
             }
         },
         0x11 => {
-            let n: u32 = if p < 2 { 128 } else if p == 2 { 32 } else { 64 };
+            if p < 2 { x_mov_out(r); return true; }
+            let n: u32 = if p == 2 { 32 } else { 64 };
             if regs { x_base(); x_ld(n, 0, r); x_st(n, 0, je.rm); }
             else { j_addr(); j_chk_n(true, if n == 128 { 16 } else { 8 }); x_base(); x_ld(n, 0, r); m_st(n, 0); }
         },
-        0x28 => { x_src(128, 0); x_base(); x_st(128, 0, r); },
-        0x29 => {
-            if regs { x_base(); x_ld(128, 0, r); x_st(128, 0, je.rm); }
-            else { j_addr(); j_chk_n(true, 16); x_base(); x_ld(128, 0, r); m_st(128, 0); }
-        },
+        0x28 => { x_mov_in(r); },
+        0x29 => { x_mov_out(r); },
         0x6F => {
             if p == 0 || p == 3 { return false; }
-            x_src(128, 0); x_base(); x_st(128, 0, r);
+            x_mov_in(r);
         },
         0x7F => {
             if p == 0 || p == 3 { return false; }
-            if regs { x_base(); x_ld(128, 0, r); x_st(128, 0, je.rm); }
-            else { j_addr(); j_chk_n(true, 16); x_base(); x_ld(128, 0, r); m_st(128, 0); }
+            x_mov_out(r);
         },
         0x6E => {
             // MOVD and MOVQ from a general register or memory: the rest cleared.
             if p != 1 { return false; }
-            if regs { e((if wide { 0x9E670000 } else { 0x1E270000 }) | gr << 5); }      // fmov d0 or s0
-            else { j_addr(); j_chk(false); m_ld(if wide { 64 } else { 32 }, 0); }
-            x_base();
-            x_st(128, 0, r);
+            let h: u32 = 16 + (r as u32);
+            if regs { e((if wide { 0x9E670000 } else { 0x1E270000 }) | gr << 5 | h); }  // fmov d or s
+            else { j_addr(); j_chk(false); m_ld(if wide { 64 } else { 32 }, h); }
+            x_put(r);
         },
         0x7E => {
             if p == 2 { x_src(64, 0); x_base(); x_st(128, 0, r); }
             else if p == 1 {
                 // To a general register or memory.
-                if regs {
-                    x_base();
-                    a_ldr(S3, 29, (r as u32) * 16);
-                    a_mov(if wide { 1 } else { 0 }, gr, S3);
-                } else {
+                let h = x_get(r);
+                if regs { e((if wide { 0x9E660000 } else { 0x1E260000 }) | h << 5 | gr); }      // fmov x or w
+                else {
                     j_addr(); j_chk(true);
-                    x_base();
-                    a_ldr(S3, 29, (r as u32) * 16);
+                    e((if wide { 0x9E660000 } else { 0x1E260000 }) | h << 5 | S3);
                     j_store(if wide { 64 } else { 32 }, S3);
                 }
             } else { return false; }
@@ -1518,14 +1576,18 @@ fn j_sse(q: u64, len: u64) -> bool {
             // The 128-bit AND, ANDN, OR and XOR, on floats' bits or integers'.
             if (op2 < 0x58 && p > 1) || (op2 >= 0xDB && p != 1) { return false; }
             if op2 == 0xDF && jit_no >> 43 & 1 != 0 { return false; }
-            x_src(128, 1);
-            x_base();
-            x_ld(128, 0, r);
-            if op2 == 0x54 || op2 == 0xDB { e(0x4E201C00 | 1 << 16 | 0 << 5); }         // and v0, v0, v1
-            else if op2 == 0x55 || op2 == 0xDF { e(0x4E601C00 | 0 << 16 | 1 << 5); }                   // bic v0, v1, v0
-            else if op2 == 0x56 || op2 == 0xEB { e(0x4EA01C00 | 1 << 16 | 0 << 5); }    // orr
-            else { e(0x6E201C00 | 1 << 16 | 0 << 5); }                                  // eor
-            x_st(128, 0, r);
+            if regs && r == je.rm && (op2 == 0x57 || op2 == 0xEF) {
+                e(0x4F000400 | (16 + (r as u32)));           // a register XORed with itself: movi #0
+                x_put(r);
+                return true;
+            }
+            let s = x_srcv(1);
+            let d = x_get(r);
+            if op2 == 0x54 || op2 == 0xDB { e(0x4E201C00 | s << 16 | d << 5 | d); }     // and d, d, s
+            else if op2 == 0x55 || op2 == 0xDF { e(0x4E601C00 | d << 16 | s << 5 | d); }               // bic d, s, d
+            else if op2 == 0x56 || op2 == 0xEB { e(0x4EA01C00 | s << 16 | d << 5 | d); }               // orr
+            else { e(0x6E201C00 | s << 16 | d << 5 | d); }                              // eor
+            x_put(r);
         },
         0x73 => {
             // The shifts of an XMM register by a constant (E147): of its two halves by
@@ -1539,21 +1601,20 @@ fn j_sse(q: u64, len: u64) -> bool {
             if jit_no >> 40 & 1 != 0 && n > (if f == 2 || f == 6 { 63 } else { 15 }) { return false; }
             if jit_no >> 39 & 1 != 0 && n == 0 { return false; }
             if n == 0 { return true; }
-            x_base();
             if n > (if f == 2 || f == 6 { 63 } else { 15 }) {
-                e(0x4F000400);                               // movi v0.16b, #0
-                x_st(128, 0, je.rm);
+                e(0x4F000400 | (16 + (je.rm as u32)));       // movi #0
+                x_put(je.rm);
                 return true;
             }
-            x_ld(128, 0, je.rm);
-            if f == 2 { e(0x6F000400 | (128 - n) << 16); }   // ushr v0.2d, v0.2d, #n
-            else if f == 6 { e(0x4F005400 | (64 + n) << 16); }       // shl v0.2d, v0.2d, #n
+            let d = x_get(je.rm);
+            if f == 2 { e(0x6F000400 | (128 - n) << 16 | d << 5 | d); }      // ushr d.2d, d.2d, #n
+            else if f == 6 { e(0x4F005400 | (64 + n) << 16 | d << 5 | d); }  // shl d.2d, d.2d, #n
             else {
-                e(0x4F000400 | 1);                           // movi v1.16b, #0
-                if f == 3 { e(0x6E000000 | 1 << 16 | n << 11); }     // ext v0, v0, v1, #n
-                else { e(0x6E000000 | (16 - n) << 11 | 1 << 5); }    // ext v0, v1, v0, #(16 - n)
+                e(0x4F000400 | 1);                           // movi v1, #0
+                if f == 3 { e(0x6E000000 | 1 << 16 | n << 11 | d << 5 | d); }        // ext d, d, v1, #n
+                else { e(0x6E000000 | d << 16 | (16 - n) << 11 | 1 << 5 | d); }      // ext d, v1, d, #(16 - n)
             }
-            x_st(128, 0, je.rm);
+            x_put(je.rm);
         },
         0x71, 0x72 => {
             // The shifts of words and doublewords by a constant (E159): /2 right, /4 right
@@ -1565,65 +1626,63 @@ fn j_sse(q: u64, len: u64) -> bool {
             let w: u32 = if op2 == 0x71 { 16 } else { 32 };
             var n = mem_rd(q + len - 1, 8) as! u32;
             if n == 0 { return true; }
-            x_base();
             if n >= w {
                 if f != 4 {
-                    e(0x4F000400);                           // movi v0.4s, #0
-                    x_st(128, 0, je.rm);
+                    e(0x4F000400 | (16 + (je.rm as u32)));   // movi #0
+                    x_put(je.rm);
                     return true;
                 }
                 n = w - 1;
             }
-            x_ld(128, 0, je.rm);
-            if f == 2 { e(0x6F000400 | (2 * w - n) << 16); }         // ushr v0, v0, #n
-            else if f == 4 { e(0x4F000400 | (2 * w - n) << 16); }    // sshr v0, v0, #n
-            else { e(0x4F005400 | (w + n) << 16); }                  // shl v0, v0, #n
-            x_st(128, 0, je.rm);
+            let d = x_get(je.rm);
+            if f == 2 { e(0x6F000400 | (2 * w - n) << 16 | d << 5 | d); }            // ushr d, d, #n
+            else if f == 4 { e(0x4F000400 | (2 * w - n) << 16 | d << 5 | d); }       // sshr d, d, #n
+            else { e(0x4F005400 | (w + n) << 16 | d << 5 | d); }                     // shl d, d, #n
+            x_put(je.rm);
         },
         0xF4 => {
             // PMULUDQ (E159): the low halves of the two quadwords, multiplied to 64 bits.
             if p != 1 || jit_no >> 37 & 1 != 0 { return false; }
-            x_src(128, 1);
-            x_base();
-            x_ld(128, 0, r);
-            e(0x0EA12800 | 0 << 5 | 0);                      // xtn v0.2s, v0.2d
-            e(0x0EA12800 | 1 << 5 | 1);                      // xtn v1.2s, v1.2d
-            e(0x2EA0C000 | 1 << 16 | 0 << 5 | 0);            // umull v0.2d, v0.2s, v1.2s
-            x_st(128, 0, r);
+            let s = x_srcv(1);
+            let d = x_get(r);
+            e(0x0EA12800 | d << 5 | 0);                      // xtn v0.2s, d.2d
+            e(0x0EA12800 | s << 5 | 1);                      // xtn v1.2s, s.2d
+            e(0x2EA0C000 | 1 << 16 | 0 << 5 | d);            // umull d.2d, v0.2s, v1.2s
+            x_put(r);
         },
         0xC6 => {
             // SHUFPS: two of the four from the destination, two from the source; SHUFPD:
             // one of the two from each (E159).
             if p > 1 || jit_no >> 37 & 1 != 0 { return false; }
             let imm = mem_rd(q + len - 1, 8) as! u32;
-            x_src(128, 1);
-            x_base();
-            x_ld(128, 0, r);
+            let s = x_srcv(1);
+            let d = x_get(r);
             if p == 0 {
                 for i in 4 {
                     let sel = imm >> ((i as! u32) * 2) & 3;
-                    let from: u32 = if i < 2 { 0 } else { 1 };
+                    let from: u32 = if i < 2 { d } else { s };
                     e(0x6E000400 | ((i as! u32) << 3 | 4) << 16 | (sel << 2) << 11 | from << 5 | 2);      // mov v2.s[i], v.s[sel]
                 }
             } else {
                 for i in 2 {
                     let sel = imm >> (i as! u32) & 1;
-                    e(0x6E000400 | ((i as! u32) << 4 | 8) << 16 | (sel << 3) << 11 | (i as! u32) << 5 | 2);   // mov v2.d[i], v.d[sel]
+                    e(0x6E000400 | ((i as! u32) << 4 | 8) << 16 | (sel << 3) << 11 | (if i == 0 { d } else { s }) << 5 | 2);   // mov v2.d[i], v.d[sel]
                 }
             }
-            x_st(128, 2, r);
+            x_mov(d, 2);
+            x_put(r);
         },
         0x70 => {
             // PSHUFD: each of the four from the one the constant names.
             if p != 1 || jit_no >> 47 & 1 != 0 { return false; }
             let imm = mem_rd(q + len - 1, 8) as! u32;
-            x_src(128, 1);
+            let s = x_srcv(1);
             for i in 4 {
                 let sel = imm >> ((i as! u32) * 2) & 3;
-                e(0x6E000400 | ((i as! u32) << 3 | 4) << 16 | (sel << 2) << 11 | 1 << 5 | 2);     // mov v2.s[i], v1.s[sel]
+                e(0x6E000400 | ((i as! u32) << 3 | 4) << 16 | (sel << 2) << 11 | s << 5 | 2);     // mov v2.s[i], s.s[sel]
             }
-            x_base();
-            x_st(128, 2, r);
+            x_mov(16 + (r as u32), 2);
+            x_put(r);
         },
         0x60, 0x61, 0x62, 0x6C, 0x68, 0x69, 0x6A, 0x6D, 0xFC, 0xFD, 0xFE, 0xD4, 0xF8, 0xF9, 0xFA, 0xFB, 0x74, 0x75, 0x76, 0x64, 0x65, 0x66 => {
             // The packed integers' interleaving, sums, differences and comparisons (E147).
@@ -1631,9 +1690,8 @@ fn j_sse(q: u64, len: u64) -> bool {
             if jit_no >> 46 & 1 != 0 && op2 <= 0x6D && op2 != 0x64 && op2 != 0x65 && op2 != 0x66 { return false; }
             if jit_no >> 45 & 1 != 0 && (op2 == 0xD4 || op2 >= 0xF8) { return false; }
             if jit_no >> 44 & 1 != 0 && ((op2 >= 0x74 && op2 <= 0x76) || (op2 >= 0x64 && op2 <= 0x66)) { return false; }
-            x_src(128, 1);
-            x_base();
-            x_ld(128, 0, r);
+            let s = x_srcv(1);
+            let d = x_get(r);
             var w: u32 = 0;
             if op2 == 0x6C || op2 == 0x6D || op2 == 0xD4 || op2 == 0xFB { w = 3; }
             else if op2 >= 0x60 && op2 <= 0x62 { w = op2 - 0x60; }
@@ -1649,8 +1707,8 @@ fn j_sse(q: u64, len: u64) -> bool {
             else if op2 >= 0xF8 { base = 0x6E208400; }                       // sub
             else if op2 >= 0x74 { base = 0x6E208C00; }                       // cmeq
             else { base = 0x4E203400; }                                      // cmgt
-            e(base | w << 22 | 1 << 16);
-            x_st(128, 0, r);
+            e(base | w << 22 | s << 16 | d << 5 | d);
+            x_put(r);
         },
         _ => { return false; },
     }
@@ -2319,6 +2377,7 @@ fn jit_translate_in(ph: u64) {
         sk_live = false;
         ss_n = 0;
         j_stale = false;
+        xv_in = 0;
         tp_n = 0;
         j_head = head;
         j_needs = false;

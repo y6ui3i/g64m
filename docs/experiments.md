@@ -11776,3 +11776,44 @@ in the prologue), so what the translator has loaded stays loaded to the block's 
   - A scalar primitive slower → the copies in the forms not rewritten
 - **Cut-off**: one form; the gate; `p_simd` and the four scalar primitives timed beside
   the old build, the three files' build counted once.
+
+**Result: `p_simd` takes 0.235 s to QEMU's 0.317 s: 1.35 of QEMU's speed, from 0.66; the
+scalar float primitives are a fifth to a third faster as well.**
+
+| Seconds, less a program that does nothing | QEMU | E159 | E160 | g64m / QEMU, by speed |
+|---|---:|---:|---:|---:|
+| `p_simd` | 0.317 | 0.486 | **0.235** | 1.35 (was 0.66) |
+| `p_dbl_arith` | 1.184 | 0.731 | 0.575 | 2.06 |
+| `p_dbl_cmp` | 1.287 | 0.359 | 0.297 | 4.33 |
+| `p_dbl_conv` | 3.554 | 0.401 | 0.262 | 13.6 |
+| `p_float` | 1.190 | 0.700 | 0.556 | 2.14 |
+
+(The best of five for g64m, the old build and the new one after the other; QEMU's user
+mode three runs; the load 3.)
+
+| Host's count (`/usr/bin/time -l`) | E159 | E160 |
+|---|---:|---:|
+| `p_simd`: instructions, less the start | 2,864 M | 2,235 M |
+| `p_simd`: cycles, less the start | 1,514 M | 743 M |
+| For each guest instruction | 5.75 and 3.0 | 4.5 and 1.5 |
+| The three files' build: instructions | 459.14 G | 455.98 G |
+| The three files' build: cycles | 151.16 G | 150.15 G |
+
+- **The hypothesis** held: `p_simd` at 0.30 s or less (0.235) and under 2 cycles for a
+  guest instruction (1.5), past QEMU; no scalar primitive slower (their host
+  instructions are up by 1 to 4%, the copies, and their cycles down by 14 to 27%: the
+  load behind a store was the wait there too); the build's instructions 0.7% fewer,
+  which is a little more than the half percent guessed and on the good side.
+- **How it is done**: `xv_in` is the set of XMM registers the translator has loaded into
+  host vectors 16 to 31 since the block's start; `x_get` loads one that is not there,
+  `x_put` stores a new value to the context at once. The moves, the logic, the packed
+  shifts, PSHUFD, SHUFPS and SHUFPD, the interleavings, sums, differences, comparisons
+  and PMULUDQ work on those vectors; the scalar forms take a copy (`x_ld`) and give one
+  back (`x_st`). Nothing is owed at a way out, and a block needs nothing from the one
+  before it. A register XORed with itself is a MOVI and no load.
+- **The gate**: 107 ok and `make-rc=0` in 394 s. `--jit-off`'s bit 36 loads every time.
+
+**The primitives now**: 19 of 23 past QEMU, two level (`p_bignum`, `p_pixel`), two
+behind: `p_bitfield` 0.78 and `p_ldbl` 0.33.
+
+**Next.** `p_ldbl`: the x87, of which nothing is translated.

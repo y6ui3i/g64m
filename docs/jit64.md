@@ -226,6 +226,12 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   of registers give a jump right behind them a TST of the bit, and otherwise a record of
   the value and the bit's number, handled as INC and DEC's flags are; SHLD and SHRD of
   registers are one EXTR by a constant, or two shifts and an OR by CL.
+- **The XMM registers in host vectors over a block** (E160): register i is in host
+  vector 16 + i from its first use to the block's end, and a new value is stored to the
+  context at once, so that nothing is owed at a way out. A block is one straight line,
+  entered only at its start, which is what makes "loaded" something the translator
+  knows. `--jit-off`'s bit 36 loads at every use; bit 37 leaves the packed forms of E159
+  to the interpreter.
 - **Addresses relative to RIP, and the return address a CALL pushes.** A block is found
   by its physical address, and one page of a shared library is at different virtual
   addresses in different programs, so RIP cannot be a constant in generated code: it is
