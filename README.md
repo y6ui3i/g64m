@@ -340,6 +340,18 @@ The images (`tests/sys64/`) start in long mode at privilege level 0. The expecte
 the host's CPU runs the guest's instructions; `ORACLE_HOST=name tools/systest64.sh` takes it
 again.
 
+All of them at once, for a change to the 64-bit machine or its JIT:
+
+```bash
+tools/gate.sh
+```
+
+It builds once and runs together the instruction tests, the primitives, the system tests
+three times (plain, with `--jit`, and with `--jit-check`, which boots Linux with every
+block compared against the interpreter) and a build of three of NetHack's files in the
+guest under `--jit`, which must end with `make-rc=0`. About six minutes on eight cores;
+one after another they take twenty-five.
+
 ## Layout
 
 | File | Contents |

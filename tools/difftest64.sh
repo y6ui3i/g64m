@@ -15,8 +15,11 @@ cd "$(dirname "$0")/.."
 GOOSE="${GOOSE:-goose}"
 mkdir -p build/t64 tests/expected64
 
-"$GOOSE" build --debug -o build/g64m-debug src/g64m.goose >/dev/null || exit 2
-"$GOOSE" build -o build/g64m src/g64m.goose >/dev/null || exit 2
+# (tools/gate.sh builds once for all the suites it runs at the same time, and says so.)
+if [ -z "${GATE_BUILT:-}" ]; then
+    "$GOOSE" build --debug -o build/g64m-debug src/g64m.goose >/dev/null || exit 2
+    "$GOOSE" build -o build/g64m src/g64m.goose >/dev/null || exit 2
+fi
 
 if [ $# -gt 0 ]; then
     list=""
