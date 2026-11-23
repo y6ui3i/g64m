@@ -1127,22 +1127,35 @@ fn port_string(op: u8) -> u64 {
     if ins.rep != 0 && reg[RCX] & am == 0 { return ip; }
     let step = if flag(DF) { 0 - n } else { n };
     let port = reg[RDX] & 0xFFFF;
-    if op < 0x6E {
-        // The page is asked for before the port is read: a fault must not lose what the
-        // device gave.
-        let di = reg[RDI] & am;
-        if machine { xlate(di, ACC_WRITE); xlate(di + n - 1, ACC_WRITE); }
-        wr(di, w, io_in(port, w));
-        reg[RDI] = (di + step) & am;
-    } else {
-        let si = reg[RSI] & am;
-        io_out(port, w, rd(si + seg_base(), w));
-        reg[RSI] = (si + step) & am;
+    // With REP it goes on by itself as far as the run loop allows (E169, as REP MOVS does
+    // since E113): each repetition is an instruction to everything outside, the count
+    // goes on by one for each, and the start saved for a fault is moved on. It stops when
+    // anything asks for attention: a device's request, a stop.
+    while true {
+        if op < 0x6E {
+            // The page is asked for before the port is read: a fault must not lose what the
+            // device gave.
+            let di = reg[RDI] & am;
+            if machine { xlate(di, ACC_WRITE); xlate(di + n - 1, ACC_WRITE); }
+            wr(di, w, io_in(port, w));
+            reg[RDI] = (di + step) & am;
+        } else {
+            let si = reg[RSI] & am;
+            io_out(port, w, rd(si + seg_base(), w));
+            reg[RSI] = (si + step) & am;
+        }
+        if ins.rep == 0 { return ip; }
+        let left = (reg[RCX] - 1) & am;
+        reg[RCX] = left;
+        if left == 0 { return ip; }
+        if rep_until <= steps + 1 || irq_line || attn || replan || stopped || jit_no2 & 16 != 0 { break; }
+        steps += 1;
+        if machine {
+            saved_reg[RSI] = reg[RSI];
+            saved_reg[RDI] = reg[RDI];
+            saved_reg[RCX] = reg[RCX];
+        }
     }
-    if ins.rep == 0 { return ip; }
-    let left = (reg[RCX] - 1) & am;
-    reg[RCX] = left;
-    if left == 0 { return ip; }
     rflags |= RF;
     return rip;
 }

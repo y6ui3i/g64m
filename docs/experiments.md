@@ -12530,3 +12530,36 @@ nothing outside is due (E113); INS and OUTS never did.
   - Arrivals fall and cycles do not → the words were cheap already; on to the records
 - **Cut-off**: one form; a test of a fault in the middle (the registers as the
   repetitions before it left them); the gate; the race beside E168.
+
+**Result: the interpreter's arrivals at REP INSW fell from 29.3 million to 0.48 million;
+the three files take 1.2% fewer cycles and 2.6% fewer host instructions beside E168. The
+guest's instructions are the same number to the last one (23,875,538,489 in both).**
+
+| The three files, four at once (two of each) | E168 | E169 | |
+|---|---:|---:|---:|
+| Host instructions | 362.92 G, 362.93 G | 353.38 G, 353.38 G | −2.6% |
+| Cycles | 136.48 G, 136.29 G | 134.87 G, 134.66 G | −1.2% |
+| Run from an entry and refused | 84.5 million | 54.0 million | |
+
+- **The hypothesis** held on both counts.
+- **The form**: `port_string` repeats inside itself while `rep_until` allows and nothing
+  has asked for attention (`irq_line`, `attn`, `replan`, `stopped`); each repetition
+  adds one to the count of instructions and moves the start saved for a fault on.
+  `--jit-off2 16` leaves it as it was (the switch is the JIT's word; the change is the
+  interpreter's).
+- **A fault in the middle, tried by hand and not kept as a test**: a sector read by REP
+  INSW into a page that is not there until half of it has come. g64m with the change and
+  without it, and QEMU's own emulation, print the same (RCX 80h and RDI at the page's
+  start in the handler, the sector whole afterwards). KVM on hal does not: its own
+  emulator of string I/O faults before the first word with RCX 100h, and the sector's
+  words are lost. For string I/O the real CPU is not what KVM shows, so there is no
+  oracle to take an expected text from, and `y_ide` is left as it was. Two wrong forms,
+  against the same text by hand: the saved start not moved on is seen (RCX 100h and
+  wrong words); a repetition not counted is not seen by it (the count of instructions
+  beside E168's, above, is what says it).
+- **The gate**: 116 ok and `make-rc=0` in 436 s.
+
+**Next.** The blocks' own code is where six tenths of the time is (12 host instructions
+for a guest instruction in a machine): the generated code of the build's hottest blocks
+read as E163 read `p_bitfield`'s. Smaller: a shift's record settled in generated code
+(20 million blocks left for it), BT's (4 million).
