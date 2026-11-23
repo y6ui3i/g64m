@@ -23,7 +23,7 @@ cd "$(dirname "$0")/.."
 GOOSE="${GOOSE:-goose}"
 BASE="-static -nostdlib -ffreestanding -fno-pic -no-pie -fno-stack-protector -fcf-protection=none -Wl,--build-id=none"
 
-"$GOOSE" build -o build/g64m src/g64m.goose >/dev/null || exit 2
+if [ -z "${GATE_BUILT:-}" ]; then "$GOOSE" build -o build/g64m src/g64m.goose >/dev/null || exit 2; fi
 
 if [ $# -gt 0 ]; then
     list=""
