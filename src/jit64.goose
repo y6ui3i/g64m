@@ -97,6 +97,26 @@ var jw_form: i64[4096] = [0; 4096];      // for a kind: kind * 64 + the ModRM's 
 // were there with time left, how many read RFLAGS in memory and had a record waiting
 // (jw_rec), for this page and for another.
 var jw2: i64[8] = [0; 8];
+// What the interpreter itself runs (E151): 0 not in the decode cache (a first run, or an
+// entry lost), 1 a block's first instruction (the block refused, or left at once), 2
+// inside a block, 3 in no block and cold, 4 in no block and hot (refused: by kind in
+// ji_kind, for no kind by the byte behind 0Fh in ji_0f, 256 for one not behind 0Fh).
+var ji: i64[8] = [0; 8];
+var ji_kind: i64[64] = [0; 64];
+var ji_0f: i64[257] = [0; 257];
+
+fn jit_ran_one(slot: i64, ph: u64) {
+    if dc_n[slot] != 0 { ji[1] += 1; return; }
+    if dc_cov[slot] != 0 { ji[2] += 1; return; }
+    if dc_heat[slot] < J_HOT { ji[3] += 1; return; }
+    ji[4] += 1;
+    let k: i64 = dc[slot].ins.kind;
+    ji_kind[k & 63] += 1;
+    if k == 0 {
+        if dc[slot].ins.op == 0x0F { ji_0f[mem_rd(ph + dc[slot].ins.plen, 8) as! i64] += 1; }
+        else { ji_0f[256] += 1; }
+    }
+}
 var jw_rec: i64[2] = [0; 2];
 var jw_rk: i64[256] = [0; 256];      // and which records those were (the low byte of the kind), 255 for one with more above the width
 var dc_needs: u8[DC_SIZE] = [0; DC_SIZE];
@@ -141,7 +161,7 @@ fn jit_went() {
 }
 var j_bytes: u64 = 0;        // bytes of code written in all, flushed or not (E137)
 let J_SIZE = 134217728;      // 128 MB: as far as a `b` reaches (E137)
-let J_HOT = 8;               // arrivals at a jump's target before it is translated
+var J_HOT: u8 = 8;           // arrivals at an instruction (runs of it from the decode cache) before a block is made there; --jit-hot
 let J_MAX = 60;              // instructions in a block at most
 let J_MIN = 2;               // and at least
 var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made (for dc_cov)
@@ -380,7 +400,7 @@ fn jit64_init() -> bool {
     dc[1].tag = 0x1122334455667788;
     let laid = jit_peek64(dc_at + 32) == 0x1122334455667788 && jit_peek64(dc_at) == (dc[0].tag as! i64);
     dc[1].tag = keep;
-    if laid && DC_BITS == 18 {
+    if laid {
         jx[11] = dc_at as! u64;
         jx[12] = jit_addr8(dc_n[..]) as! u64;
         jx[13] = jit_addr32(dc_code[..]) as! u64;
@@ -389,8 +409,8 @@ fn jit64_init() -> bool {
         let to_out = jc.len;
         e(0x14000000 | out_back);                            // b the way out
         j_far_at = jc.len;
-        e(0xCA404800 | S1 << 16 | S1 << 5 | S2);             // eor x2, x1, x1, lsr #18
-        e(0x92404400 | S2 << 5 | S2);                        // and x2, x2, #0x3FFFF
+        e(0xCA400000 | S1 << 16 | (DC_BITS as! u32) << 10 | S1 << 5 | S2);       // eor x2, x1, x1, lsr #DC_BITS
+        e(0x92400000 | ((DC_BITS - 1) as! u32) << 10 | S2 << 5 | S2);            // and x2, x2, #(DC_SIZE - 1)
         // Either way of the set (E142): the slot, then its neighbour.
         a_ldr(S4, CTX, 88);
         e(0x8B001400 | S2 << 16 | S4 << 5 | S3);             // add x3, x4, x2, lsl #5
@@ -430,8 +450,8 @@ fn jit64_init() -> bool {
             a_ldr(29, CTX, 160);
             e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
             a_rrr(A_ADD, 1, S2, S1, 30);                     // the physical address: the entry's addend on
-            e(0xCA404800 | S2 << 16 | S2 << 5 | S3);         // eor x3, x2, x2, lsr #18
-            e(0x92404400 | S3 << 5 | S3);
+            e(0xCA400000 | S2 << 16 | (DC_BITS as! u32) << 10 | S2 << 5 | S3);       // eor x3, x2, x2, lsr #DC_BITS
+            e(0x92400000 | ((DC_BITS - 1) as! u32) << 10 | S3 << 5 | S3);
             a_ldr(30, CTX, 88);
             e(0x8B001400 | S3 << 16 | 30 << 5 | 29);         // add x29, x30, x3, lsl #5
             a_ldr(29, 29, 0);

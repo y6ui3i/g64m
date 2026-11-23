@@ -11155,3 +11155,146 @@ with `--jit-check` (106 `ok`); the short race ends with `make-rc=0`.
 and its dispatch (26 s then: cold code translated sooner, a block kept when its decode
 entry goes), the XMM registers loaded and stored around every SSE instruction, the
 translating itself (7 s then, less now with half the code).
+
+----
+## E151: a block made sooner than the eighth arrival (2026-11-23)
+
+E149: QEMU has no interpreter; g64m spent 26 s of 98 in its interpreter and on the way to
+it, on the three files. A block is made at the eighth arrival at an instruction (`J_HOT`,
+E120's number, set when the translator was new and a block cost more than it does). The
+translator reads the decode cache's entries, so the first run of an instruction is the
+interpreter's whatever the number; the second is the soonest a block can be made. E138
+counted 21% of the interpreted instructions as run fewer than eight times, and every
+flush and every block lost to the cache (three in four) costs seven runs of its
+instructions before it is a block again.
+
+- **Hypothesis**: **with a block made at the second arrival the three files' interpreted
+  instructions fall from 4.3% to under 3% and the CPU time from 92.5 s to under 88 s; the
+  blocks translated grow by less than half (most code that runs twice runs eight times).**
+- **What changed since last time**: `--jit-hot N` sets the number (8 as it is); the race
+  at 2, 3, 4 and 8.
+- **Next move for each result**:
+  - Faster at 2, 3 or 4 → that number the default; then the blocks kept when their
+    entry goes (four ways)
+  - Slower at every smaller number → translating costs more than seven interpreted
+    runs: the translator's own time, read from the sampler
+  - The blocks translated more than double → cold code is most of the code: the
+    number stays, and the cache's ways first
+- **Cut-off**: four short races; the gate for the number chosen.
+
+**Result: sooner is not faster, and the interpreted instructions are not cold code: a third
+of them are instructions whose entry the decode cache has given up.** The three files,
+CPU seconds (the host's own spread between runs is about 3%):
+
+| A block at arrival | CPU seconds | Blocks translated | Code written | Interpreted |
+|---|---:|---:|---:|---:|
+| 1 | 100.8 | | | |
+| 2 | 92.2 | 7.6 million | 1.79 GB | 0.99 billion |
+| 4 | 89.6 | 5.7 million | 1.38 GB | 0.99 billion |
+| 8 (as it is) | 89.2 | 4.1 million | 1.01 GB | 1.04 billion |
+
+- **The hypothesis was wrong on each count.** The interpreted instructions hardly move
+  with the number (1.04 to 0.99 billion, for "4.3% to under 3%"); the blocks nearly double
+  at 2 (for "less than half more"); the time is no better and at 1 is a tenth worse. The
+  number stays 8; `--jit-hot N` stays as an option.
+- **What the interpreter runs** (`--jit-why` counts each instruction it runs by its
+  standing; 1,130 million through the run loop, of which 428 million are entries into
+  blocks; the rest of the 1,032 million "interpreted" are repetitions of string
+  instructions):
+
+| | Millions |
+|---|---:|
+| Not in the decode cache (a first run, or an entry given up) | 373 |
+| A block's first instruction, the block refused or left at once | about 103 |
+| In no block, and cold | 99 |
+| In no block, hot: refused (ports and the rest 48, RDTSC 4, BT of memory 2, ...) | 89 |
+| Inside a block | 38 |
+
+- **The cache is what the interpreter runs for.** 373 million instructions were not in
+  the decode cache when run; the program has about 0.4 million blocks' worth of code (QEMU's
+  count, E149), so nearly all of those are entries given up and met again: decoded again,
+  their arrivals counted from nothing again, so that an instruction whose entry does not
+  last eight arrivals is never a block's first. The "cold" 99 million are the same
+  instructions on their way. E141 saw the same from the blocks' side (three in four lost).
+
+**Next.** E152: which entry the cache gives up. An entry of an instruction inside a block
+is of no more use once the block is made (the translator read it; the interpreter runs it
+only when a block is left in its middle), and most entries are such; they go first, then
+the coldest, and a block's first only when the other way holds one too.
+
+----
+## E152: which entry the decode cache gives up (2026-11-23)
+
+E151: 373 million of the instructions the interpreter runs on the three files are not in
+the decode cache when they come, nearly all of them entries given up and met again; three
+blocks in four are lost the same way (E141, E148). The cache is 2^18 entries in sets of
+two ways (E142); a new instruction takes the first way unless a block begins there, then
+the second, whatever the second holds.
+
+- **Hypothesis**: **with the way to give up chosen by what it holds (an empty one; else
+  one whose instruction is inside a block; else the one with fewer arrivals; a block's
+  first instruction only when both ways hold one), the instructions run from outside the
+  cache fall from 373 million to under 150 million, the blocks lost to the cache from 3.0
+  million to under 1.5 million, and the CPU time by 4% or more (89 s to under 86 s), in the
+  same memory.**
+- **What changed since last time**: E151's count. Only the choice of the way, on a miss.
+- **Next move for each result**:
+  - As guessed → four ways with the same choice, if the count says sets of two still
+    lose; then the whole build
+  - Misses not under 250 million → the code alive at once does not fit 2^18 entries
+    however chosen: the size (2^19, 16 MB more) put to the owner with this count
+  - More entries into blocks cut short (a block needs the entries of its instructions)
+    → the blocks' lengths counted before and after
+- **Cut-off**: the short race with the count and without; the gate.
+
+**Result: choosing the way differently made it worse; the size is what is short. With four
+times the entries the three files run in 68.6 s of CPU, from about 90 s, beside QEMU's
+65 s.**
+
+The choice of the way (an empty one, one inside a block, the colder; a block's first only
+when both are): the instructions run from outside the cache rose from 373 to 443 million,
+the blocks lost stayed at 3.0 million, the CPU time rose (89.2 to 93.6 s). Taken back. The
+blocks lost did not move because both ways of a set hold a block's first instruction: about
+580 thousand blocks are made between two flushes, and the cache has 262 thousand entries
+for them and for every other instruction.
+
+The size, with E142's choice as it was, the far way made to follow `DC_BITS` (it was
+written for 2^18 and went out of use at any other size, E141's 2^20 among them), the same
+binary size at each (319,912 bytes):
+
+| Entries | CPU seconds | Not in the cache | Blocks translated | Blocks lost | Code written | Flushes | Maximum resident set |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2^18 (as it is) | 93.7 (89 to 92 without the count) | 386 million | 4.07 million | 2.96 million | 1.00 GB | 7 | 575 MB |
+| 2^19 | 77.1 (76.0 without) | 237 million | 2.26 million | 1.20 million | 0.60 GB | 4 | 560 MB |
+| 2^20 | 68.8 (68.6 without) | 113 million | 1.21 million | 0.41 million | 0.35 GB | 2 | 630 MB |
+| 2^21 | 66.9 | 94 million | 0.74 million | 0.15 million | 0.24 GB | 1 | 535 MB |
+
+- **The hypothesis** was wrong: misses not under 150 million by the choice (443 million),
+  no blocks saved, slower.
+- **Each doubling to 2^20 takes a seventh or more off the time**; 2^21 adds little. An
+  entry with what stands beside it is 50 bytes (the entry 32, the arrays beside it 18):
+  13 MB at 2^18, 26 MB at 2^19, 52 MB at 2^20, 105 MB at 2^21, zero-filled and touched as
+  used. The resident set does not follow it (fewer flushes touch less of the room for
+  code): 575, 560, 630, 535 MB.
+- **The owner's word (E141) was that the program is not to grow**; the size is the
+  owner's to choose with these numbers. Until then it stays 2^18.
+
+**Next.** The owner's choice of the size; then the gate at that size, and the whole
+build against QEMU.
+
+**The owner's choice (2026-11-23): 2^20 entries**, after asking what it costs (39 MB more
+resident and 10 ms more at the start for the smallest program: `p_if` fifty times under
+`--jit`, 3.95 s to 4.47 s, 553 MB to 592 MB) and what many containers would make of it
+(what one emulator takes before it runs anything is multiplied by the processes; as it
+stands forty do not fit this host). The size is the machine's; what the Docker backend's
+tables are to be instead is in `docs/roadmap.md` under M11: tables that cost what is used,
+the blocks in a table of their own, translated code kept for the next process.
+
+At 2^20, raced beside 2^18 at the same time so that both had the same load (it was 8 to
+11): **72.8 s of CPU against 96.6 s**, `make-rc=0` in both. A run alone an hour before,
+with the host as busy, took 106.9 s of CPU for the same counts (1.22 million blocks, 2
+flushes): a time taken alone on this host says little, and from here the old and the new
+are raced together.
+
+All suites pass at 2^20: `difftest64` 32, `prim64` 23, `systest64` 17 plain, with `--jit`
+and with `--jit-check` (106 `ok`).

@@ -190,6 +190,24 @@ it is worth trying.
   project can offer that the others do not have.
 - **Speed** is the JIT's, as on the 32-bit machine: the design carries over (docs/perf.md),
   and under Linux the generated code's memory is made executable with `mprotect`.
+- **What a process costs, and what many cost** (decided 2026-11-23, with E152): a container
+  is many processes and many containers are many more, each one an emulator of its own, so
+  what one emulator takes before it has run anything is multiplied. As it stands a `g64m`
+  that runs the smallest program is resident in 590 MB (256 MB of guest memory touched, the
+  room for code, a decode cache of 2^20 entries filled with "empty" at the start) and takes
+  about 80 ms to start; forty of them do not fit this host, where QEMU's user mode takes a
+  few megabytes each. The machine's sizes are for one process that runs for an hour and
+  are not M11's. What M11's emulator is to have from its first step:
+  - tables that cost what is used: "empty" is zero, so that the system gives a page only
+    when it is written, and nothing is filled at the start;
+  - the blocks in a table of their own, which grows, and not in the decode cache's entry
+    of their first instruction (E141 to E152: the cache's size is what bounds the blocks
+    now);
+  - the guest's memory the host's own (above), not an array;
+  - translated code kept for the next process that runs the same program: by the file
+    and the place in it, in memory that processes share or in a file. QEMU's user mode
+    translates each program again in every process (E136: GCC's 46 processes), and this is
+    where many containers can be ahead of it rather than level.
 - **It does not need the kernel half of M10** (long mode, paging, devices): it needs the
   user-mode instructions and SSE2, which are M10's first steps. The other way to do it, a
   whole 64-bit machine that boots Linux with `dockerd` inside and is reached as a Docker
