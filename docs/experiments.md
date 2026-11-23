@@ -12076,3 +12076,34 @@ tells.
 **Next.** The owner's to choose: the two that are level made clearly past (the memory
 operand again: twelve host instructions for a store, and the same register tested three
 times in one block), or the Docker backend (M11).
+
+## E164: the two that are level: a loop's way back, a constant near -1, a move between a comparison and its CMOVcc (2026-11-23)
+
+`p_ternary` (0.99 of QEMU) and `p_bitfield` (0.94 to 1.00) are level; the owner wants them
+past. `p_ternary`'s loop is one block of 20 instructions that retires 36 host
+instructions a round; `--jit-dump` shows:
+
+- **the way back takes two taken branches**: the jump at the loop's end goes to a way out
+  behind the block (`b.ne`), which takes the round off the time and goes to the body
+  (`b.hs`). Every loop that is one block pays that, `p_bitfield`'s too; the host takes
+  one taken branch a cycle at best, and these rounds are 9 to 11 cycles;
+- `mov r9, -1000` is four host instructions (MOVZ and three MOVK), where MOVN is one;
+- `cmp; mov rsi, rdx; cmovg` makes a record (three instructions): E163's look for a
+  CMOVcc stops at the MOV between.
+
+- **Hypothesis**: **with the loop's way back in line (the jump's condition turned round
+  over it: one taken branch a round), constants built from all ones where that is
+  shorter, and the look behind a comparison going past moves between registers and loads
+  of constants, `p_ternary` retires 30 host instructions a round or fewer and is at 1.10
+  of QEMU or more; `p_bitfield`, whose count does not change, is at 1.03 or more by the
+  fine clock; the three files' build retires no more than it did.**
+- **What changed since last time**: those three in `jit64.goose`. `--jit-off`'s bit 39
+  (which was one of four for the shifts of XMM registers, E147) leaves the way back as it
+  was.
+- **Next move for each result**:
+  - Both past → the milestone is met without "level"; the owner's next (M11)
+  - `p_ternary` past and `p_bitfield` not → the store: twelve... ten host instructions,
+    seven of them the look for remembered instructions on two pages
+  - Neither → cycles are not where the count says: the sample, and the host's counters
+- **Cut-off**: one form; the gate; both timed by the fine clock beside the old build and
+  QEMU; the three files' build counted beside the old build.
