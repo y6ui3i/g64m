@@ -174,8 +174,9 @@ var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made 
 // XMM registers are, [17] and [18] the bases of FS and GS, [19] and [20] where the TLB's
 // tags and its physical pages are (a machine's loads and stores), [21] dc_cpl, [22] not
 // zero when the SSE unit is not to be used (E139: a machine's CR0.TS or EM set, or
-// CR4.OSFXSR clear; the interpreter faults).
-var jx: u64[24] = [0; 24];
+// CR4.OSFXSR clear; the interpreter faults), [23] dc_runs (--jit-time), [24] set by a way
+// out that leaves an instruction to the interpreter (E155).
+var jx: u64[32] = [0; 32];
 // --jit-check: each store's address and the eight bytes that were there.
 var jlog: u64[256] = [0; 256];
 
@@ -1050,6 +1051,9 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
     }
     // In a machine, an address on another page: looked up as it is jumped to.
     if link && machine && !linked { to = j_far(); }
+    // A way out that leaves the instruction it stands at to the interpreter says so
+    // (E155): what lies behind that instruction is where a block is wanted.
+    if !link { a_imm(30, 1); a_str(30, CTX, 192); }
     let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
     e(0x14000000 | d & 0x3FFFFFF);
     // An exit that waits for a block carries its own entry behind the branch (E145), which
@@ -1123,7 +1127,7 @@ fn j_dead_past_jump(q: u64, page_end: u64, cnt: u64) -> bool {
         let k = jk;
         let len = j_len();
         if (k == K_JCC8 || (k >= K_JCC32 && k < K_CMOV)) && len != 0 && len <= page_end - q
-            && !je.asz32 && !je.p66 && je.sg == 0 && je.rep == 0 && jit_no >> k & 1 == 0 {
+            && !je.asz32 && !je.p66 && je.sg == 0 && je.rep == 0 && (k >= 32 || jit_no >> k & 1 == 0) {
             let cc = if k == K_JCC8 { je.op & 15 } else { k & 15 };
             if j_cond_of(hf, cc) != C_NONE {
                 fall = q + len;
@@ -1666,7 +1670,9 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     let n16 = je.p66 && (jit_no >> 52 & 1 == 0) && (k == K_ALU || k == K_GRP1 || k == K_ALUA || k == K_TEST || k == K_TESTA || k == K_GRP3 || k == K_SHIFTI || k == K_SHIFT || k == K_MOVI);
     if je.p66 && !n16 && k != K_NOP && k != K_NOPM && k != K_MOV && k != K_MOVMI { return 0; }
     if je.rep != 0 && k != K_NOP && k != K_NOPM { return 0; }
-    if k < 64 && jit_no >> k & 1 != 0 { return 0; }
+    // (--jit-off's low 32 bits are kinds; the bits above are the translator's parts, and
+    // were taken for the kinds of the conditional jumps and moves as well until E155.)
+    if k < 32 && jit_no >> k & 1 != 0 { return 0; }
     let sf: u32 = if je.osz == 64 { 1 } else { 0 };
     let r = hg(je.reg);
     let m = hg(je.rm);
@@ -2457,18 +2463,29 @@ fn jit_enter() -> bool {
     jx[0] = rflags;
     let time = rep_until - steps;
     jx[9] = time;
+    jx[24] = 0;
     if jit_time { t1 = jit_now(); }
     jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + BODY_AT, rip as! i64);
     if jit_time { t2 = jit_now(); }
     let ran = time - jx[9];
+    // An instruction was left to the interpreter (a page not in the TLB, mostly): the
+    // one behind it is taken as landed on, so that after eight leavings at one place a
+    // block is made for the rest of the run, which was interpreted to the next jump
+    // (E155). Not the instruction left itself: a block from there would leave at once.
+    let left = jx[24] != 0 && jit_no >> 38 & 1 == 0;
     // Left before its first instruction: that one is interpreted.
-    if ran == 0 { if jit_time { jt_enter += t2 - t0; jt_body += t2 - t1; } return false; }
+    if ran == 0 {
+        if jit_time { jt_enter += t2 - t0; jt_body += t2 - t1; }
+        if left { jit_land = true; }
+        return false;
+    }
     // (RFLAGS as the blocks left it in memory: a record settled on the way into one, E146.)
     rflags = jx[0];
     rip = jx[4];
     j_settle();
-    // Where the block went is where a jump landed.
-    jit_land = true;
+    // Where the block went is where a jump landed; or, an instruction left, behind it.
+    jit_land = !left;
+    jit_resume = left;
     steps += ran - 1;
     j_entered += 1;
     j_ran += ran;

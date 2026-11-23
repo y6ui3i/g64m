@@ -11440,3 +11440,34 @@ no block is ever made there.
   - More than a fifth more blocks → E137's trouble again: the places counted only for
     the ways out that are a memory's
 - **Cut-off**: the two raced at once by host instructions; the gate.
+
+**Result: 2.9% fewer host instructions for the three files (674.1 to 654.3 billion, the
+two raced at once from one build), 4.0% fewer cycles; the instructions interpreted inside
+a block fell from 90 million to 18 million, with 3% more blocks.**
+
+| Three of NetHack's files | Off (`--jit-off` bit 38) | On |
+|---|---:|---:|
+| Host instructions retired | 674.1 billion | **654.3 billion** |
+| Cycles | 234.0 billion | 224.6 billion |
+| In blocks | 23.129 of 23.894 billion | 23.206 billion |
+| Blocks translated | 1.216 million | 1.252 million |
+
+- **The hypothesis** held: under 30 million inside a block (18), 2% or more (2.9%), under
+  a fifth more blocks (3%).
+- **What changed**: a way out that leaves the instruction it stands at to the
+  interpreter (a load or store with no entry in the TLB, the SSE unit taken away, a
+  division's edge) sets a word in what the block is given (`jx[24]`); `jit_enter` then
+  takes the instruction behind that one as landed on (`jit_resume`), and not the one
+  left, as it did: a block made at an instruction that leaves would leave at once, and
+  113 million of a block's first instructions were interpreted so.
+- **The switches** (`--jit-off`): only the low 32 bits are kinds now. The bits above,
+  which are the translator's parts (38 this, 43 to 63 the others), were also read as the
+  kinds of the conditional jumps and moves whose numbers they are, so that turning a
+  part off turned a jump off with it; the first race of this change had the "off" side
+  slower for that reason and was thrown away.
+
+All suites pass (`tools/gate.sh`: 106 `ok`, `make-rc=0`, 416 s).
+
+**Next.** By the profile at 2^20: the TLB emptied by clearing 196 KB at each write of CR3
+(2.7% of the time, and the walks behind it 3.5%); the shifts' record settled on the way
+into a block (19 million leavings); LEAVE and the string instructions.

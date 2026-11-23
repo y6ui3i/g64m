@@ -249,6 +249,7 @@ var dc_drops: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
 var dc_heat: u8[DC_SIZE] = [0; DC_SIZE];     // arrivals counted
 var dc_cov: u8[DC_SIZE] = [0; DC_SIZE];      // 1: inside a block (E137)
 var jit_land = false;                       // the instruction at hand is where a jump landed
+var jit_resume = false;                     // the next one is to be taken so: a block left this one to the interpreter (E155)
 var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
 var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
 var j_evicted: u64 = 0;                     // blocks lost to another instruction taking the entry
@@ -1207,7 +1208,8 @@ fn exec64() -> bool {
     ins = dc[slot].ins;
     if jit_on {
         let made = dc_n[slot] == 0 && jit_arrive(slot, ph);
-        jit_land = false;
+        jit_land = jit_resume;
+        jit_resume = false;
         if made { return exec64_rest(); }
     }
     if ins.kind == 0 { return exec64_rest(); }
