@@ -12506,3 +12506,27 @@ cycles beside E167 with four running at once, and 1.8% fewer alone.**
 **Next.** The 124 million entries into blocks from the interpreter (why each block was
 left, counted again now that the misses are gone) and the 85 million instructions
 refused, by kind.
+
+----
+
+## E169: REP INS and REP OUTS go on by themselves, as REP MOVS does (2026-11-24)
+
+The instructions the interpreter runs from their entries and no block takes (85 million
+in the three files), by opcode for those not behind 0Fh (49 million): **REP INSW 29.3
+million**, REP STOSD 5.1 million, CLI 3.0, OUT 2.5, REP OUTSW 1.8, REP MOVSD 1.3. The
+disk is read through its data port a word at a time (the guest's driver is PIO), and each
+word is a trip round the run loop: REP MOVS and REP STOS go on by themselves as far as
+nothing outside is due (E113); INS and OUTS never did.
+
+- **Hypothesis**: **with REP INS and REP OUTS repeated inside the instruction as far as the
+  run loop allows (until something asks for attention: a request from a device, a stop),
+  each repetition counted as an instruction as before, the interpreter's arrivals at REP
+  INSW fall from 29.3 million to under 0.5 million and the three files take 1% fewer
+  cycles beside E168.**
+- **What changed since last time**: the count by opcode. Nothing in the JIT.
+- **Next move for each result**:
+  - As guessed → the records that make a block be left (a shift's, 20 million; BT's, 4
+    million): settled in generated code as ADD's are
+  - Arrivals fall and cycles do not → the words were cheap already; on to the records
+- **Cut-off**: one form; a test of a fault in the middle (the registers as the
+  repetitions before it left them); the gate; the race beside E168.
