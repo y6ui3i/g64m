@@ -11008,3 +11008,83 @@ host just woken), 3 to 7 after the first minutes.
 **Next.** The owner's proposal: look at how QEMU runs the same build (its blocks, its
 chaining, where its host time goes) and bring over what makes the difference; and the
 cache in four ways.
+
+----
+## E149: how QEMU runs the same build: its blocks and where its host time goes (2026-11-23)
+
+The owner's proposal after E148 (g64m twice behind QEMU on the build): look at QEMU doing
+the same work and bring over what makes the difference. E131 did this for one loop of a
+primitive (QEMU's host code read beside g64m's: g64m ahead there, registers in host
+registers against QEMU's loads and stores). The build is a different thing: many processes,
+much code run a few times, a kernel.
+
+- **Hypothesis**: **on the three files QEMU translates far fewer blocks than g64m's 4.4
+  million (under one million: it translates a block once, at its first run, and keeps it:
+  its cache is by the block's address, with no eighth arrival and no entry to lose), chains
+  nearly all of them, and spends under a tenth of its host time translating and under a
+  tenth looking blocks up; g64m by the same profile spends a third or more outside
+  generated code (the interpreter for cold code, the run loop, the look-up on each entry,
+  translating again).**
+- **What changed since last time**: a measurement of the other program. QEMU's monitor
+  (`info jit`) for its counts; the host's sampler (`sample`, 20 s in the middle of the
+  build) for where each program's time is, by function.
+- **Next move for each result**:
+  - QEMU translates once and keeps: g64m's eight arrivals and its lost entries are the
+    difference → translate at the first run (or the second), blocks kept apart from the
+    decode cache's entries so that none is lost
+  - QEMU's time is in generated code as g64m's is → the blocks' own code compared again
+    (the memory access's inline path, the flags), as E131 did
+  - QEMU's look-up for a jump through a register is a small table by address → the same
+    for g64m's far way
+- **Cut-off**: one run of each program with the counts and the sample.
+
+**Result: QEMU builds the three files in 65 s to g64m's 98 s, translates a tenth as many
+blocks and never throws one away; and its generated code, taken together, is faster than
+g64m's: 45 s against 62 s.** `tools/build_look.py`: the same three files, QEMU 11.1.3's
+monitor (`info jit`) at the end, and the host's sampler on each program for 20 s in the
+middle of the build (20,000 samples of the thread that does the work; leaves in generated
+code are what is left when the named functions are taken off).
+
+| QEMU's own counts (`info jit`) | |
+|---|---:|
+| Blocks translated (TB count) | 438,153 |
+| Flushes of its room (1 GB; 283 MB used) | 0 |
+| A block: guest bytes, host bytes | 18 (about five instructions), 309 |
+| Blocks with a chained jump | 54% (two jumps: 45%) |
+| Blocks invalidated | 21,822 |
+
+g64m on the same work: 4.3 million blocks translated, 13 flushes, 2.6 million blocks lost
+to the decode cache.
+
+| Where the host time goes | QEMU (65 s) | g64m (98 s) |
+|---|---:|---:|
+| Generated code | 69%: 45 s | 63%: 62 s |
+| Finding the next block (`helper_lookup_tb_ptr` and its hash table; g64m: `exec64`, the run loop) | 26%: 17 s | 12%: 12 s |
+| Interpreting (g64m only: `exec64_rest`, `exec64_miss`, `modrm`, `alu`, ...) | | 14%: 14 s |
+| Translating (g64m: with the flushes' clearing and the writes into the room) | 1.4%: 0.9 s | 7.5%: 7 s |
+| The memory's slow path (page walks, TLB fills) | 2.4%: 1.6 s | 3%: 3 s |
+| Other helpers (QEMU: the flags, the XMM helpers) | 1.1% | |
+
+- **The hypothesis** held on QEMU's blocks (under one million: 438 thousand, a tenth of
+  g64m's) and its translating (1.4%), and on g64m's share outside generated code (37%).
+  It was wrong about QEMU's look-up, which is a quarter of its time (guessed under a
+  tenth): QEMU leaves its generated code for every jump through a register or to another
+  page, and g64m's far way, which stays in generated code, is ahead there.
+- **What was not guessed: g64m's generated code is the larger part of the distance.**
+  17 s of the 33 s between the two programs are in generated code, where E131 found g64m
+  ahead on a loop of registers. The build is not that loop: it is loads and stores. In a
+  machine g64m's inline path for a load is about 17 host instructions (the TLB's tag, the
+  page crossing, the page's place in memory, each with its own way out, and two loads of
+  the tables' addresses) and for a store about 24 (the same and the look for remembered
+  instructions on the page); QEMU's is about seven (one comparison that covers the tag
+  and the crossing, and an addend). And the XMM registers are loaded and stored around
+  every SSE instruction.
+- **The rest of the distance** is what QEMU does not have: an interpreter and the way to
+  it (26 s in g64m, 17 s of look-up in QEMU), and translating again what was lost (7 s
+  against 1 s).
+
+**Next**, by size: (1) the memory access in a block made short: an addend in the TLB's
+entry, one comparison for the tag and the crossing, pages that are not plain memory and
+pages that hold remembered instructions kept out of the tables that the blocks read, the
+tables' addresses in host registers (E150); (2) blocks kept when the decode cache's entry
+goes, and translating earlier than the eighth arrival; (3) four ways.
