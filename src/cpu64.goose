@@ -119,7 +119,10 @@ var delivered = false;
 var machine = false;
 var cpl: u8 = 3;
 
-var mem: u8[MEM_SIZE];
+// (Sixteen bytes more than a program can name, since E163: an access of up to eight bytes
+// that begins anywhere under MEM_SIZE is inside the array, so the test of an address is
+// one comparison with MEM_SIZE, in the interpreter and in a block alike.)
+var mem: u8[MEM_SIZE + 16];
 
 // A 64-bit number as sixteen hex digits (format_int would write an address in the upper half
 // as a negative number).
@@ -182,14 +185,14 @@ inline fn sx(v: u64, w: u8) -> u64 {
 
 // The block itself: i is inside it.
 // One test of the whole access, so that the bytes are taken by one load (E108). The callers
-// keep a under MEM_SIZE - 8; the test here is what lets the compiler see it.
+// keep a under MEM_SIZE; the test here is what lets the compiler see it.
 // The shape matters to the compiler: where two widths both begin with the byte at i it
 // takes that byte out in front of the test of the width, and then neither becomes one
 // load. So eight bytes are read from the top byte down, and four are in a function of
 // their own. A store of eight bytes is four and four; the upper four the compiler makes
 // vector instructions of (about fifteen), which three ways of writing it did not change.
 fn mem_rd(a: u64, w: u8) -> u64 {
-    if a >= MEM_SIZE - 8 { return 0; }
+    if a >= MEM_SIZE { return 0; }
     let i = a as! i64;
     if w == 64 {
         let b7: u64 = mem[i + 7];
@@ -241,8 +244,8 @@ struct Entry {
 }
 var dc: Entry[DC_SIZE] = [Entry { tag: 0xFFFFFFFFFFFFFFFF, ins: Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
                           mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, kind: 0, disp: 0 } }; DC_SIZE];
-var dc_mark: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];      // 1: holds entries; 2: given up
-var dc_drops: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
+var dc_mark: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];      // 1: holds entries; 2: given up
+var dc_drops: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 
 // Beside each entry of the decode cache, for the JIT (jit64.goose). (Here, behind the
 // memory, so that they do not push the CPU's own state away from the front of the globals.)
@@ -260,10 +263,10 @@ var dc_wait: u32[DC_SIZE] = [0; DC_SIZE];
 // The privilege level a block was translated at (E133): a machine's loads and stores use
 // that level's tables of the TLB.
 var dc_cpl: u8[DC_SIZE] = [0; DC_SIZE];
-var jit_page: u8[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
+var jit_page: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 // How often a page that was given up has been run from since the last write to it.
 let DC_CALM = 4096;
-var dc_calm: u16[MEM_SIZE >> 12] = [0; MEM_SIZE >> 12];
+var dc_calm: u16[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 
 
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
@@ -312,7 +315,7 @@ inline fn dc_drop(page: i64) {
 }
 
 fn mem_wr(a: u64, w: u8, v: u64) {
-    if a >= MEM_SIZE - 8 { return; }
+    if a >= MEM_SIZE { return; }
     let i = a as! i64;
     // A store to a page that holds remembered instructions goes the long way, from an arm
     // that returns, so that the usual store has no call in it.
@@ -349,13 +352,13 @@ fn st32(i: i64, v: u32) {
 // the page tables (sys64.goose).
 fn rd(a: u64, w: u8) -> u64 {
     if machine { return sys_rd(a, w, 0); }
-    if a >= MEM_SIZE - 8 { stop64("a read outside memory, at", a); }
+    if a >= MEM_SIZE { stop64("a read outside memory, at", a); }
     return mem_rd(a, w);
 }
 
 fn wr(a: u64, w: u8, v: u64) {
     if machine { sys_wr(a, w, v, 0); return; }
-    if a >= MEM_SIZE - 8 { stop64("a write outside memory, at", a); }
+    if a >= MEM_SIZE { stop64("a write outside memory, at", a); }
     mem_wr(a, w, v);
 }
 

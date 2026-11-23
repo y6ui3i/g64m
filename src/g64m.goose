@@ -469,6 +469,7 @@ fn main() {
         else if a[i] == "--jit" { jit_on = true; }
         else if a[i] == "--jit-check" { jit_on = true; jit_check = true; }
         else if a[i] == "--jit-stats" { jit_stats = true; }
+        else if a[i] == "--jit-dump" && i + 1 < a.len { i++; jit_on = true; jit_dump_arg = i; }
         else if a[i] == "--jit-hot" && i + 1 < a.len { i++; let n, ok = parse_int(a[i]); guard ok && n >= 1 && n <= 200 else { write_stderr("g64m: --jit-hot needs a number from 1 to 200\n"); exit(2); } J_HOT = n as! u8; }
         else if a[i] == "--jit-why" { jit_on = true; jit_stats = true; jit_why = true; }
         else if a[i] == "--jit-time" { jit_on = true; jit_stats = true; jit_time = true; }
@@ -635,6 +636,9 @@ fn main() {
             attn = false;
             if jit_left != 0 { jit_tick(); }
         }
+    }
+    if jit_dump_arg != 0 {
+        if !write_file(a[jit_dump_arg], jit_dump()[..]) { write_stderr("g64m: cannot write the generated code\n"); }
     }
     if jit_stats {
         var msg: u8[>..] = [];

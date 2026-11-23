@@ -54,6 +54,7 @@ extern fn jit_call4(enter: i64, a: i64, b: i64, c: i64, d: i64) -> i64;
 
 var jit_on = false;
 var jit_check = false;       // --jit-check: every block is run both ways and compared
+var jit_dump_arg = 0;        // --jit-dump FILE: which argument names the file, or 0
 var jit_stats = false;       // --jit-stats: what the JIT did, on standard error at the end
 var jit_hold = false;        // blocks are not entered (the check's second way)
 var jit_no: u64 = 0;         // --jit-off: a bit for each group of kinds not to translate
@@ -228,6 +229,48 @@ fn a_imm(rd: u32, v: u64) {
         if part != 0 { e(0xF2800000 | (hw as! u32) << 21 | part << 5 | rd); }
     }
 }
+// One run of ones in x, which is not zero: where it begins and how long it is; a length
+// of 0 if the ones are not one run.
+fn a_run(x: u64) -> u64, u64 {
+    var tz: u64 = 0;
+    while (x >> tz) & 1 == 0 { tz += 1; }
+    var n: u64 = 0;
+    while tz + n < 64 && (x >> (tz + n)) & 1 == 1 { n += 1; }
+    if tz + n < 64 && (x >> (tz + n)) != 0 { return 0, 0; }
+    return tz, n;
+}
+
+// The constant v as the host's AND, ORR and EOR take one (E163): N, immr and imms as they
+// stand at bit 10 of the instruction, or 0xFFFFFFFF if v is not one the host can encode
+// (a run of ones, turned round, repeated at 2, 4, 8, 16, 32 or 64 bits). For a 32-bit
+// operation only v's low half counts.
+fn a_logimm(v0: u64, sf: u32) -> u32 {
+    var v = v0;
+    if sf == 0 { v = v & 0xFFFFFFFF; v |= v << 32; }
+    if v == 0 || v == 0xFFFFFFFFFFFFFFFF { return 0xFFFFFFFF; }
+    var size: u64 = 64;
+    while size > 2 {
+        let half = size >> 1;
+        let hm: u64 = ((1 as u64) << half) - 1;
+        if (v & hm) != ((v >> half) & hm) { break; }
+        size = half;
+    }
+    let mask: u64 = if size == 64 { 0xFFFFFFFFFFFFFFFF } else { ((1 as u64) << size) - 1 };
+    let elt = v & mask;
+    var start, ones = a_run(elt);
+    if ones == 0 {
+        // The run goes round the end: the zeros are one run.
+        let zs, zn = a_run(~elt & mask);
+        if zn == 0 { return 0xFFFFFFFF; }
+        start = zs + zn;
+        ones = size - zn;
+    }
+    let immr = (size - start) & (size - 1);
+    let nimms = ((~(size - 1) << 1) | (ones - 1)) & 0x7F;
+    let n = ((nimms >> 6) & 1) ^ 1;
+    return (n << 12 | immr << 6 | (nimms & 0x3F)) as! u32;
+}
+
 // which: 4 and 6 left, 5 right, 7 right with the sign; s from 1 to the width less one.
 fn a_shifti(which: u8, sf: u32, rd: u32, rn: u32, s: u32) {
     let top: u32 = if sf == 1 { 63 } else { 31 };
@@ -749,6 +792,21 @@ fn j_alu_i(k: u8, dst: u32, a: u32, v: u64, tmp: u32) {
         j_hf = if k == 0 { HF_ADD } else { HF_SUB };
         return;
     }
+    if (k == 1 || k == 4 || k == 6) && jit_no >> 34 & 1 == 0 {
+        // OR, AND and XOR by a constant the host takes as one (E163).
+        let sf: u32 = if je.osz == 64 { 1 } else { 0 };
+        let c = a_logimm(v, sf);
+        if c != 0xFFFFFFFF {
+            j_rec_alu((k as u32) + 1, je.osz, dst, a, 255, v);
+            if k == 4 { e(0x72000000 | sf << 31 | c << 10 | a << 5 | dst); j_hf = HF_LOGIC; }       // ands
+            else {
+                e((if k == 1 { 0x32000000 } else { 0x52000000 }) | sf << 31 | c << 10 | a << 5 | dst);   // orr, eor
+                if j_nohost { j_hf = 0; }
+                else { a_rrr(A_ANDS, sf, ZR, dst, dst); j_hf = HF_LOGIC; }
+            }
+            return;
+        }
+    }
     a_imm(tmp, v);
     j_alu(k, false, dst, a, tmp);
 }
@@ -1119,7 +1177,10 @@ fn j_regime() -> u8 {
 fn j_dead_past_jump(q: u64, page_end: u64, cnt: u64) -> bool {
     if jit_no >> 61 & 1 != 0 || jit_no >> 59 & 1 != 0 { return false; }
     let hf = j_regime();
-    if hf == 0 || cnt + 2 > J_MAX || so_n + 12 > SO_MAX || q >= page_end { return false; }
+    // (Sixteen ways out left, not twelve: the instruction being translated may add some
+    // before the jump is asked whether it has twelve, and a jump refused then would be
+    // interpreted on a record that was left out. E163.)
+    if hf == 0 || cnt + 2 > J_MAX || so_n + 16 > SO_MAX || q >= page_end { return false; }
     let keep = je;
     let keep_k = jk;
     let keep_at = j_at;
@@ -1143,6 +1204,34 @@ fn j_dead_past_jump(q: u64, page_end: u64, cnt: u64) -> bool {
     jk = keep_k;
     j_at = keep_at;
     return ok && j_flags_dead(fall, page_end) && j_flags_dead(to, page_end);
+}
+
+// The same behind a CMOVcc of registers or a SETcc of a register (E163): the instruction
+// behind the one being translated is one, the host's flags serve its condition, it is
+// one this translator takes (so that the interpreter never meets it with the record left
+// out), and nothing reads the flags behind it before they are set again.
+fn j_dead_past_use(q: u64, page_end: u64, cnt: u64) -> bool {
+    if jit_no >> 33 & 1 != 0 { return false; }
+    let hf = j_regime();
+    if hf == 0 || cnt + 2 > J_MAX || so_n + 16 > SO_MAX || q >= page_end { return false; }
+    let keep = je;
+    let keep_k = jk;
+    let keep_at = j_at;
+    var ok = false;
+    var after: u64 = 0;
+    if j_entry(q) {
+        let k = jk;
+        let len = j_len();
+        if k >= K_CMOV && k < K_SETCC + 16 && len != 0 && len <= page_end - q && !je.asz32 && !je.p66 && je.rep == 0
+            && je.mod == 3 && (k < K_SETCC || j_byte_ok(je.rm)) && j_cond_of(hf, k & 15) != C_NONE {
+            ok = true;
+            after = q + len;
+        }
+    }
+    je = keep;
+    jk = keep_k;
+    j_at = keep_at;
+    return ok && j_flags_dead(after, page_end);
 }
 
 // ---- Memory, for a program without a kernel ----
@@ -1216,11 +1305,20 @@ fn j_addr() {
 }
 
 // The operand's offset, which is what LEA gives: no segment's base.
-fn j_lea() {
-    if je.base == 17 { a_add_const(S1, RIPB, j_off + j_ilen + je.disp); }
-    else if je.base < 16 { a_add_const(S1, hg(je.base), je.disp); }
-    else { a_imm(S1, je.disp); }
-    if je.index < 16 { e(0x8B000000 | hg(je.index) << 16 | (je.scale as u32) << 10 | S1 << 5 | S1); }
+fn j_lea() { j_lea_into(S1); }
+
+// The same into host register t, which may be the base's but not the index's. (An index
+// alone is a shift, E163.)
+fn j_lea_into(t: u32) {
+    if je.base == 17 { a_add_const(t, RIPB, j_off + j_ilen + je.disp); }
+    else if je.base < 16 { a_add_const(t, hg(je.base), je.disp); }
+    else if je.index < 16 && je.disp == 0 && jit_no >> 32 & 1 == 0 {
+        if je.scale == 0 { a_mov(1, t, hg(je.index)); }
+        else { a_shifti(4, 1, t, hg(je.index), je.scale); }
+        return;
+    }
+    else { a_imm(t, je.disp); }
+    if je.index < 16 { e(0x8B000000 | hg(je.index) << 16 | (je.scale as u32) << 10 | t << 5 | t); }
 }
 
 // The checks on the address in S1 (rd and wr, cpu64.goose): eight bytes from it are inside
@@ -1257,27 +1355,54 @@ fn j_chk_n(write: bool, n: u32) {
         e(0x91400000 | 6 << 10 | S3 << 5 | S3);              // add x3, x3, #6, lsl #12: TLB_ADD on
         e(0xF8607800 | S3 << 16 | MARK << 5 | 30);
         a_rrr(A_ADD, 1, S1, S1, 30);
-    } else {
-        a_addi(0x11, 1, S2, S1, n);
-        a_rrr(A_ORR, 1, S2, S2, S1);
-        a_shifti(5, 1, S2, S2, 28);
-        j_leave_if();
-        j_chk_mark(write, n);
-    }
+    } else { j_chk_at(S1, write, n); }
 }
 
-// For a store to the physical address in S1: neither page it may touch holds remembered
-// instructions.
-fn j_chk_mark(write: bool, n: u32) {
+// The same for a program without a kernel, of the address in host register ar. Up to
+// eight bytes: the address is under MEM_SIZE, one shift (E163; rd and wr test the same,
+// and the array has sixteen bytes more). Sixteen: both halves are, as the interpreter's
+// two accesses want it.
+fn j_chk_at(ar: u32, write: bool, n: u32) {
+    if n <= 8 && jit_no >> 32 & 1 == 0 { a_shifti(5, 1, S2, ar, 28); }
+    else {
+        a_addi(0x11, 1, S2, ar, n);
+        a_rrr(A_ORR, 1, S2, S2, ar);
+        a_shifti(5, 1, S2, S2, 28);
+    }
+    j_leave_if();
     if write {
-        a_shifti(5, 1, S2, S1, 12);
+        a_shifti(5, 1, S2, ar, 12);
         e(0x38606800 | S2 << 16 | MARK << 5 | S2);           // ldrb w2, [x28, x2]
-        a_addi(0x11, 1, S3, S1, n - 1);
+        a_addi(0x11, 1, S3, ar, n - 1);
         a_shifti(5, 1, S3, S3, 12);
         e(0x38606800 | S3 << 16 | MARK << 5 | S3);
         a_rrr(A_ORR, 0, S2, S2, S3);
         j_leave_if();
     }
+}
+
+// For the plain moves (E163): the host register the operand's address is in, which is the
+// guest's own base register when the operand is that register and nothing more (a program
+// without a kernel, and not under --jit-check, whose log of stores wants S1); with the
+// checks made on it. A load or a store through it follows.
+fn j_ea(write: bool) -> u32 {
+    if !machine && !jit_check && je.sg == 0 && je.base < 16 && je.index >= 16 && je.disp == 0 && jit_no >> 32 & 1 == 0 {
+        let ar = hg(je.base);
+        j_chk_at(ar, write, 8);
+        return ar;
+    }
+    j_addr();
+    j_chk(write);
+    return S1;
+}
+fn j_load_at(ar: u32, n: u8, rt: u32) {
+    let op: u32 = if n == 64 { 0xF8606800 } else if n == 32 { 0xB8606800 } else if n == 16 { 0x78606800 } else { 0x38606800 };
+    e(op | ar << 16 | MEMR << 5 | rt);
+}
+fn j_store_at(ar: u32, n: u8, rt: u32) {
+    if ar == S1 { j_store(n, rt); return; }
+    let op: u32 = if n == 64 { 0xF8206800 } else if n == 32 { 0xB8206800 } else if n == 16 { 0x78206800 } else { 0x38206800 };
+    e(op | ar << 16 | MEMR << 5 | rt);
 }
 
 // A load of n bits at the guest address in S1 into rt, zero-extended; a store of rt's low
@@ -1826,7 +1951,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         j_at = keep_at;
     }
     j_nohost = jit_no >> 60 & 1 == 0 && j_flags_dead(q + len, q + room);
-    j_dead = j_nohost || (jit_no >> 60 & 1 == 0 && j_dead_past_jump(q + len, q + room, cnt));
+    j_dead = j_nohost || (jit_no >> 60 & 1 == 0 && (j_dead_past_jump(q + len, q + room, cnt) || j_dead_past_use(q + len, q + room, cnt)));
     let op = je.op;
     let k = jk;
     if k == 0 {
@@ -2034,8 +2159,16 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
         K_TESTA => {
             if narrow { j_alu_n(4, true, hg(0), ZR, if wide { mem_rd(q + len - 2, 16) } else { mem_rd(q + len - 1, 8) }, nb); }
             else {
-                a_imm(S1, j_const(q + len - 4, 4));
-                j_alu(4, true, 0, hg(0), S1);
+                let v = j_const(q + len - 4, 4);
+                let c = if jit_no >> 34 & 1 == 0 { a_logimm(v, sf) } else { 0xFFFFFFFF };
+                if c != 0xFFFFFFFF {
+                    j_rec_alu(5, je.osz, ZR, hg(0), 255, v);
+                    e(0x72000000 | sf << 31 | c << 10 | hg(0) << 5 | ZR);        // tst by the constant
+                    j_hf = HF_LOGIC;
+                } else {
+                    a_imm(S1, v);
+                    j_alu(4, true, 0, hg(0), S1);
+                }
             }
         },
         K_MOV => {
@@ -2044,8 +2177,8 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 if !wide || je.osz != 16 || !(regs || inmem) { return 0; }
                 if regs {
                     if op & 2 == 0 { e(0xB3403C00 | r << 5 | m); } else { e(0xB3403C00 | m << 5 | r); }      // bfi #0, #16
-                } else if op & 2 == 0 { j_addr(); j_chk(true); j_store(16, r); }
-                else { j_addr(); j_chk(false); j_load(16, S3); e(0xB3403C00 | S3 << 5 | r); }
+                } else if op & 2 == 0 { let ar = j_ea(true); j_store_at(ar, 16, r); }
+                else { let ar = j_ea(false); j_load_at(ar, 16, S3); e(0xB3403C00 | S3 << 5 | r); }
                 return len;
             }
             if regs {
@@ -2053,29 +2186,38 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 if op & 2 == 0 { a_mov(sf, m, r); } else { a_mov(sf, r, m); }
             } else {
                 if !inmem || (!wide && !j_byte_ok(je.reg)) { return 0; }
-                if op & 2 == 0 { j_addr(); j_chk(true); j_store(wb, r); }
+                if op & 2 == 0 { let ar = j_ea(true); j_store_at(ar, wb, r); }
                 else {
-                    j_addr(); j_chk(false);
-                    if wide { j_load(wb, r); }
-                    else { j_load(8, S3); e(0xB3401C00 | S3 << 5 | r); }      // bfi xr, x3, #0, #8
+                    let ar = j_ea(false);
+                    if wide { j_load_at(ar, wb, r); }
+                    else { j_load_at(ar, 8, S3); e(0xB3401C00 | S3 << 5 | r); }      // bfi xr, x3, #0, #8
                 }
             }
         },
         K_LEA => {
             if regs { return 0; }
-            j_lea();
-            a_mov(sf, r, S1);
+            // Into its register (E163), unless that is the index, which is read last.
+            if sf == 0 && je.base >= 16 && je.base != 17 && je.index < 16 && je.disp == 0 && jit_no >> 32 & 1 == 0 {
+                // An index alone, to 32 bits: one shift.
+                if je.scale == 0 { a_mov(0, r, hg(je.index)); }
+                else { a_shifti(4, 0, r, hg(je.index), je.scale); }
+                return len;
+            }
+            let t = if (je.index < 16 && hg(je.index) == r) || jit_no >> 32 & 1 != 0 { S1 } else { r };
+            j_lea_into(t);
+            if t != r { a_mov(sf, r, t); }
+            else if sf == 0 { a_mov(0, r, r); }
         },
         K_MOVZX8 => {
             if regs {
                 if j_byte_ok(je.rm) { e(0x12001C00 | m << 5 | r); }          // and wr, wm, #0xFF
                 else { e(0x53083C00 | hg(je.rm - 4) << 5 | r); }             // AH, CH, DH, BH: ubfx wr, w, #8, #8
             }
-            else { if !inmem { return 0; } j_addr(); j_chk(false); j_load(8, r); }
+            else { if !inmem { return 0; } let ar = j_ea(false); j_load_at(ar, 8, r); }
         },
         K_MOVZX16 => {
             if regs { e(0x12003C00 | m << 5 | r); }          // and wr, wm, #0xFFFF
-            else { if !inmem { return 0; } j_addr(); j_chk(false); j_load(16, r); }
+            else { if !inmem { return 0; } let ar = j_ea(false); j_load_at(ar, 16, r); }
         },
         K_MOVSX8 => {
             var from = m;
@@ -2161,7 +2303,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 if !j_nok(je.rm, nb) { return 0; }
                 let n = if op == 0xD0 || op == 0xD1 { 1 } else { mem_rd(q + len - 1, 8) & 0x1F };
                 if n == 0 { return 0; }
-                a_imm(S1, n);
+                if !j_dead { a_imm(S1, n); }             // (the count, for the record only: E163)
                 j_rec_w(0x20 | (which as u32), nb, m, S1);
                 if which == 7 { e((if nb == 8 { 0x13001C00 } else { 0x13003C00 }) | m << 5 | S4); }   // sxtb, sxth
                 else { e((if nb == 8 { 0x12001C00 } else { 0x12003C00 }) | m << 5 | S4); }           // and #0xFF, #0xFFFF
@@ -2190,7 +2332,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             } else {
                 let n = if op == 0xD1 { 1 } else { mem_rd(q + len - 1, 8) & top };
                 if n == 0 { return 0; }
-                a_imm(S1, n);
+                if !j_dead { a_imm(S1, n); }
                 j_rec(0x20 | (which as u32), m, S1);
                 a_shifti(which, sf, m, m, n as! u32);
             }
@@ -2575,6 +2717,19 @@ fn jit_translate_in(ph: u64) {
         if len == 0 || jk == K_RET || jk == K_JMP8 || jk == K_JMP32 || (jk == K_GRP5 && je.reg & 7 == 4) { return; }
         q += len;
     }
+}
+
+// All the code generated so far, for --jit-dump: to be read with a disassembler
+// (objdump -D -b binary -m aarch64). The way in and the way out come first.
+fn jit_dump() -> u8[>..] {
+    var out: u8[>..] = [];
+    var at = 0;
+    while at < j_used {
+        let v = jit_peek64(j_mem + at) as! u64;
+        for i in 8 { if at + i < j_used { out.push((v >> ((i * 8) as! u64)) as! u8); } }
+        at += 8;
+    }
+    return out;
 }
 
 // The interpreter is about to run the instruction in the decode cache's entry slot, at
