@@ -479,6 +479,12 @@ fn main() {
             guard ok else { write_stderr("g64m: --jit-off needs a number\n"); exit(2); }
             jit_no = n as! u64;
         }
+        else if a[i] == "--jit-off2" && i + 1 < a.len {
+            i++;
+            let n, ok = parse_int(a[i]);
+            guard ok else { write_stderr("g64m: --jit-off2 needs a number\n"); exit(2); }
+            jit_no2 = n as! u64;
+        }
         else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }
         else if a[i] == "--keep" { disk_scratch = 0; }
@@ -650,6 +656,9 @@ fn main() {
             format(m3, "g64m: jit-why: on another page: not in the TLB ", jw2[0], ", not in the cache ", jw2[1], ", cold ", jw2[2], ", hot and no block ", jw2[3], ", inside a block ", jw2[4], ", a block with no time left ", jw2[5], ", a block ", jw2[6], " (of another level ", jw2[7], ")\n");
             format(m3, "g64m: jit-why: a block that reads RFLAGS met with a record waiting: ", jw_rec[0], " on the page, ", jw_rec[1], " on another\n");
             format(m3, "g64m: jit-why: interpreted: not in the cache ", ji[0], ", a block's first instruction ", ji[1], ", inside a block ", ji[2], ", cold ", ji[3], ", hot and refused ", ji[4], "\n");
+            format(m3, "g64m: jit-why: a block not run: no time left ", jq[0], ", of another level ", jq[1], ", left at its first instruction ", jq[2], ", turned away before it ", jq[3], " (of the last two, blocks that read RFLAGS ", jq[4], ")\n");
+            format(m3, "g64m: jit-why: the table of blocks asked ", jx[27] as! i64, "; the far way taken ", jx[31] as! i64, ", found a block ", jx[28] as! i64, "; pages with blocks written to ", jq[5], ", the TLB emptied ", tlb_flushes as! i64, "\n");
+            for i in 64 { if jq_k[i] != 0 { format(m3, "g64m: jit-why: not run, first of kind ", i, " ", jq_k[i], "\n"); } }
             for i in 64 { if ji_kind[i] != 0 { format(m3, "g64m: jit-why: interpreted kind ", i, " ", ji_kind[i], "\n"); } }
             for i in 257 { if ji_0f[i] != 0 { format(m3, "g64m: jit-why: interpreted 0F ", i, " ", ji_0f[i], "\n"); } }
             for i in 256 { if jw_rk[i] != 0 { format(m3, "g64m: jit-why: record ", i, " ", jw_rk[i], "\n"); } }

@@ -308,7 +308,7 @@ inline fn dc_drop(page: i64) {
     // entries dropped just above: the page's blocks can be reached from nowhere now, and
     // the others stand (E134).
     if jit_page[page] != 0 {
-        if machine { jit_page[page] = 0; } else { jit_flush(); }
+        if machine { jit_page[page] = 0; jt_clear(); jq[5] += 1; } else { jit_flush(); }
     }
     if dc_drops[page] < 255 { dc_drops[page] += 1; }
     dc_mark[page] = if dc_drops[page] >= DC_GIVE_UP { 2 } else { 0 };

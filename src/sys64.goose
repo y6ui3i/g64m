@@ -202,6 +202,7 @@ var tlb_flushes: u64 = 0;        // how often the TLB was emptied
 fn tlb_flush() {
     tlb_flushes += 1;
     code_page = TLB_EMPTY;       // the code page is a translation too (E105)
+    jt_clear();                  // and so is every pair of the blocks' table (E165)
     code_end = 0;
     for i in 6 * TLB_SIZE { tlb_tag[i] = TLB_EMPTY; }
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
@@ -213,6 +214,7 @@ fn tlb_flush() {
 // with entries of 1 GB pages about, everything. More than asked for is always allowed.
 fn tlb_forget(a: u64) {
     code_page = TLB_EMPTY;
+    jt_clear();
     code_end = 0;
     if tlb_has_1g { tlb_flush(); return; }
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
