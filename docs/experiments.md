@@ -11281,3 +11281,20 @@ binary size at each (319,912 bytes):
 
 **Next.** The owner's choice of the size; then the gate at that size, and the whole
 build against QEMU.
+
+**The owner's choice (2026-11-23): 2^20 entries**, after asking what it costs (39 MB more
+resident and 10 ms more at the start for the smallest program: `p_if` fifty times under
+`--jit`, 3.95 s to 4.47 s, 553 MB to 592 MB) and what many containers would make of it
+(what one emulator takes before it runs anything is multiplied by the processes; as it
+stands forty do not fit this host). The size is the machine's; what the Docker backend's
+tables are to be instead is in `docs/roadmap.md` under M11: tables that cost what is used,
+the blocks in a table of their own, translated code kept for the next process.
+
+At 2^20, raced beside 2^18 at the same time so that both had the same load (it was 8 to
+11): **72.8 s of CPU against 96.6 s**, `make-rc=0` in both. A run alone an hour before,
+with the host as busy, took 106.9 s of CPU for the same counts (1.22 million blocks, 2
+flushes): a time taken alone on this host says little, and from here the old and the new
+are raced together.
+
+All suites pass at 2^20: `difftest64` 32, `prim64` 23, `systest64` 17 plain, with `--jit`
+and with `--jit-check` (106 `ok`).

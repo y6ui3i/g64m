@@ -230,7 +230,7 @@ fn ld32(i: i64) -> u64 {
 // good while that page is not written to: a page that holds entries is marked, and a write
 // to a marked page drops its entries. A page that is dropped again and again (code and data
 // that is written on one page) is given up: nothing is remembered from it.
-let DC_BITS = 18;
+let DC_BITS = 20;
 let DC_SIZE = 1 << DC_BITS;
 let DC_NONE: u64 = 0xFFFFFFFFFFFFFFFF;
 let DC_GIVE_UP = 32;             // drops of one page after which it is not remembered from
