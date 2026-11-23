@@ -204,6 +204,9 @@ them, in integer code), repetitions of string instructions (about 1%), and BT.
   goes the long way (`mem_wr_marked`, E107) and drops them; a generation number for the
   page, moved on there, makes its blocks stale.
 - **The C**: `src/jit.c` (the mapping, the copy, the call) is used as it is.
+- **Reading the generated code**: `--jit-dump FILE` writes all of it at the end of a
+  run, and `python3 -I tools/jit_dis.py FILE` disassembles it (E163). A block begins
+  with `cmp x0, #n`, its count of instructions.
 - **Finding a wrong translation** by `--jit-off` with a bit for each group of kinds, and
   the count of instructions run in blocks printed, so that a test that runs none is seen.
 

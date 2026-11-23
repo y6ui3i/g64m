@@ -11963,3 +11963,116 @@ behind: `p_bitfield` 0.78.
 **Next.** The card's move for "over 60 G" is the register stack's moves as the block's own
 code; for "past QEMU" it is `p_bitfield`. It is neither clearly: `p_bitfield` first, the
 one that is behind, and the stack's moves when `p_ldbl` is to be more than level.
+
+## E163: what the generated code wastes, read off `p_bitfield`'s loop (2026-11-23)
+
+`p_bitfield` is the one primitive behind QEMU (0.78). All of it is in blocks: its loop is
+one block of 44 instructions that retires 104 host instructions a round, 2.4 for each, at
+0.33 cycles for a guest instruction; nothing is left to move into a block. `--jit-dump`
+(new, with `tools/jit_dis.py`) shows the block. Of the 104:
+
+- 10 load a shift's count into a register for the record, where the record is not made
+  (the flags are dead) and the shift takes the count as a constant;
+- 6 load a constant for AND that the host's AND takes as a constant itself, and 2 for TEST;
+- 3 make the record of a TEST whose flags only the CMOVcc behind it reads, from the host's
+  flags, before the next instruction sets them all;
+- 2 are an LEA of an index alone done as a constant, an add and a copy.
+
+- **Hypothesis**: **without those 23, the loop retires 81 host instructions a round or
+  fewer (1.85 for each), and `p_bitfield` goes from 0.78 of QEMU to level with it (0.95 or
+  more); the three files' build retires at least 1% fewer host instructions, since none
+  of the four is special to bit fields.**
+- **What changed since last time**: the count's load only where the record is made; AND,
+  OR, XOR and TEST by a constant the host can encode take it encoded (`a_logimm`: the
+  bitmask immediates, checked against the assembler for 1,319 constants before it was
+  written here); no record where the flags are dead behind a CMOVcc of registers or a
+  SETcc that the host's flags serve (as it already is behind a conditional jump); LEA
+  into its register, an index alone as a shift.
+- **Next move for each result**:
+  - Level or past → the milestone's count: every measured workload at QEMU or past it;
+    then what the owner chooses (the Docker backend, or the three that are only level)
+  - 81 or fewer and still behind → the memory operand: five instructions of bounds check
+    for each load, twelve for a store
+  - Over 81 → the dump again
+- **Cut-off**: one form; the gate; `p_bitfield` and all the primitives timed once beside
+  QEMU; the three files' build counted beside the old build.
+
+**Result: `p_bitfield`'s loop retires 70 host instructions a round where it retired 104
+(1.61 for a guest instruction, from 2.39), and it is level with QEMU: 0.94 by the
+container's clock, 1.00 by a finer one, from 0.78. No primitive is behind QEMU now.**
+
+| `p_bitfield`, thirty rounds | E162 | E163 |
+|---|---:|---:|
+| Host instructions, less the start | 4.85 G | 3.28 G |
+| Host cycles, less the start | 0.65 G | 0.53 G |
+| Seconds, less the start (the best of seven) | 0.206 | 0.169 |
+| QEMU's user mode (ten runs' mean, twice) | | 0.165, 0.171 |
+
+The three files' build, old and new raced at the same time: 455.23 G host instructions
+to 451.27 G (0.9% fewer), `make-rc=0` both.
+
+All the primitives again (`tools/prim64_long.sh`, seconds less the start; the container's
+clock is read to a hundredth, three runs):
+
+| | QEMU | g64m `--jit` | g64m / QEMU, by speed | In E158 |
+|---|---:|---:|---:|---:|
+| `p_dbl_conv` | 3.490 | 0.256 | 13.6 | 9.03 |
+| `p_muldiv` | 0.653 | 0.140 | 4.66 | 4.83 |
+| `p_dbl_cmp` | 1.213 | 0.299 | 4.06 | 3.68 |
+| `p_recursion` | 0.250 | 0.097 | 2.58 | 2.39 |
+| `p_funcptr` | 1.360 | 0.606 | 2.24 | 2.34 |
+| `p_fill` | 0.480 | 0.219 | 2.19 | 2.14 |
+| `p_float` | 1.217 | 0.559 | 2.18 | 1.91 |
+| `p_dbl_arith` | 1.223 | 0.577 | 2.12 | 1.62 |
+| `p_loop` | 0.117 | 0.056 | 2.09 | 2.22 |
+| `p_switch` | 0.927 | 0.541 | 1.71 | 1.68 |
+| `p_index` | 0.260 | 0.171 | 1.52 | 1.26 |
+| `p_bignum` | 0.397 | 0.272 | 1.46 | 1.00 |
+| `p_pointer` | 0.287 | 0.201 | 1.43 | 1.27 |
+| `p_rotate` | 0.677 | 0.472 | 1.43 | 1.37 |
+| `p_sha` | 0.063 | 0.045 | 1.40 | 1.63 |
+| `p_simd` | 0.317 | 0.235 | 1.35 | 0.06 |
+| `p_bytes` | 0.207 | 0.167 | 1.24 | 1.11 |
+| `p_shift` | 0.133 | 0.109 | 1.22 | 1.36 |
+| `p_if` | 0.283 | 0.262 | 1.08 | 1.20 |
+| `p_pixel` | 0.080 | 0.075 | 1.07 | 0.96 |
+| `p_ldbl` | 3.703 | 3.511 | 1.05 | 0.33 |
+| `p_ternary` | 0.113 | 0.114 | 0.99 | 1.11 |
+| `p_bitfield` | 0.167 | 0.178 | 0.94 | 0.78 |
+
+- **The hypothesis**: the loop at 81 or fewer held with room (70: the memory operand was
+  added to the form when 81 turned out to be 0.88 of QEMU); "level, 0.95 or more" is 0.94
+  by one clock and 1.00 by the other, which is what level means at this size; the build's
+  1% was 0.9%.
+- **What was done** (`--jit-off`'s bits 32 to 34 leave them out):
+  - a shift's count is loaded only where the record that wants it is made;
+  - `a_logimm`: AND, OR, XOR and TEST by a constant the host encodes take it encoded;
+  - `j_dead_past_use`: no record where only the CMOVcc of registers or the SETcc behind
+    reads the flags;
+  - LEA into its own register; an index alone as a shift;
+  - `j_chk_at`: an address of up to eight bytes is tested by one shift, where it was an
+    add, an OR and a shift. For that the limit is MEM_SIZE in the interpreter and the
+    block alike (it was MEM_SIZE - 8), and `mem` has sixteen bytes more;
+  - `j_ea`: a plain move through a register alone uses that register, with no copy.
+- **`--jit-dump FILE`** writes the generated code, and `tools/jit_dis.py` disassembles
+  it. Everything above was read off one block.
+- **A fault found on the way, not seen to happen**: `j_dead_past_jump` asked for twelve
+  ways out left before the instruction in hand had added its own, and the jump is refused
+  with fewer than twelve; a jump refused then would have been interpreted on a record
+  that was left out. Sixteen now.
+- **The test** `j_peep` (trace from hal, with a sum compared at its end so that a wrong
+  `--jit` run fails): two translators made wrong on purpose (the constant's rotation off
+  by one; the record always left out behind a CMOVcc) both fail it. The second passed the
+  first form of the test, in which the flags were read again only by a SETcc, which the
+  host's flags serve; a PUSHFQ behind the CMOVcc was added.
+- **The gate**: 109 ok and `make-rc=0` in 421 s.
+
+**The owner's first milestone, as it stands**: the build in the guest past QEMU by a
+quarter (E157), the boot by a quarter (E158), and of the 23 primitives 18 past QEMU by a
+fifth or more, three by five to eight percent (`p_if`, `p_pixel`, `p_ldbl`), two level
+(`p_ternary` 0.99, `p_bitfield` 0.94 to 1.00). None is behind by more than the clock
+tells.
+
+**Next.** The owner's to choose: the two that are level made clearly past (the memory
+operand again: twelve host instructions for a store, and the same register tested three
+times in one block), or the Docker backend (M11).
