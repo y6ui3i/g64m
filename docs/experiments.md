@@ -12173,3 +12173,44 @@ seven percent (`p_bitfield`, `p_ldbl`, `p_pixel`).
 pay: a loop that ends in `dec; jnz` (not one block); the x87's FLD, FXCH and FSTP as the
 block's own code; the build itself, which none of E163 and E164 moved by more than a
 percent.
+
+----
+
+## E165: the far way by a table of where blocks are, looked up by the address jumped to (2026-11-24)
+
+The milestone met, the build is still where the host's time is. The three files under the
+sampler (20 s in the middle, 14,018 samples; the host a MacBook Air, Apple M1): 61% in the
+blocks, **9.4% in the far way**, 25% in the interpreter and the way in and out, 3% in the
+translator. `--jit-why`, with two counts added:
+
+- the far way is taken **1,077 million times** in the three files (once for 22 guest
+  instructions) and finds a block 1,056 million times. In a machine every jump, call and
+  return that leaves its page goes through it, since a link never leaves a page (E133);
+- found at the first way of the set it is 29 host instructions with loads from six tables
+  (the TLB's tags and addends, the decode cache's entries, 32 MB of them, `dc_n`,
+  `dc_cpl`, `dc_code`), and it ends in one `br` for all of them at each privilege level;
+- pages with blocks are written to 865 times; the TLB is emptied 23,366 times.
+
+("A block's first instruction, interpreted: 195 million" in E151's count is the entries
+themselves, counted on the way to them: 9.7 million were turned away for the time left
+and 15.8 million left at their first instruction. The count is split from here on.)
+
+- **Hypothesis**: **with a table for each privilege level of 4,096 pairs (the linear
+  address jumped to, where its block's code is), looked up before the far way and filled
+  by it, nine in ten of the far way's arrivals are answered by the table in 9 host
+  instructions and one line of the cache; the three files' build retires 440 G or fewer
+  host instructions (458 G now) and takes 5% less CPU time beside the old build.**
+- **What changed since last time**: the two counts. The table; the exit calls a short
+  routine that leaves the block's address in a register and jumps there itself, so that
+  each exit has its own `br` for the host to learn. The table is emptied when the TLB is
+  (an address may mean another page), when a page with blocks is written to, and when
+  the blocks are forgotten. A block whose entry the decode cache gave up stays right
+  code for its page until the page is written.
+- **Next move for each result**:
+  - As guessed → the same table for a program without a kernel (RET and a jump through
+    an operand), then the next of the sample: the way in and out, the interpreter's share
+  - Fewer than nine in ten answered → the table's size and which bits choose the pair
+  - Instructions fall and the time does not → where the cycles are in the routine: the
+    sample again; the look-up in line at the exit
+- **Cut-off**: one form; the gate; the three files counted and timed beside the old build;
+  the count of what the table answered.
