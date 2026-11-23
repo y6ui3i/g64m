@@ -658,6 +658,7 @@ fn main() {
             format(m3, "g64m: jit-why: interpreted: not in the cache ", ji[0], ", a block's first instruction ", ji[1], ", inside a block ", ji[2], ", cold ", ji[3], ", hot and refused ", ji[4], "\n");
             format(m3, "g64m: jit-why: a block not run: no time left ", jq[0], ", of another level ", jq[1], ", left at its first instruction ", jq[2], ", turned away before it ", jq[3], " (of the last two, blocks that read RFLAGS ", jq[4], ")\n");
             format(m3, "g64m: jit-why: the table of blocks asked ", jx[27] as! i64, "; the far way taken ", jx[31] as! i64, ", found a block ", jx[28] as! i64, "; pages with blocks written to ", jq[5], ", the TLB emptied ", tlb_flushes as! i64, "\n");
+            format(m3, "g64m: jit-why: blocks ended at an instruction the decode cache does not hold ", jq[6], ", at one not translated ", jq[7], "; blocks given back to a new entry ", bt_back as! i64, ", lost from their own table ", bt_lost as! i64, "\n");
             for i in 64 { if jq_k[i] != 0 { format(m3, "g64m: jit-why: not run, first of kind ", i, " ", jq_k[i], "\n"); } }
             for i in 64 { if ji_kind[i] != 0 { format(m3, "g64m: jit-why: interpreted kind ", i, " ", ji_kind[i], "\n"); } }
             for i in 257 { if ji_0f[i] != 0 { format(m3, "g64m: jit-why: interpreted 0F ", i, " ", ji_0f[i], "\n"); } }

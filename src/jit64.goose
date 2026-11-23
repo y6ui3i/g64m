@@ -64,6 +64,67 @@ var j_keep = 0;              // how much of that is the way in and out
 var j_out_at = 0;
 var j_fark_at: i64[2] = [0; 2];      // the far way in a machine, for privilege levels 0 and 3; 0 if not built
 var j_far_at = 0;            // the far way: to the block at the address in x1, if there is one; 0 if not built
+// The blocks' own table (E166): every block by its first instruction's physical address,
+// in sets of four: where its code is, and its length, level and whether it reads RFLAGS
+// in memory. A block is entered through its first instruction's entry in the decode
+// cache, and that entry is given up when another instruction wants it; the block is
+// still right, and when its first instruction is next decoded the new entry gets the
+// block back from here (decode, cpu64.goose), where before the address was interpreted
+// eight times over and translated again. Emptied when the blocks are forgotten; a page
+// written to loses its own.
+let BT_BITS = 19;
+let BT_SIZE = 4 << BT_BITS;
+var bt_tag: u64[BT_SIZE] = [0xFFFFFFFFFFFFFFFF; BT_SIZE];
+var bt_code: u32[BT_SIZE] = [0; BT_SIZE];
+var bt_what: u32[BT_SIZE] = [0; BT_SIZE];        // the length, the level << 8, 1 << 16 if it reads RFLAGS
+var bt_back: u64 = 0;        // blocks given back to a new entry
+var bt_lost: u64 = 0;        // blocks that lost their place in this table to another
+
+inline fn bt_set(ph: u64) -> i64 { return (((ph ^ ph >> BT_BITS) & ((1 << BT_BITS) - 1)) as! i64) * 4; }
+
+// The place of the block that begins at ph, or -1.
+fn bt_find(ph: u64) -> i64 {
+    let s = bt_set(ph);
+    for k in 4 { if bt_tag[s + k] == ph { return s + k; } }
+    return -1;
+}
+
+fn bt_put(ph: u64, code: u32, n: u8, level: u8, needs: bool) {
+    let s = bt_set(ph);
+    var at = -1;
+    for k in 4 { if bt_tag[s + k] == ph { at = s + k; } }
+    if at < 0 { for k in 4 { if at < 0 && bt_tag[s + k] == 0xFFFFFFFFFFFFFFFF { at = s + k; } } }
+    if at < 0 { at = s + (code >> 2 & 3); bt_lost += 1; }
+    bt_tag[at] = ph;
+    bt_code[at] = code;
+    bt_what[at] = n | (level as u32) << 8 | (if needs { 0x10000 } else { 0 });
+}
+
+// The decode cache's entry `slot` has just been made for the instruction at the block's
+// first: the block is the entry's again.
+fn bt_attach(at: i64, slot: i64) {
+    let w = bt_what[at];
+    dc_code[slot] = bt_code[at];
+    dc_n[slot] = (w & 0xFF) as! u8;
+    dc_cpl[slot] = (w >> 8 & 0xFF) as! u8;
+    dc_needs[slot] = (w >> 16 & 1) as! u8;
+    dc_k0[slot] = dc[slot].ins.kind;
+    dc[slot].ins.kind = 0;
+    bt_back += 1;
+}
+
+fn bt_drop_page(page: i64) {
+    let base = (page << 12) as! u64;
+    for k in 4096 {
+        let at = bt_find(base + (k as! u64));
+        if at >= 0 { bt_tag[at] = 0xFFFFFFFFFFFFFFFF; }
+    }
+}
+
+fn bt_clear() {
+    for i in BT_SIZE { bt_tag[i] = 0xFFFFFFFFFFFFFFFF; }
+}
+
 // The table of where blocks are (E165): JT_SIZE pairs for each privilege level of a machine
 // (a program uses the first), the address jumped to and where its block's code is, chosen
 // by the address's low bits. An exit that would take the far way calls jt_at's routine,
@@ -2760,6 +2821,7 @@ fn jit_flush() {
         dc_cov[slot] = 0;
     }
     for i in MEM_SIZE >> 12 { jit_page[i] = 0; }
+    bt_clear();
     jt_clear();
     j_used = j_keep;
     j_flushes += 1;
@@ -2821,10 +2883,10 @@ fn jit_translate_in(ph: u64) {
         }
         var n = 0;
         while n < J_MAX {
-            if !j_entry(q) { break; }
+            if !j_entry(q) { if jit_why { jq[6] += 1; } break; }
             let qs = j_eslot;
             let len = j_one(q, q - head, page_end - q, n as! u64);
-            if len == 0 { break; }
+            if len == 0 { if jit_why { jq[7] += 1; } break; }
             cv_slot[n] = qs;
             q += len;
             n += 1;
@@ -2904,6 +2966,7 @@ fn jit_translate_in(ph: u64) {
             dc_n[head_slot] = n as! u8;
             dc_cpl[head_slot] = cpl;
             dc_needs[head_slot] = if j_needs { 1 } else { 0 };
+            if jit_no2 & 2 == 0 { bt_put(head, j_used as! u32, n as! u8, cpl, j_needs); }
             dc_k0[head_slot] = dc[head_slot].ins.kind;
             dc[head_slot].ins.kind = 0;
             j_used += jc.len;

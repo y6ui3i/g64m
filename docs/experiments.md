@@ -12314,3 +12314,64 @@ not translated.
   - Misses do not fall → what the 149 million are, by whether a block was ever there
   - Misses fall and the cycles do not → the sample again: the way in and out
 - **Cut-off**: one form; the gate; the three files raced beside E165 with the counts.
+
+**Result: a block that loses its entry comes back with its first instruction's next
+decoding. 374 thousand translations where there were 1.76 million, no flush, 5% fewer
+cycles beside E165; the instructions interpreted with no entry fell by an eighth, not by
+half.**
+
+| The three files | E165 | E166 |
+|---|---:|---:|
+| Blocks translated | 1.76 million (822 thousand standing) | 374,727 |
+| Code written, flushes | 252 MB, 1 | 113 MB, 0 |
+| Entries of a block's first instruction given up | 264,644 | 956,945, and 910,021 blocks given back |
+| Blocks that lost their place in their own table | | 483 |
+| Interpreted with no entry | 149.2 million | 129.8 million |
+| Blocks left for an address with no entry | 71.9 million | 63.4 million |
+| Blocks ended where the cache has no entry | 388,168 | 171,787 |
+| Cycles, two at once | 147.07 G | 141.15 G (−4.0%) |
+| Cycles, three at once (QEMU the third: 230.81 G) | 157.53 G | 149.67 G (−5.0%) |
+
+- **The hypothesis**: the code written (under 200 MB) and the cycles (4%) held; "the
+  instructions interpreted with no entry under 75 million" did not (130 million). They
+  were not the lost blocks' instructions for the most part. What they are is the next
+  count; a guess to be tried, not a finding: an instruction's count of arrivals is in its
+  entry and starts from nothing each time the entry is made again, so code run now and
+  then never comes to the eighth arrival.
+- **The form**: `bt_tag`, `bt_code`, `bt_what`, 2^19 sets of four (32 MB, touched as
+  used), filled where a block is made; `decode` asks it when it makes an entry, and the
+  instruction goes on as a block's first does. The table is emptied with the blocks, and
+  a page that is written to loses its own (a machine; a program forgets all its blocks
+  then, as before). `modrm` keeps a block's first instruction without a kind when it
+  remembers the operand: a block can now be at an entry whose operand is not remembered
+  yet. `--jit-off2 2` fills no table.
+- **The test** `y_evict` (taken on hal under KVM): four routines at physical addresses
+  that choose one set of the decode cache, so that the third run takes a block's entry;
+  the block's routine run again; its page written while it has no entry; a block made
+  at level 0 with no entry, run at level 3. Four translators made wrong on purpose fail
+  it (a written page keeps its blocks in the table; a block comes back as if made at
+  this level; the neighbour's code comes back; any block of the set taken for the one
+  asked), and the first of them fails `y_table` and `y_jit` too.
+- **The gate**: 116 ok and `make-rc=0` in 493 s.
+
+**Where this stands, each alone on its host, from the emulator's start to the three files
+built** (`tools/build_race.py`, `RACE_SHORT=1`; the guest shown a CPU that needs no page
+table isolation in all three, read in its log):
+
+| | Seconds | CPU seconds | Cycles |
+|---|---:|---:|---:|
+| KVM on hal (i7-3770K; `RACE_ACCEL=kvm RACE_CPU=qemu64,vendor=AuthenticAMD`), three runs | 24.9 to 25.5 | | |
+| g64m, E166 (MacBook Air M1; the better of two) | 40.4 | 39.8 | 123.67 G |
+| g64m, E164 (the better of two) | 45.6 | 45.0 | 140.24 G |
+| QEMU's own emulation (the same Mac; one run) | 54.2 | 53.6 | 166.19 G |
+
+QEMU / g64m is **1.34** alone (it was 1.19 for E164 by the same runs) and 1.5 with three
+running at once; twice QEMU is 27 s here, which is what the real CPU of 2012 takes. The
+times alone moved by a tenth between two runs of one binary (40.4 and 51.7 s): the races
+side by side are what a change is judged by. `build_race.py` waited for the shell's
+prompt only in what came after it began to wait, and KVM had printed it already; it now
+looks from where the last text was found.
+
+**Next.** What the 130 million instructions with no entry are (the count of arrivals kept
+when an entry is given up, if the guess holds); the translator reading instructions
+itself where the cache has none (172 thousand blocks cut short); the way in and out.

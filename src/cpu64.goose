@@ -308,7 +308,7 @@ inline fn dc_drop(page: i64) {
     // entries dropped just above: the page's blocks can be reached from nowhere now, and
     // the others stand (E134).
     if jit_page[page] != 0 {
-        if machine { jit_page[page] = 0; jt_clear(); jq[5] += 1; } else { jit_flush(); }
+        if machine { jit_page[page] = 0; bt_drop_page(page); jt_clear(); jq[5] += 1; } else { jit_flush(); }
     }
     if dc_drops[page] < 255 { dc_drops[page] += 1; }
     dc_mark[page] = if dc_drops[page] >= DC_GIVE_UP { 2 } else { 0 };
@@ -641,6 +641,9 @@ fn modrm(after: u64) {
         ins.disp = disp;
         ins.mlen = (ip - rip) as! u8;
         dc[dc_cur].ins = ins;
+        // (A block's first instruction is kept without a kind, whatever `ins` has now: the
+        // block may have come back to an entry whose operand was not remembered yet, E166.)
+        if dc_n[dc_cur] != 0 { dc[dc_cur].ins.kind = 0; }
     }
 }
 
@@ -1532,6 +1535,12 @@ fn decode() {
             // dies with it (E141 counts how often).
             if dc_n[dc_cur] != 0 { j_evicted += 1; }
             dc_n[dc_cur] = 0;
+            // A block that begins here and lost its entry gets this one (E166): the
+            // instruction goes on as a block's first does, with no kind.
+            if jit_on {
+                let b = bt_find(ph);
+                if b >= 0 { bt_attach(b, dc_cur); ins.kind = 0; }
+            }
             // (A page that comes to hold remembered instructions leaves the TLB's tables
             // for writes, E150: a block's store there is not checked any more.)
             if machine && dc_mark[page] == 0 { tlb_unwrite(page); }
