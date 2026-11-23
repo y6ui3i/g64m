@@ -11471,3 +11471,36 @@ All suites pass (`tools/gate.sh`: 106 `ok`, `make-rc=0`, 416 s).
 **Next.** By the profile at 2^20: the TLB emptied by clearing 196 KB at each write of CR3
 (2.7% of the time, and the walks behind it 3.5%); the shifts' record settled on the way
 into a block (19 million leavings); LEAVE and the string instructions.
+
+----
+## E156: the CPU the guest sees is not open to Meltdown or MDS, as QEMU's is not (2026-11-23)
+
+The profile at 2^20 has 2.7% of g64m's time in clearing the TLB and 3.5% in walks. Looking
+for how often the TLB is emptied, the guest's own log gave the reason before any count:
+under g64m the kernel says `Kernel/User page tables isolation: enabled` and `MDS:
+Vulnerable: Clear CPU buffers attempted`; under QEMU it says neither. g64m's CPUID is an
+Intel Ivy Bridge's (family 6, model 3Ah), which the kernel's tables hold open to Meltdown
+and MDS; QEMU's default CPU is an AMD one, which they do not. So g64m's guest changes CR3
+on the way into the kernel and on the way out, for every system call and interrupt (each
+a write of CR3 and an emptied TLB, with no PCID to keep anything), and runs VERW on each
+way out; QEMU's guest does neither. The two programs have not been running the same work.
+
+An emulator has no speculation to leak through. A CPU says so with
+IA32_ARCH_CAPABILITIES (MSR 10Ah, announced by CPUID leaf 7's EDX bit 29): RDCL_NO for
+Meltdown, MDS_NO, SSB_NO and the rest.
+
+- **Hypothesis**: **with CPUID leaf 7 announcing ARCH_CAPABILITIES and the MSR saying the
+  CPU is open to none of them, the kernel leaves page table isolation and the clearing of
+  buffers off (its log says so), the TLB is emptied a tenth as often or less on the three
+  files, and the host instructions fall by 8% or more (654 billion to under 602 billion).**
+- **What changed since last time**: CPUID's highest leaf is 7; leaves 2 to 6 are zero;
+  leaf 7 has EDX bit 29; MSR 10Ah reads the bits. The stats count the TLB's emptyings.
+  `--cpu-open` gives the CPU as it was, so that the two are raced from one build.
+- **Next move for each result**:
+  - 8% or more → the whole build against QEMU, both alone; then the TLB's clearing for
+    what emptyings are left
+  - The kernel still isolates → what else its tables want (the model, the microcode's
+    revision), read from its source's conditions
+  - A system test prints differently (one that prints CPUID) → the expected text from
+    hal's KVM is a real Ivy Bridge's: the test given `--cpu-open`, or its leaf not printed
+- **Cut-off**: the two raced at once by host instructions; the kernel's log; the gate.
