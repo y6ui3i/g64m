@@ -11544,3 +11544,27 @@ CPU against 61.4 s, raced at the same time.**
 All suites pass (`tools/gate.sh`: 106 `ok`, `make-rc=0`, 435 s).
 
 **Next.** The whole build, g64m and QEMU, both ways (at the same time, and each alone).
+
+----
+## E157: NetHack built in the guest: g64m and QEMU on the same work (2026-11-23)
+
+E156 found that every race until now had g64m's guest guarding against Meltdown and MDS
+and QEMU's not; with the CPU saying what it is not open to, g64m takes 50.5 s of CPU for
+three of NetHack's files to QEMU's 61.4 s. The whole build has more code alive at once and
+more processes than the three files (E143, E153).
+
+- **Hypothesis**: **the whole build takes g64m between 880 and 1,000 s of CPU alone
+  (E153's 1,389 s less the three files' 30%), and QEMU 973 s as before: g64m is level
+  with QEMU or up to a tenth ahead, by CPU seconds and by cycles; by host instructions it
+  retires about as many.**
+- **What changed since last time**: E155 and E156. `tools/build_race.py` gives host
+  instructions and cycles for both. The two are raced at the same time, and then each
+  alone, since E153 found the two ways apart.
+- **Next move for each result**:
+  - Level or ahead → the first of the owner's milestones is the build's; the primitives
+    that are behind (rotations, packed SSE, x87) and the boot checked again on this CPU
+  - Behind by more than a tenth → the whole build's `--jit-why` (the blocks lost at
+    2^20, the leavings)
+  - The build fails → E147's way
+- **Cut-off**: one build under each at the same time, one each alone; `make-rc` and the
+  NetHack's version in all four.
