@@ -11008,3 +11008,32 @@ host just woken), 3 to 7 after the first minutes.
 **Next.** The owner's proposal: look at how QEMU runs the same build (its blocks, its
 chaining, where its host time goes) and bring over what makes the difference; and the
 cache in four ways.
+
+----
+## E149: how QEMU runs the same build: its blocks and where its host time goes (2026-11-23)
+
+The owner's proposal after E148 (g64m twice behind QEMU on the build): look at QEMU doing
+the same work and bring over what makes the difference. E131 did this for one loop of a
+primitive (QEMU's host code read beside g64m's: g64m ahead there, registers in host
+registers against QEMU's loads and stores). The build is a different thing: many processes,
+much code run a few times, a kernel.
+
+- **Hypothesis**: **on the three files QEMU translates far fewer blocks than g64m's 4.4
+  million (under one million: it translates a block once, at its first run, and keeps it:
+  its cache is by the block's address, with no eighth arrival and no entry to lose), chains
+  nearly all of them, and spends under a tenth of its host time translating and under a
+  tenth looking blocks up; g64m by the same profile spends a third or more outside
+  generated code (the interpreter for cold code, the run loop, the look-up on each entry,
+  translating again).**
+- **What changed since last time**: a measurement of the other program. QEMU's monitor
+  (`info jit`) for its counts; the host's sampler (`sample`, 20 s in the middle of the
+  build) for where each program's time is, by function.
+- **Next move for each result**:
+  - QEMU translates once and keeps: g64m's eight arrivals and its lost entries are the
+    difference → translate at the first run (or the second), blocks kept apart from the
+    decode cache's entries so that none is lost
+  - QEMU's time is in generated code as g64m's is → the blocks' own code compared again
+    (the memory access's inline path, the flags), as E131 did
+  - QEMU's look-up for a jump through a register is a small table by address → the same
+    for g64m's far way
+- **Cut-off**: one run of each program with the counts and the sample.
