@@ -11246,3 +11246,38 @@ the second, whatever the second holds.
   - More entries into blocks cut short (a block needs the entries of its instructions)
     → the blocks' lengths counted before and after
 - **Cut-off**: the short race with the count and without; the gate.
+
+**Result: choosing the way differently made it worse; the size is what is short. With four
+times the entries the three files run in 68.6 s of CPU, from about 90 s, beside QEMU's
+65 s.**
+
+The choice of the way (an empty one, one inside a block, the colder; a block's first only
+when both are): the instructions run from outside the cache rose from 373 to 443 million,
+the blocks lost stayed at 3.0 million, the CPU time rose (89.2 to 93.6 s). Taken back. The
+blocks lost did not move because both ways of a set hold a block's first instruction: about
+580 thousand blocks are made between two flushes, and the cache has 262 thousand entries
+for them and for every other instruction.
+
+The size, with E142's choice as it was, the far way made to follow `DC_BITS` (it was
+written for 2^18 and went out of use at any other size, E141's 2^20 among them), the same
+binary size at each (319,912 bytes):
+
+| Entries | CPU seconds | Not in the cache | Blocks translated | Blocks lost | Code written | Flushes | Maximum resident set |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2^18 (as it is) | 93.7 (89 to 92 without the count) | 386 million | 4.07 million | 2.96 million | 1.00 GB | 7 | 575 MB |
+| 2^19 | 77.1 (76.0 without) | 237 million | 2.26 million | 1.20 million | 0.60 GB | 4 | 560 MB |
+| 2^20 | 68.8 (68.6 without) | 113 million | 1.21 million | 0.41 million | 0.35 GB | 2 | 630 MB |
+| 2^21 | 66.9 | 94 million | 0.74 million | 0.15 million | 0.24 GB | 1 | 535 MB |
+
+- **The hypothesis** was wrong: misses not under 150 million by the choice (443 million),
+  no blocks saved, slower.
+- **Each doubling to 2^20 takes a seventh or more off the time**; 2^21 adds little. An
+  entry with what stands beside it is 50 bytes (the entry 32, the arrays beside it 18):
+  13 MB at 2^18, 26 MB at 2^19, 52 MB at 2^20, 105 MB at 2^21, zero-filled and touched as
+  used. The resident set does not follow it (fewer flushes touch less of the room for
+  code): 575, 560, 630, 535 MB.
+- **The owner's word (E141) was that the program is not to grow**; the size is the
+  owner's to choose with these numbers. Until then it stays 2^18.
+
+**Next.** The owner's choice of the size; then the gate at that size, and the whole
+build against QEMU.

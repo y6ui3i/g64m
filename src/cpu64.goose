@@ -269,6 +269,18 @@ inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) a
 // The cache is in sets of two ways, a slot and its neighbour (E142: one cache line), so
 // that a block's first instruction keeps its entry when another instruction wants the
 // slot. The entry that holds p: its slot, or the first way's, which then does not hold p.
+// How well the entry in slot s is worth keeping: 0 empty, 1 its instruction is inside a
+// block, 2 to 257 in no block (by its arrivals), 300 a block's first instruction.
+inline fn dc_worth(s: i64) -> i64 {
+    if dc_n[s] != 0 { return 300; }
+    if dc[s].tag == DC_NONE { return 0; }
+    if dc_cov[s] != 0 { return 1; }
+    return 2 + (dc_heat[s] as i64);
+}
+// The way of slot s's set that a new entry takes.
+inline fn dc_give_up(s: i64) -> i64 {
+    return if dc_worth(s ^ 1) < dc_worth(s) { s ^ 1 } else { s };
+}
 inline fn dc_find(p: u64) -> i64 {
     let s = dc_slot(p);
     if dc[s].tag == p { return s; }
@@ -1175,8 +1187,10 @@ fn exec64() -> bool {
     let ph = rip - code_delta;
     var slot = dc_slot(ph);
     if dc[slot].tag != ph {
-        // The set's other way (E142); or, for the new entry, the first way unless a block
-        // begins at the instruction it holds.
+        // The set's other way (E142); or, for the new entry, the way that is given up
+        // (E152): an empty one, else one whose instruction is inside a block (the block
+        // is made, and the entry of little more use), else the one with fewer arrivals;
+        // a block's first instruction only when both ways hold one.
         slot ^= 1;
         if dc[slot].tag != ph {
             slot ^= 1;

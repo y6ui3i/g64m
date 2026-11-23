@@ -400,7 +400,7 @@ fn jit64_init() -> bool {
     dc[1].tag = 0x1122334455667788;
     let laid = jit_peek64(dc_at + 32) == 0x1122334455667788 && jit_peek64(dc_at) == (dc[0].tag as! i64);
     dc[1].tag = keep;
-    if laid && DC_BITS == 18 {
+    if laid {
         jx[11] = dc_at as! u64;
         jx[12] = jit_addr8(dc_n[..]) as! u64;
         jx[13] = jit_addr32(dc_code[..]) as! u64;
@@ -409,8 +409,8 @@ fn jit64_init() -> bool {
         let to_out = jc.len;
         e(0x14000000 | out_back);                            // b the way out
         j_far_at = jc.len;
-        e(0xCA404800 | S1 << 16 | S1 << 5 | S2);             // eor x2, x1, x1, lsr #18
-        e(0x92404400 | S2 << 5 | S2);                        // and x2, x2, #0x3FFFF
+        e(0xCA400000 | S1 << 16 | (DC_BITS as! u32) << 10 | S1 << 5 | S2);       // eor x2, x1, x1, lsr #DC_BITS
+        e(0x92400000 | ((DC_BITS - 1) as! u32) << 10 | S2 << 5 | S2);            // and x2, x2, #(DC_SIZE - 1)
         // Either way of the set (E142): the slot, then its neighbour.
         a_ldr(S4, CTX, 88);
         e(0x8B001400 | S2 << 16 | S4 << 5 | S3);             // add x3, x4, x2, lsl #5
@@ -450,8 +450,8 @@ fn jit64_init() -> bool {
             a_ldr(29, CTX, 160);
             e(0xF8607800 | S3 << 16 | 29 << 5 | 30);
             a_rrr(A_ADD, 1, S2, S1, 30);                     // the physical address: the entry's addend on
-            e(0xCA404800 | S2 << 16 | S2 << 5 | S3);         // eor x3, x2, x2, lsr #18
-            e(0x92404400 | S3 << 5 | S3);
+            e(0xCA400000 | S2 << 16 | (DC_BITS as! u32) << 10 | S2 << 5 | S3);       // eor x3, x2, x2, lsr #DC_BITS
+            e(0x92400000 | ((DC_BITS - 1) as! u32) << 10 | S3 << 5 | S3);
             a_ldr(30, CTX, 88);
             e(0x8B001400 | S3 << 16 | 30 << 5 | 29);         // add x29, x30, x3, lsl #5
             a_ldr(29, 29, 0);
