@@ -12076,3 +12076,100 @@ tells.
 **Next.** The owner's to choose: the two that are level made clearly past (the memory
 operand again: twelve host instructions for a store, and the same register tested three
 times in one block), or the Docker backend (M11).
+
+## E164: the two that are level: a loop's way back, a constant near -1, a move between a comparison and its CMOVcc (2026-11-23)
+
+`p_ternary` (0.99 of QEMU) and `p_bitfield` (0.94 to 1.00) are level; the owner wants them
+past. `p_ternary`'s loop is one block of 20 instructions that retires 36 host
+instructions a round; `--jit-dump` shows:
+
+- **the way back takes two taken branches**: the jump at the loop's end goes to a way out
+  behind the block (`b.ne`), which takes the round off the time and goes to the body
+  (`b.hs`). Every loop that is one block pays that, `p_bitfield`'s too; the host takes
+  one taken branch a cycle at best, and these rounds are 9 to 11 cycles;
+- `mov r9, -1000` is four host instructions (MOVZ and three MOVK), where MOVN is one;
+- `cmp; mov rsi, rdx; cmovg` makes a record (three instructions): E163's look for a
+  CMOVcc stops at the MOV between.
+
+- **Hypothesis**: **with the loop's way back in line (the jump's condition turned round
+  over it: one taken branch a round), constants built from all ones where that is
+  shorter, and the look behind a comparison going past moves between registers and loads
+  of constants, `p_ternary` retires 30 host instructions a round or fewer and is at 1.10
+  of QEMU or more; `p_bitfield`, whose count does not change, is at 1.03 or more by the
+  fine clock; the three files' build retires no more than it did.**
+- **What changed since last time**: those three in `jit64.goose`. `--jit-off`'s bit 39
+  (which was one of four for the shifts of XMM registers, E147) leaves the way back as it
+  was.
+- **Next move for each result**:
+  - Both past → the milestone is met without "level"; the owner's next (M11)
+  - `p_ternary` past and `p_bitfield` not → the store: twelve... ten host instructions,
+    seven of them the look for remembered instructions on two pages
+  - Neither → cycles are not where the count says: the sample, and the host's counters
+- **Cut-off**: one form; the gate; both timed by the fine clock beside the old build and
+  QEMU; the three files' build counted beside the old build.
+
+**Result: `p_ternary` is at 1.3 to 1.5 of QEMU and `p_bitfield` at 1.04 to 1.06: every
+one of the 23 primitives is past QEMU.**
+
+| Seconds, less the start (the best of nine; QEMU ten runs' mean, twice) | QEMU | E163 | E164 | g64m / QEMU |
+|---|---:|---:|---:|---:|
+| `p_ternary` | 0.111, 0.125 | 0.108 | 0.084 | 1.32 to 1.49 |
+| `p_bitfield` | 0.164, 0.165 | 0.169 | 0.155 | 1.06 |
+
+| Host's count, less the start | E163 | E164 |
+|---|---:|---:|
+| `p_ternary`: instructions a round (24 guest) | 36 | 30 |
+| `p_ternary`: cycles | 345 M | 270 M |
+| `p_bitfield`: instructions a round (44 guest) | 70 | 64 |
+| `p_bitfield`: cycles | 535 M | 481 M |
+| The three files' build: instructions | 458.18 G | 457.67 G |
+
+All the primitives by `tools/prim64_long.sh` (the container's clock), g64m / QEMU by
+speed: `p_bitfield` 1.04, `p_ldbl` 1.06, `p_pixel` 1.07, `p_if` 1.16, `p_bytes` 1.33,
+`p_pointer` 1.35, `p_shift` 1.36, `p_simd` 1.37, `p_rotate` 1.40, `p_ternary` 1.51,
+`p_bignum` 1.55, `p_index` 1.56, `p_sha` 1.97, `p_switch` 1.97, `p_dbl_arith` 2.05,
+`p_fill` 2.07, `p_float` 2.13, `p_funcptr` 2.29, `p_recursion` 2.58, `p_dbl_cmp` 4.37,
+`p_loop` 4.68 (it was 2.09: its loop is a few instructions, and the way back was half
+of it), `p_muldiv` 4.91, `p_dbl_conv` 15.0.
+
+- **The hypothesis**: `p_ternary` at 30 a round and 1.10 or more held; `p_bitfield` "1.03
+  or more with its count unchanged" was wrong in how: the way back in line did nothing
+  for it (its rounds are as long as the host is wide, not as its branches are many), and
+  it is past QEMU by what was then taken out of its count. The build: no more than it
+  did (0.1% fewer).
+- **What the three of the card did**: `p_ternary`'s count fell from 36 to 30 and its
+  cycles did not move. Its round is 7 cycles for 30 instructions with no chain of
+  more than two between rounds: the host has fewer places for an instruction that sets
+  flags (and for CSEL) than for one that does not, and sixteen of the 30 were such.
+- **What was added to the form, each read off the dump**:
+  - where nothing can read the guest's flags (`j_nohost`), ADD, SUB and AND are the
+    host's without flags, and CMP and TEST are nothing (bit 40): `p_ternary`'s cycles
+    345 M to 270 M;
+  - a shift of 8 or 16 bits right by a constant is one UBFX or SBFX, and left needs no
+    mask (bit 41);
+  - a store's look for remembered instructions is one look in the table, and a store
+    that runs over a page's end leaves the block (bit 41), where it was two looks;
+  - a plain move through a register that was tested earlier in the block and not
+    written since is not tested again (`ck_r`, `ck_w`, bit 42). "Not written" is kept
+    by the emitter: every host instruction generated takes the register in its low five
+    bits out of both sets, so a translation added later cannot forget to. A register made
+    a wild address in a block stops the emulator at the same instruction with the JIT as
+    without (tried by hand: a CMOV of the wild value, then a load and a store).
+- **`--jit-off`**: bit 39 the way back, 40 to 42 as above. They were four switches inside
+  E147's shifts of XMM registers, which bit 48 still switches as a whole.
+- **The test** `j_loop` (trace from hal, a sum compared at its end): four translators made
+  wrong on purpose fail it (the way back's condition not turned round; the way back one
+  instruction past the body's start; no host flags ever; a narrow shift one bit too
+  wide). Its first form had `dec; jnz` for its loop and no way back in its code at all:
+  a jump on DEC's flags is not translated, so such a loop is not one block. Seen in the
+  dump, not counted anywhere yet.
+- **The gate**: 110 ok and `make-rc=0` in 430 s.
+
+**The owner's first milestone is met**: the build in the guest past QEMU by a quarter
+(E157), the boot by a quarter (E158), all 23 primitives past it, the nearest by four to
+seven percent (`p_bitfield`, `p_ldbl`, `p_pixel`).
+
+**Next.** The owner's: the Docker backend (M11). Left on the way, in the order they would
+pay: a loop that ends in `dec; jnz` (not one block); the x87's FLD, FXCH and FSTP as the
+block's own code; the build itself, which none of E163 and E164 moved by more than a
+percent.
