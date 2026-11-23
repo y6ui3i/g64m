@@ -11817,3 +11817,32 @@ mode three runs; the load 3.)
 behind: `p_bitfield` 0.78 and `p_ldbl` 0.33.
 
 **Next.** `p_ldbl`: the x87, of which nothing is translated.
+
+## E161: the x87 in blocks, by a call to the interpreter's own routines (2026-11-23)
+
+`p_ldbl` is at 0.33 of QEMU (12.0 s to 3.97 s). Of its 416 M instructions 323 M are x87
+and interpreted, and each is a block's end: 46 M entries. A sample of the run (4,200
+ticks): the interpreter's way round an instruction (`exec64`, `exec64_rest`, `main`,
+`modrm`, `mem_rd`) 45%; the x87 itself 52%, of which `soft_div`, a division one bit at a
+time, is 20% of the whole for one FDIV in fifteen instructions. QEMU does the x87 in
+software too, by calls from its blocks.
+
+- **Hypothesis**: **with an x87 instruction in a block as a call to `fpu_escape` (a
+  program without a kernel only; the operand in memory read and written by the block,
+  FCOMI's result made a record as UCOMISD's is), and the division done by the host's in
+  two steps, `p_ldbl` goes from 12.0 s to 6 s or less: every instruction of the loop in
+  blocks, entries under a million. It is not past QEMU yet: what is left is the 80-bit
+  arithmetic itself and the call (fourteen registers saved and loaded).**
+- **What changed since last time**: the x87's memory operand goes through a buffer in
+  the 64-bit CPU (`frd`, `fwr`; the interpreter fills it before and writes it out after,
+  having tried the store first), and an opcode not written is noted and stopped at
+  afterwards, so that `fpu_escape` never leaves by a fault and generated code can call
+  it; an `export fn` and its address from C; `--jit-check` keeps and compares the x87's
+  registers; `soft_div` by two divisions of 64 bits.
+- **Next move for each result**:
+  - 6 s or less, the loop in blocks → the sample again: the f64 kept beside every 80-bit
+    value, `round_pack`, the register stack's moves (FLD, FXCH, FSTP) as code of the
+    block's own
+  - In blocks and over 6 s → the call's cost: what is saved and loaded round it
+  - Not in blocks → `--jit-why`
+- **Cut-off**: one form; the gate; `p_ldbl` timed beside QEMU's.
