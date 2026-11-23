@@ -11748,3 +11748,31 @@ instructions a block.
 **Next.** As the card says for "nothing interpreted and still behind": the XMM registers
 kept in host vectors over a block (loaded at first use, stored on the ways out), so that
 an instruction is its one host instruction. That is a form of its own (E160).
+
+## E160: the XMM registers kept in host vectors over a block (2026-11-23)
+
+E159 left `p_simd` at 0.66 of QEMU with nothing interpreted: 5.75 host instructions and
+3.0 cycles for each guest instruction, every operand loaded from the context and every
+result stored there, the next instruction's load waiting for that store. A block is one
+straight line from its first instruction (the only way in is its start; the only call is
+in the prologue), so what the translator has loaded stays loaded to the block's end.
+
+- **Hypothesis**: **with XMM register i in host vector 16 + i from its first use in a
+  block (a result is still stored to the context at once, so no way out needs anything;
+  nothing is loaded twice, and no instruction waits for a store), `p_simd` goes from
+  0.47 s to 0.30 s or less, under 2 cycles for a guest instruction, and is past QEMU's
+  0.31 s; the scalar float primitives (`p_dbl_arith`, `p_dbl_cmp`, `p_dbl_conv`,
+  `p_float`) are no slower; the three files' build retires the same host instructions
+  to half a percent.**
+- **What changed since last time**: a set of the registers loaded, empty at a block's
+  start; the moves, the 128-bit logic, the packed shifts, shuffles, interleavings, sums,
+  differences, comparisons and PMULUDQ work on the host vectors themselves; the forms
+  not rewritten take a copy from the vector instead of a load, and give one back with
+  their store. `--jit-off`'s bit 36 loads every time as before.
+- **Next move for each result**:
+  - Past QEMU → `p_ldbl`, the x87
+  - Faster and not past → what is left for each instruction: the load of the registers'
+    address in front of every store, PSHUFD's four moves
+  - A scalar primitive slower → the copies in the forms not rewritten
+- **Cut-off**: one form; the gate; `p_simd` and the four scalar primitives timed beside
+  the old build, the three files' build counted once.
