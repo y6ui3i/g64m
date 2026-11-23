@@ -16,6 +16,9 @@ CMD = ('export PATH=/usr/sbin:/usr/bin:/sbin:/bin; cd /root/NetHack-3.6.7; '
        '/nh2/nethack --version; tail -2 /root/build.log; sync; echo fin$((6*7))\n')
 # RACE_SHORT=1: three of NetHack's files only (a minute or two), for trying a change.
 # RACE_X64 names another build of g64m than build/g64m.
+# RACE_ACCEL=kvm, on an x86_64 Linux host: QEMU's machine with the host's own CPU running
+# the guest (the reference, E166: what the real CPU takes for the same work). RACE_CPU names
+# the CPU the guest is shown (-cpu), where the default would make the kernel do other work.
 if os.environ.get('RACE_SHORT'):
     CMD = ('export PATH=/usr/sbin:/usr/bin:/sbin:/bin; cd /root/NetHack-3.6.7/src; '
            'make apply.o artifact.o attrib.o > /root/build.log 2>&1; echo make-rc=$?; ls -l apply.o artifact.o attrib.o | wc -l; sync; echo fin$((6*7))\n')
@@ -40,7 +43,7 @@ if who.startswith('g64m'):
     for l in r.stderr.split(b'\n'):
         if b'jit:' in l: print(l.decode(errors='replace')[-200:])
 else:
-    p = subprocess.Popen(TIME + ['qemu-system-x86_64', '-accel', 'tcg', '-m', '256', '-nographic', '-no-reboot',
+    p = subprocess.Popen(TIME + ['qemu-system-x86_64', '-accel', os.environ.get('RACE_ACCEL', 'tcg'), *(['-cpu', os.environ['RACE_CPU']] if os.environ.get('RACE_CPU') else []), '-m', '256', '-nographic', '-no-reboot',
                           '-kernel', K, '-initrd', I, '-append', 'console=ttyS0 tsc=reliable',
                           # The disk where the guest's driver (pata_legacy) looks for it: an IDE
                           # controller on the ISA bus, which QEMU's q35 machine can be given.
@@ -49,19 +52,20 @@ else:
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open('build/race-%s.err' % who, 'wb'))
     os.set_blocking(p.stdout.fileno(), False)
     out = b''
+    seen = 0         # how far the output has been looked through: what is waited for may
+                     # have come with the text before it (a fast machine: KVM)
     def wait(text, limit):
-        global out
+        global out, seen
         end = time.perf_counter() + limit
-        at = len(out)
-        while time.perf_counter() < end:
+        while True:
+            i = out.find(text, seen)
+            if i >= 0: seen = i + len(text); return True
+            if time.perf_counter() >= end: return False
             try: c = p.stdout.read(65536)
             except BlockingIOError: c = None
-            if c:
-                out += c
-                if text in out[max(0, at - len(text)):]: return True
+            if c: out += c
             elif p.poll() is not None: return False
             else: time.sleep(0.01)
-        return False
     ok = wait(b'root on /dev/sda', 120) and wait(b'~ # ', 60)
     if ok:
         p.stdin.write(CMD.encode()); p.stdin.flush()

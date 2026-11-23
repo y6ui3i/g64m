@@ -1,0 +1,8 @@
+three routines for two entries, and the first again
+0000000000181830
+the first routine's page written while its block has no entry
+00000000001818A8
+a block made at level 0 that has no entry, run at level 3
+0000000000181890
+0000000000000019
+0000000000000000
