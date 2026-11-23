@@ -11604,3 +11604,89 @@ at QEMU's speed or past it in E131, `p_bitfield` since at 0.73; `p_simd`, `p_rot
 
 **Next.** The boot and the 23 primitives against QEMU again, as they are now; then the
 ones behind, in the order of their distance.
+
+----
+## E158: the boot and the primitives against QEMU again (a measurement; 2026-11-23)
+
+The owner's first milestone is past QEMU on every measured workload. The build in the
+guest is (E157). The boot was 2.42 s to QEMU's 2.53 s in E134; the primitives 18 of 23 at
+QEMU's speed or past it in E131. Since then: arrivals at every interpreted instruction
+(E137), BT, SHLD/SHRD and the 16-bit forms (E138), SSE in a machine (E139), the cache's
+two ways and 2^20 entries (E142, E152), the waiting exits in the room (E145), the record
+settled in a block (E146), the refused instructions (E147), the short load and store
+(E150), a block behind a leaving (E155), the CPU not open to Meltdown or MDS (E156).
+
+- **Hypothesis**: **the boot is under 2.0 s to QEMU's 2.5 s (no page table isolation, and
+  a block for most of what was interpreted); of the primitives `p_bitfield` is at 0.7 or
+  more, `p_simd` has moved (the packed forms of E147: from 0.02 to 0.1 or more), and
+  `p_rotate`, `p_sha`, `p_ldbl` and `p_pixel` are where they were; none that was past
+  QEMU has fallen under it.**
+- **What changed since last time**: E137 to E156. `tools/boot_race.py` and
+  `tools/prim64_long.sh` as in E134 and E131, on this host with its load noted.
+- **Next move for each result**:
+  - As guessed → the primitives behind, in the order of their distance: the rotations
+    with flags, the packed SSE that is left, the x87
+  - A primitive that was past QEMU is under it → that one first: what the changes since
+    took from it (the longer way in, the far way's second way)
+  - The boot is not ahead → the boot's `--jit-why`
+- **Cut-off**: one run of each script.
+
+**Result: the boot is 1.96 s to QEMU's 2.63 s; of the 23 primitives 18 are past QEMU, two
+level with it, and three behind: `p_bitfield` 0.78, `p_ldbl` 0.33, `p_simd` 0.06.** The
+load was 3 to 5.
+
+| The boot to the prompt | Seconds |
+|---|---:|
+| QEMU 11.1.3 (TCG) | 2.63 |
+| g64m `--jit` | **1.96** |
+| g64m | 23.41 |
+
+The primitives (`tools/prim64_long.sh`, thirty rounds of each, seconds less a program that
+does nothing; QEMU's user mode 11.0.3, Docker's own emulator, g64m `--jit`):
+
+| | QEMU | Docker's own (Rosetta) | g64m `--jit` | g64m / QEMU, by speed | In E131 |
+|---|---:|---:|---:|---:|---:|
+| `p_dbl_conv` | 3.493 | 0.113 | 0.387 | 9.03 | 0.18 |
+| `p_muldiv` | 0.700 | 0.093 | 0.145 | 4.83 | 4.43 |
+| `p_dbl_cmp` | 1.310 | 0.117 | 0.356 | 3.68 | 0.07 |
+| `p_recursion` | 0.237 | 0.110 | 0.099 | 2.39 | 2.42 |
+| `p_funcptr` | 1.433 | 0.453 | 0.613 | 2.34 | 2.29 |
+| `p_loop` | 0.120 | 0.030 | 0.054 | 2.22 | 2.11 |
+| `p_fill` | 0.460 | 0.077 | 0.215 | 2.14 | 1.09 |
+| `p_float` | 1.333 | 0.287 | 0.699 | 1.91 | 0.09 |
+| `p_switch` | 0.930 | 0.420 | 0.554 | 1.68 | 1.71 |
+| `p_sha` | 0.067 | 0.037 | 0.041 | 1.63 | 0.31 |
+| `p_dbl_arith` | 1.177 | 0.303 | 0.725 | 1.62 | 0.10 |
+| `p_rotate` | 0.653 | 0.477 | 0.475 | 1.37 | 0.07 |
+| `p_shift` | 0.160 | 0.100 | 0.118 | 1.36 | 1.13 |
+| `p_pointer` | 0.290 | 0.103 | 0.229 | 1.27 | 1.23 |
+| `p_index` | 0.270 | 0.063 | 0.214 | 1.26 | 1.16 |
+| `p_if` | 0.310 | 0.143 | 0.258 | 1.20 | 1.04 |
+| `p_bytes` | 0.210 | 0.083 | 0.189 | 1.11 | 1.10 |
+| `p_ternary` | 0.117 | 0.067 | 0.105 | 1.11 | 1.03 |
+| `p_bignum` | 0.400 | 0.130 | 0.402 | 1.00 | 1.34 |
+| `p_pixel` | 0.080 | 0.057 | 0.083 | 0.96 | 0.93 |
+| `p_bitfield` | 0.170 | 0.133 | 0.219 | 0.78 | 0.05 |
+| `p_ldbl` | 3.970 | 9.203 | 12.005 | 0.33 | 0.31 |
+| `p_simd` | 0.333 | 0.050 | 5.347 | 0.06 | 0.02 |
+
+- **The hypothesis** held for the boot (under 2.0 s: 1.96) and `p_bitfield` (0.7 or more:
+  0.78), and was wrong in both directions elsewhere: `p_rotate` and `p_sha` were to be
+  where they were and are past QEMU (0.07 to 1.37, 0.31 to 1.63: BSF and BSR are in blocks
+  since E147, and the rotations whose flags are dead were already), and `p_simd` was to
+  reach 0.1 and is at 0.06 (its loop is packed floats, which E147's packed integers are
+  not).
+- **`p_bignum` has gone from 1.34 to level**: the one that fell. Its loop is ADC in a
+  chain.
+- **A program that does nothing takes g64m 0.064 s** (QEMU's user mode: under a
+  hundredth): the start, which the Docker backend is to make small (`docs/roadmap.md`,
+  M11); it is taken off the times above.
+- The clock in the container is read to a hundredth of a second, so a time of 0.07 s is
+  good to a seventh; `p_sha`, `p_pixel` and `p_ternary` are as rough as that.
+
+**The owner's first milestone, as it stands**: the build in the guest past QEMU by a
+quarter (E157), the boot by a quarter, 18 primitives past it and two level; three behind.
+
+**Next.** The three behind, by distance: `p_simd` (the packed float forms: ADDPS, MULPS
+and the rest), `p_ldbl` (the x87, none of which is translated), `p_bitfield`; and
+`p_bignum`'s ADC chain looked at for what it lost.
