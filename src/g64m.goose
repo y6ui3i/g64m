@@ -663,6 +663,7 @@ fn main() {
             format(m3, "g64m: jit-why: not remembered: on a page given up ", jm_why[0], ", across a page's end ", jm_why[1], "\n");
             for i in 64 { if jq_k[i] != 0 { format(m3, "g64m: jit-why: not run, first of kind ", i, " ", jq_k[i], "\n"); } }
             for i in 64 { if ji_kind[i] != 0 { format(m3, "g64m: jit-why: interpreted kind ", i, " ", ji_kind[i], "\n"); } }
+            for i in 512 { if ji_op[i] != 0 { format(m3, "g64m: jit-why: interpreted op ", i, " ", ji_op[i], "\n"); } }
             for i in 257 { if ji_0f[i] != 0 { format(m3, "g64m: jit-why: interpreted 0F ", i, " ", ji_0f[i], "\n"); } }
             for i in 256 { if jw_rk[i] != 0 { format(m3, "g64m: jit-why: record ", i, " ", jw_rk[i], "\n"); } }
             for i in 4096 { if jw_form[i] != 0 { format(m3, "g64m: jit-why: form ", i / 64, " ", i % 64, " ", jw_form[i], "\n"); } }

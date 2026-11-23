@@ -200,6 +200,7 @@ var jw2: i64[8] = [0; 8];
 var ji: i64[8] = [0; 8];
 var ji_kind: i64[64] = [0; 64];
 var ji_0f: i64[257] = [0; 257];
+var ji_op: i64[512] = [0; 512];      // and for one not behind 0Fh, by its opcode (256 on with REP)
 
 fn jit_ran_one(slot: i64, ph: u64) {
     if dc_n[slot] != 0 { ji[1] += 1; return; }
@@ -210,7 +211,7 @@ fn jit_ran_one(slot: i64, ph: u64) {
     ji_kind[k & 63] += 1;
     if k == 0 {
         if dc[slot].ins.op == 0x0F { ji_0f[mem_rd(ph + dc[slot].ins.plen, 8) as! i64] += 1; }
-        else { ji_0f[256] += 1; }
+        else { ji_0f[256] += 1; ji_op[dc[slot].ins.op as i64 + (if dc[slot].ins.rep != 0 { 256 } else { 0 })] += 1; }
     }
 }
 // How often each address has come to the interpreter with no entry (E167), by a hash of
