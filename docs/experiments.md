@@ -12563,3 +12563,35 @@ guest's instructions are the same number to the last one (23,875,538,489 in both
 for a guest instruction in a machine): the generated code of the build's hottest blocks
 read as E163 read `p_bitfield`'s. Smaller: a shift's record settled in generated code
 (20 million blocks left for it), BT's (4 million).
+
+----
+
+## E170: the way into a block from another: three instructions, not six (2026-11-24)
+
+The build's generated code read (the three files with `--jit-dump`, the sampler's
+addresses laid over it: 1,106 blocks have a sample, none more than five of 2,139, so
+there is no hot block to mend, only what all of them do). Read off the blocks:
+
+- **every block entered from another runs six instructions before its own**: `cmp x0, #n`,
+  `b.lo`, two NOPs (a place for the record's settling, which few blocks need), `mov x25,
+  x1`, and a `b` over the branch out. The blocks sampled are 2 to 20 guest instructions;
+- a load or store in a machine is ten instructions before the access itself (the
+  address, the TLB's place, its tag, the compare with the last byte's page, the addend
+  from a second table);
+- a record is made (three or four instructions) behind most instructions that set flags.
+
+- **Hypothesis**: **with the branch out put before the block's entry and the two places
+  for the settling only in the blocks that need them (`cmp`, `b.lo`, `mov x25, x1`), the
+  three files retire 2% fewer host instructions beside E169 (three fewer for each block
+  entered, and a block is entered once for six to eight guest instructions) and take 1%
+  fewer cycles.**
+- **What changed since last time**: the code read. Only the layout of a block's first
+  words; the interpreter enters at the body as before, which is now 12 or 20 bytes
+  behind the entry.
+- **Next move for each result**:
+  - As guessed → the TLB's tag and addend side by side (one `ldp`, two instructions
+    fewer for each access), then the records
+  - Instructions fall and cycles do not → the NOPs and the jump were free on this host;
+    on to the TLB's pair all the same
+- **Cut-off**: one form; the gate (blocks that read RFLAGS are entered both ways in the
+  boot under `--jit-check`); the race beside E169.
