@@ -50,6 +50,9 @@ var fp: f64[8] = [0.0; 8];           // physical registers; ST(i) is fp[(fp_top 
 var fp_mant: u64[8] = [0; 8];        // the 80-bit original of a register, when fp_raw says it has one
 var fp_se: u16[8] = [0; 8];
 var fp_raw: bool[8] = [false; 8];
+// Since E162 the f64 of an 80-bit value is made when it is first read (fp_now): true here
+// while it has not been. Only the functions that go through f64 read it.
+var fp_late: bool[8] = [false; 8];
 var fp_empty: u8 = 0xFF;             // one bit per physical register: set when it is empty
 var fp_top: u8 = 0;
 var fp_cond: u16 = 0;                // C0 to C3
@@ -60,7 +63,7 @@ fn fpu_reset() {
     fp_top = 0;
     fp_cond = 0;
     fp_cw = 0x037F;
-    for i in 8 { fp[i] = 0.0; fp_raw[i] = false; }
+    for i in 8 { fp[i] = 0.0; fp_raw[i] = false; fp_late[i] = false; }
 }
 
 // The whole unit kept in one of two places, put back from one, and compared with one: for
@@ -72,7 +75,7 @@ var fk_raw: bool[16] = [false; 16];
 var fk_misc: u16[8] = [0; 8];
 fn fpu_keep(k: i64) {
     for i in 8 {
-        fk_fp[k * 8 + i] = bits_of_f64(fp[i]);
+        fk_fp[k * 8 + i] = bits_of_f64(fp_now(i as! u8));
         fk_mant[k * 8 + i] = fp_mant[i];
         fk_se[k * 8 + i] = fp_se[i];
         fk_raw[k * 8 + i] = fp_raw[i];
@@ -85,6 +88,7 @@ fn fpu_keep(k: i64) {
 fn fpu_back(k: i64) {
     for i in 8 {
         fp[i] = f64_of_bits(fk_fp[k * 8 + i]);
+        fp_late[i] = false;
         fp_mant[i] = fk_mant[k * 8 + i];
         fp_se[i] = fk_se[k * 8 + i];
         fp_raw[i] = fk_raw[k * 8 + i];
@@ -98,10 +102,19 @@ fn fpu_same(k: i64) -> bool {
     if fk_misc[k * 4] != fp_empty || fk_misc[k * 4 + 1] != fp_top || fk_misc[k * 4 + 2] != fp_cond || fk_misc[k * 4 + 3] != fp_cw { return false; }
     for i in 8 {
         if fp_empty >> i & 1 != 0 { continue; }
-        if fk_fp[k * 8 + i] != bits_of_f64(fp[i]) || fk_raw[k * 8 + i] != fp_raw[i] { return false; }
+        if fk_fp[k * 8 + i] != bits_of_f64(fp_now(i as! u8)) || fk_raw[k * 8 + i] != fp_raw[i] { return false; }
         if fp_raw[i] && (fk_mant[k * 8 + i] != fp_mant[i] || fk_se[k * 8 + i] != fp_se[i]) { return false; }
     }
     return true;
+}
+
+// Physical register p as an f64.
+fn fp_now(p: u8) -> f64 {
+    if fp_late[p] {
+        fp[p] = f80_to_f64(fp_mant[p], fp_se[p]);
+        fp_late[p] = false;
+    }
+    return fp[p];
 }
 
 fn bit8(p: u8) -> u8 { let one: u8 = 1; return one << p; }
@@ -111,23 +124,24 @@ fn phys(i: u8) -> u8 { return (fp_top + i) & 7; }
 fn st(i: u8) -> f64 {
     let p = phys(i);
     if fp_empty & bit8(p) != 0 { return f64_of_bits(0xFFF8000000000000); }
-    return fp[p];
+    return fp_now(p);
 }
 
 fn set_st(i: u8, v: f64) {
     let p = phys(i);
     fp[p] = v;
     fp_raw[p] = false;
+    fp_late[p] = false;
     fp_empty &= 0xFF ^ bit8(p);
 }
 
 // Sets ST(i) to an 80-bit value.
-fn set_st80(i: u8, mant: u64, se: u16) {
+inline fn set_st80(i: u8, mant: u64, se: u16) {
     let p = phys(i);
-    fp[p] = f80_to_f64(mant, se);
     fp_mant[p] = mant;
     fp_se[p] = se;
     fp_raw[p] = true;
+    fp_late[p] = true;
     fp_empty &= 0xFF ^ bit8(p);
 }
 
@@ -146,6 +160,7 @@ fn copy_st(to: u8, from: u8) {
     let d = phys(to);
     let s = phys(from);
     fp[d] = fp[s];
+    fp_late[d] = fp_late[s];
     fp_mant[d] = fp_mant[s];
     fp_se[d] = fp_se[s];
     fp_raw[d] = fp_raw[s];
@@ -156,6 +171,7 @@ fn swap_st(i: u8) {
     let a = phys(0);
     let b = phys(i);
     let v = fp[a]; fp[a] = fp[b]; fp[b] = v;
+    let l = fp_late[a]; fp_late[a] = fp_late[b]; fp_late[b] = l;
     let m = fp_mant[a]; fp_mant[a] = fp_mant[b]; fp_mant[b] = m;
     let e = fp_se[a]; fp_se[a] = fp_se[b]; fp_se[b] = e;
     let r = fp_raw[a]; fp_raw[a] = fp_raw[b]; fp_raw[b] = r;
@@ -173,8 +189,8 @@ fn tag_word() -> u16 {
     for p in 8 {
         var t: u16 = 0;
         if fp_empty & bit8(p as! u8) != 0 { t = 3; }
-        else if fp[p] == 0.0 { t = 1; }
-        else if !is_finite(fp[p]) { t = 2; }
+        else if fp_now(p as! u8) == 0.0 { t = 1; }
+        else if !is_finite(fp_now(p as! u8)) { t = 2; }
         w |= t << (p * 2);
     }
     return w;
@@ -245,7 +261,7 @@ fn f80_to_f64(mant: u64, se: u16) -> f64 {
     return f64_of_bits(sign | frac);
 }
 
-fn st80(i: u8) -> u64, u16 {
+inline fn st80(i: u8) -> u64, u16 {
     let p = phys(i);
     if fp_empty & bit8(p) != 0 { return 0xC000000000000000, 0xFFFF; }
     if fp_raw[p] { return fp_mant[p], fp_se[p]; }
@@ -517,7 +533,7 @@ fn mul64(a: u64, b: u64) -> u64, u64 {
 // the mantissa with its top bit set, lo what lies below it: its top bit is the half, and any other
 // bit set means "something more". The third result is false when the exponent has left the range
 // of ordinary numbers; the caller then computes the operation as an f64.
-fn round_pack(sign: u16, e0: i64, hi0: u64, lo: u64) -> u64, u16, bool {
+inline fn round_pack(sign: u16, e0: i64, hi0: u64, lo: u64) -> u64, u16, bool {
     var e = e0;
     var hi = hi0;
     let pc = fp_cw >> 8 & 3;
@@ -855,10 +871,8 @@ fn fpu_mem(row: u8, r: u8) {
         0x1D => {
             let mant = frd64(0);
             let se = frd(8, 16) as! u16;
-            fpush(f80_to_f64(mant, se));
-            fp_mant[fp_top] = mant;
-            fp_se[fp_top] = se;
-            fp_raw[fp_top] = true;
+            fp_top = (fp_top + 7) & 7;
+            set_st80(0, mant, se);
         },
         0x1F => {
             let mant, se = st80(0);
@@ -878,6 +892,7 @@ fn fpu_mem(row: u8, r: u8) {
                 let se = frd(at + 8, 16) as! u16;
                 let p = phys(i as! u8);
                 fp[p] = f80_to_f64(mant, se);
+                fp_late[p] = false;
                 fp_mant[p] = mant;
                 fp_se[p] = se;
                 fp_raw[p] = true;
@@ -980,6 +995,18 @@ fn rem80(am: u64, ase: u16, bm: u64, bse: u16, nearest: bool) -> u64, u16 {
 }
 
 fn fpu_reg(row: u8, r: u8, i: u8) {
+    // The common forms first (E162), which read no more than they use: what follows them
+    // reads ST(0), ST(i) and ST(1) both ways before it looks at the opcode.
+    let key = row << 3 | r;
+    if key < 0x08 { let xm, xse = st80(i); arith_to(r, xm, xse, 0); return; }
+    if key == 0x08 { fp_top = (fp_top + 7) & 7; copy_st(0, i + 1); return; }
+    if key == 0x09 || key == 0x29 { swap_st(i); return; }
+    if key >= 0x20 && key < 0x28 { let xm, xse = st80(i); arith_to(r, xm, xse, i); return; }
+    if key == 0x2A { copy_st(i, 0); return; }
+    if key == 0x2B || key == 0x0B { copy_st(i, 0); fpop(); return; }
+    if key == 0x30 || key == 0x31 || (key >= 0x34 && key < 0x38) { let xm, xse = st80(i); arith_to(r, xm, xse, i); fpop(); return; }
+    if key == 0x1D || key == 0x1E { set_cmp_flags(cmp_st(i)); return; }
+    if key == 0x3D || key == 0x3E { set_cmp_flags(cmp_st(i)); fpop(); return; }
     let a = st(0);
     let b = st(i);
     let s1 = st(1);                      // for D9 F0 to FF, where the r/m field is part of the opcode

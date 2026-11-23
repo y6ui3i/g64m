@@ -49,6 +49,7 @@ fn mm_set(i: i64, v: u64) {
     fp_se[i] = 0xFFFF;
     fp_raw[i] = true;
     fp[i] = f80_to_f64(v, 0xFFFF);
+    fp_late[i] = false;
 }
 
 fn mm_touch() {

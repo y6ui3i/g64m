@@ -11927,3 +11927,39 @@ three values through memory.
     the block's own code, and what the block saves round a call
 - **Cut-off**: one form; the gate and the 32-bit machine's suite; `p_ldbl` timed beside
   QEMU's and the old build.
+
+**Result: `p_ldbl` retires 61.0 G host instructions where it retired 83.3 G, and takes
+3.55 to 3.60 s to QEMU's 3.75 to 3.89 s: level with QEMU or a little past it (1.04 to
+1.10), from 0.91.**
+
+| `p_ldbl`, thirty rounds | E161 | E162 |
+|---|---:|---:|
+| Host instructions | 83.28 G | 61.03 G |
+| Host cycles | 14.33 G | 11.22 G |
+| Seconds, less the start: two runs | 4.61 | 3.60, 3.55 |
+| QEMU's user mode, in turn with them | 4.20 | 3.75, 3.89 |
+
+(At a load of 4; g64m's start was 0.10 s in these runs and is taken off.)
+
+- **The hypothesis** was a little too hopeful on both counts: 60 G or fewer guessed and
+  61.0 G found; 3.6 s or less and 3.55 to 3.60 s; "past QEMU" is by four to ten percent,
+  which two runs at this load do not tell from level.
+- **What was done**, all in `fpu.goose`: the arithmetic rows, FLD, FXCH, FST and FSTP of
+  a register and the comparisons leave `fpu_reg` before its five readings of the stack;
+  `fp_late` says the f64 beside an 80-bit value has not been made, and `fp_now` makes it
+  (FLD of 80 bits is `set_st80` now, as FILD of 64 was); `round_pack`, `st80` and
+  `set_st80` are inlined.
+- **A sample now**: `arith_to` 16%, `fpu_reg` 15%, `jit_x87` 15%, `soft_add` 14%,
+  `soft_div` 8%, `fpu_mem` 5%: no one place. It is still 189 host instructions for an
+  x87 instruction, of which the way there and back (the block's fourteen registers, the
+  wrapper, the fields put into globals, `fpu_reg`'s tests) is about half for FLD, FXCH
+  and FSTP, six of the loop's fifteen.
+- **The gate**: 108 ok and `make-rc=0` in 427 s; the 32-bit machine's `difftest.sh` 163
+  ok.
+
+**The primitives now**: 19 past QEMU, three level (`p_bignum`, `p_pixel`, `p_ldbl`), one
+behind: `p_bitfield` 0.78.
+
+**Next.** The card's move for "over 60 G" is the register stack's moves as the block's own
+code; for "past QEMU" it is `p_bitfield`. It is neither clearly: `p_bitfield` first, the
+one that is behind, and the stack's moves when `p_ldbl` is to be more than level.
