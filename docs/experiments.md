@@ -11322,3 +11322,37 @@ ways), so the cache's size should count for more there, or for as much.
     whole build (the blocks lost, the instructions outside the cache)
   - Under 1.25 times → said so; the same next
 - **Cut-off**: one build under each, together; `make-rc` and the NetHack's version in both.
+
+**Result: g64m builds NetHack in 1,389 s of CPU alone (E148: 1,987 s), 1.43 times QEMU's
+973 s alone; raced at the same time the two took 1,537 s and 1,293 s, 1.19 times.** Both
+builds end at the same step with a NetHack that says its version.
+
+| NetHack built in the guest | E148 | E153, at the same time | E153, alone |
+|---|---:|---:|---:|
+| g64m `--jit`, CPU (user) | 1,987 s | 1,537 s | **1,389 s** |
+| QEMU 11.1.3, CPU (user) | 973 s | 1,293 s | 973 s (E148's, this morning) |
+| g64m / QEMU | 2.0 | 1.19 | **1.43** |
+| In blocks | 96.0% | 97.1% | |
+| Entries into blocks | 8.2 billion | 6.2 billion | |
+| Blocks translated | 91.2 million | 21.8 million | |
+| Blocks lost to the cache | 54.4 million | 8.2 million | |
+| Code written in all | 39.4 GB | 6.4 GB | |
+| Times the room filled | 293 | 47 | |
+
+- **The hypothesis** held for g64m alone (1,300 to 1,500 s: 1,389) and for the distance
+  (1.25 to 1.6: 1.43 alone), and for the flushes (under 100: 47); the entries are 6.2
+  billion for "under 5 billion".
+- **Racing the two at the same time did not make the same host for both.** QEMU took a
+  third more CPU beside g64m than alone (1,293 s for 973 s), g64m a tenth more (1,537 s
+  for 1,389 s); the load was 5 to 8, with other work on the host than these two. With
+  four fast cores and four slow ones, which program is put on a slow core is the
+  system's choice, and a program put there takes more CPU for the same work. The pair
+  says 1.19 and the two alone say 1.43; the two alone were hours apart. The distance is
+  somewhere in 1.2 to 1.45, and the measure cannot say closer on this host as it is used.
+  To say closer: the same race when nothing else runs, or a count that the host does not
+  move (host instructions retired, which `/usr/bin/time -l` gives on this system).
+- **Against E135** (3,561 s, 3.9 times): 1,426 s by the wall clock alone.
+
+**Next.** The measure first: `tools/build_race.py` to print the host instructions retired
+beside the CPU time, so that a ratio does not depend on which core ran what. Then what
+E149's profile has left at this size.
