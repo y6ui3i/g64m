@@ -11963,3 +11963,36 @@ behind: `p_bitfield` 0.78.
 **Next.** The card's move for "over 60 G" is the register stack's moves as the block's own
 code; for "past QEMU" it is `p_bitfield`. It is neither clearly: `p_bitfield` first, the
 one that is behind, and the stack's moves when `p_ldbl` is to be more than level.
+
+## E163: what the generated code wastes, read off `p_bitfield`'s loop (2026-11-23)
+
+`p_bitfield` is the one primitive behind QEMU (0.78). All of it is in blocks: its loop is
+one block of 44 instructions that retires 104 host instructions a round, 2.4 for each, at
+0.33 cycles for a guest instruction; nothing is left to move into a block. `--jit-dump`
+(new, with `tools/jit_dis.py`) shows the block. Of the 104:
+
+- 10 load a shift's count into a register for the record, where the record is not made
+  (the flags are dead) and the shift takes the count as a constant;
+- 6 load a constant for AND that the host's AND takes as a constant itself, and 2 for TEST;
+- 3 make the record of a TEST whose flags only the CMOVcc behind it reads, from the host's
+  flags, before the next instruction sets them all;
+- 2 are an LEA of an index alone done as a constant, an add and a copy.
+
+- **Hypothesis**: **without those 23, the loop retires 81 host instructions a round or
+  fewer (1.85 for each), and `p_bitfield` goes from 0.78 of QEMU to level with it (0.95 or
+  more); the three files' build retires at least 1% fewer host instructions, since none
+  of the four is special to bit fields.**
+- **What changed since last time**: the count's load only where the record is made; AND,
+  OR, XOR and TEST by a constant the host can encode take it encoded (`a_logimm`: the
+  bitmask immediates, checked against the assembler for 1,319 constants before it was
+  written here); no record where the flags are dead behind a CMOVcc of registers or a
+  SETcc that the host's flags serve (as it already is behind a conditional jump); LEA
+  into its register, an index alone as a shift.
+- **Next move for each result**:
+  - Level or past → the milestone's count: every measured workload at QEMU or past it;
+    then what the owner chooses (the Docker backend, or the three that are only level)
+  - 81 or fewer and still behind → the memory operand: five instructions of bounds check
+    for each load, twelve for a store
+  - Over 81 → the dump again
+- **Cut-off**: one form; the gate; `p_bitfield` and all the primitives timed once beside
+  QEMU; the three files' build counted beside the old build.
