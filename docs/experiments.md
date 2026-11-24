@@ -13192,3 +13192,39 @@ gone to 36 million times where it was 109 million. Its first form did nothing at
 **Next.** A test for a block made at level 0 with CLI in it, met at level 3. Then the 550
 million returns: the address a CALL pushes kept with where its block is, so that RET
 compares one address and asks no table.
+
+----
+
+## E179: the way out that leaves an instruction to the interpreter in two words, not five (2026-11-24)
+
+(Returns without the table, E178's next: looked at and not begun. A list of return
+addresses kept at each CALL and looked at by each RET is more host instructions than the
+table's seven, with the same `br` at its end.)
+
+The build at E178 under the sampler (14,640 samples over 18 s): 68% in the blocks, 6% in
+the routines at the head (it was 11%), 22% the interpreter. The sampler's addresses in
+the blocks laid over the generated code: **38% of the time in blocks is at an
+instruction that follows a `b`**, which is a block's first (`cmp x0, #n` behind the
+branch out): the block has just been come to and the host is waiting. For what, the
+sample does not say: the jump mispredicted (a `br` through a cell or the table), or the
+block's code not in the host's cache or its TLB for code. The blocks run at 2.6 host
+instructions a cycle, half of what this host does on code like it.
+
+The room for code holds 110 MB for 405 thousand blocks, 270 bytes each. Behind every
+block lie its ways out, and most are the kind that leaves an instruction to the
+interpreter (one for each load and store, for a page not in the TLB): five words each,
+`sub x0`, `add x1`, `mov x30, #1`, `str`, `b`, almost never run.
+
+- **Hypothesis**: **with that way out made `bl` to one routine and a word behind it that
+  says how many instructions were run and where the instruction left is, the room for
+  code the three files fill falls by a fifth (110 MB to under 90 MB), and if the wait at
+  a block's first instruction is the cache's or the TLB's the three files take 2% fewer
+  cycles beside E178; if it is the jump's, the cycles do not move.**
+- **What changed since last time**: the sample laid over the code. Nothing in what the
+  blocks do; where they lie.
+- **Next move for each result**:
+  - Cycles fall → the same for the other ways out, and the blocks' own words that are
+    never run (the entries behind an exit that waits), until the blocks lie close
+  - Cycles do not move → the jump: a jump to a constant address on another page made a
+    branch the host needs no table for, with the check at the block it goes to
+- **Cut-off**: one form; the gate; the room filled; the race beside E178.

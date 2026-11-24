@@ -6,6 +6,9 @@
 #   python3 -I tools/build_look.py g64m [options for build/g64m, default --jit --jit-stats]
 #   python3 -I tools/build_look.py qemu
 #
+# LOOK_AFTER and LOOK_FOR (seconds) say when the sampler starts and how long it looks: the
+# build under g64m is under half a minute since E173, and the default would miss it.
+#
 # Leaves build/look-WHO.sample (the sampler's report), build/look-WHO.out (the console)
 # and for QEMU build/look-qemu.jit (the monitor's answer); prints the report's leaves.
 import subprocess, time, sys, os, shutil, socket, re
@@ -68,9 +71,9 @@ else:
     if ok: p.stdin.write(CMD.encode()); p.stdin.flush()
 typed = time.perf_counter()
 # The sampler, from a quarter of a minute into the build (a third of a minute under g64m).
-time.sleep(26 if who == 'g64m' else 12)
+time.sleep(float(os.environ.get('LOOK_AFTER', 26 if who == 'g64m' else 12)))
 rep = 'build/look-%s.sample' % who
-subprocess.run(['sample', str(p.pid), '20', '-file', rep], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run(['sample', str(p.pid), os.environ.get('LOOK_FOR', '20'), '-file', rep], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 ok = ok and wait(b'fin42', 3600)
 took = time.perf_counter() - typed
 if who != 'g64m':
