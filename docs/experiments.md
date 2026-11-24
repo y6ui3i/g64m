@@ -12940,3 +12940,35 @@ container; E164's were 1.04 to 1.07 for the last three and 1.33 to 1.56 for the 
   1.26 s (its first second is the kernel unpacking itself and the interpreter before
   anything is hot); thirteen primitives, each its own loop, the furthest `p_pixel` and
   `p_ldbl` (the x87 by a call, E161).
+
+----
+
+## E176: six instructions a block was left for, translated: LFENCE, RDTSC, CLI, SWAPGS, CLD and STD, LEAVE (2026-11-24)
+
+The owner's bar (2026-11-24): everything at twice QEMU, the whole build, the boot and the
+primitives. The build wants 7% more. E174 showed what its entries are: nine in ten follow
+an interpreted instruction, and each such instruction with the block left before it and
+entered after it is some 650 host instructions (E173). The instructions the interpreter
+runs from their entries in the three files, counted again with the byte behind the
+groups' opcodes: RDTSC 3.87 million, CLI 2.83 million, LFENCE 2.21 million (the kernel's
+barrier behind a bounds check), SWAPGS 1.50 million, CLD 0.74 million, LEAVE 0.65
+million: 11.8 million of some 54 million, and each a few host instructions if a block
+did it. (Not in this: REP STOS 5.1 million, OUT 2.5 million, BTS and BTR of memory with a
+constant 2.2 million, XADD 1.5 million, REP MOVS 1.3 million, STI, IRET, PUSHF, and the
+19 million of kinds that are translated elsewhere: instructions across a page's end for
+the most part.)
+
+- **Hypothesis**: **with those six translated (RDTSC from the time the block is given:
+  the count of instructions is what it reads; CLI at level 0 only; SWAPGS by the two
+  bases given to the block and taken back), the instructions run from their entries and
+  refused fall by 11 million, the entries into blocks by as many, and the three files
+  retire 2% fewer host instructions and take 1.5% fewer cycles beside E173.**
+- **What changed since last time**: the count. Six arms in the translator.
+- **Next move for each result**:
+  - As guessed → the next of the list: BTS and BTR of memory, XADD, REP STOS and REP
+    MOVS as a loop in the block
+  - Refused instructions fall and entries do not → what stands behind each of the six
+    (a block ends where the next is not translated)
+- **Cut-off**: one form; a system test taken on hal for the five the real CPU can be
+  asked about; RDTSC by the boot's count of instructions with and without the JIT; wrong
+  translators; the gate; the race.
