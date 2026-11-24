@@ -226,6 +226,13 @@ var jh: u8[1 << JH_BITS] = [0; 1 << JH_BITS];
 var jit_miss_hot = false;    // the instruction just decoded is at its J_HOT-th time
 var jh_made: u64 = 0;        // blocks made that way
 var jw_rec: i64[2] = [0; 2];
+var jn_ph: u64[8192] = [0; 8192];
+var jn_n: i64[8192] = [0; 8192];
+// --jit-why: where the look for dead flags ended, as blocks were translated: 0 dead, 1 the
+// page's end, 2 an instruction with no entry, 3 one that is neither (it reads flags, or
+// is not known), 4 a conditional jump, 5 CALL or JMP, 6 RET or a jump through an
+// operand, 7 CMOVcc or SETcc, 8 twelve instructions.
+var jf: i64[9] = [0; 9];
 // --jit-why: how often each address has come to the interpreter with no entry (by a hash
 // of the address, with no tag: a count, not a proof), and the arrivals by that number; and
 // of those, how many got a block back (E166).
@@ -266,12 +273,18 @@ fn jit_went() {
         return;
     }
     if far == 1 {
-        if dc_cov[s] != 0 { jw2[4] += 1; } else if dc_heat[s] < J_HOT { jw2[2] += 1; } else { jw2[3] += 1; }
-        return;
+        if dc_cov[s] != 0 { jw2[4] += 1; return; } else if dc_heat[s] < J_HOT { jw2[2] += 1; return; } else { jw2[3] += 1; }
+    } else {
+        if dc_cov[s] != 0 { jw[4] += 1; return; }
+        if dc_heat[s] < J_HOT { jw[2] += 1; return; }
+        jw[3] += 1;
     }
-    if dc_cov[s] != 0 { jw[4] += 1; return; }
-    if dc_heat[s] < J_HOT { jw[2] += 1; return; }
-    jw[3] += 1;
+    // (By kind and form for both, this page's and another's.)
+    if dc[s].ins.kind != 0 {
+        let h = ((ph ^ ph >> 13) & 8191) as! i64;
+        if jn_ph[h] != ph { jn_ph[h] = ph; jn_n[h] = 0; }
+        jn_n[h] += 1;
+    }
     let k: i64 = dc[s].ins.kind;
     jw_kind[k & 63] += 1;
     if k != 0 && k < 64 { jw_form[k * 64 + ((dc[s].ins.reg & 7) as i64) * 8 + (if dc[s].ins.mod == 3 { 4 } else { 0 }) + (if dc[s].ins.p66 { 2 } else { 0 }) + (if dc[s].ins.rep != 0 { 1 } else { 0 })] += 1; }
@@ -511,6 +524,84 @@ fn j_settle_make() {
     let xor = jc.len;
     a_rrr(A_EOR, 1, S2, FA, FB);
     e_b(logic);
+    // E172: the records of SHL, SHR and SAR at 32 and 64 bits, of BT, and of INC and DEC,
+    // as shift, the BT arm of j_settle and incdec (cpu64.goose) make their flags.
+    //
+    // ZF and SF of the result in x2 at its width, onto what x7 holds; then the parity.
+    let zs = jc.len;
+    a_shiftv(4, 1, S3, S2, S4);
+    a_rrr(A_ANDS, 1, ZR, S3, S3);
+    e(0x1A9F07E0 | (C_EQ ^ 1) << 12 | S3);
+    e(0xAA000000 | S3 << 16 | 6 << 10 | FK << 5 | FK);
+    e(0x1A9F07E0 | (C_MI ^ 1) << 12 | S3);
+    e(0xAA000000 | S3 << 16 | 7 << 10 | FK << 5 | FK);
+    e_b(parity);
+    // A count of nothing changes no flag: the record is cleared.
+    let none = jc.len;
+    a_mov(1, FK, ZR);
+    e(0xD65F03C0);
+    // The shifts' way in (x2 the kind, x4 64 less the width): the count in x6, of the
+    // width's bits; and by the kind. 16 and 8 bits are the interpreter's.
+    var sh_at: i64[3] = [0; 3];
+    for k in 3 {
+        sh_at[k] = jc.len;
+        a_addi(0x71, 1, ZR, S4, 32);
+        e_bc(C_HI, fail);
+        a_imm(S3, 63);
+        a_rrr(A_SUB, 1, S3, S3, S4);                         // the width less one
+        a_rrr(A_AND, 1, FB, FB, S3);
+        e(0xB4000000 | ((((none - jc.len) >> 2) as! u32) & 0x7FFFF) << 5 | FB);  // cbz x6, none
+        a_shiftv(4, 1, 29, FA, S4);
+        if k == 2 { a_shiftv(7, 1, 29, 29, S4); } else { a_shiftv(5, 1, 29, 29, S4); }      // the operand, at its width (SAR: with its sign)
+        if k == 0 {
+            // SHL: CF the last bit out at the top; OF the top two bits differing.
+            a_addi(0x11, 1, S2, S3, 1);
+            a_rrr(A_SUB, 1, S2, S2, FB);                     // the width less the count
+            a_shiftv(5, 1, S2, 29, S2);
+            e(0x92400000 | S2 << 5 | FK);                    // and x7, x2, #1
+            e(0xCA000000 | 29 << 16 | 1 << 10 | 29 << 5 | S2);       // eor x2, x29, x29, lsl #1
+            a_shiftv(5, 1, S2, S2, S3);
+            e(0x92400000 | S2 << 5 | S2);
+            e(0xAA000000 | S2 << 16 | 11 << 10 | FK << 5 | FK);
+            a_shiftv(4, 1, S2, 29, FB);
+        } else {
+            // SHR and SAR: CF the last bit out at the bottom; OF the top bit for SHR,
+            // clear for SAR.
+            a_addi(0x51, 1, S2, FB, 1);
+            a_shiftv(5, 1, S2, 29, S2);
+            e(0x92400000 | S2 << 5 | FK);                    // and x7, x2, #1
+            if k == 1 {
+                a_shiftv(5, 1, S2, 29, S3);
+                e(0xAA000000 | S2 << 16 | 11 << 10 | FK << 5 | FK);
+                a_shiftv(5, 1, S2, 29, FB);
+            } else { a_shiftv(7, 1, S2, 29, FB); }
+        }
+        e_b(zs);
+    }
+    // BT: CF is the bit, and no other flag changes.
+    let bt = jc.len;
+    a_imm(S3, 63);
+    a_rrr(A_SUB, 1, S3, S3, S4);
+    a_rrr(A_AND, 1, S3, FB, S3);
+    a_shiftv(5, 1, S3, FA, S3);
+    e(0x92400000 | S3 << 5 | S3);
+    a_ldr(29, CTX, 0);
+    e(0x927FF800 | 29 << 5 | 29);                            // and x29, x29, #~1
+    a_rrr(A_ORR, 1, 29, 29, S3);
+    a_str(29, CTX, 0);
+    a_mov(1, FK, ZR);
+    e(0xD65F03C0);
+    // INC and DEC: ADD and SUB of one, with CF as it was (x29 the operand shifted up).
+    var id_at: i64[2] = [0; 2];
+    for k in 2 {
+        id_at[k] = jc.len;
+        a_imm(FB, 1);
+        a_shiftv(4, 1, S3, FB, S4);
+        a_rrr(if k == 0 { A_ADDS } else { A_SUBS }, 1, S2, 29, S3);
+        a_ldr(S3, CTX, 0);                                   // (neither changes the host's flags)
+        e(0x92400000 | S3 << 5 | FK);                        // and x7, x3, #1
+        e_b(arith);
+    }
     // The way in: nothing above the width (ADC's carry, a count); the shift that brings
     // the width's top bit to bit 63; the operands shifted up; and by the record's kind.
     j_settle_at = jc.len;
@@ -528,6 +619,14 @@ fn j_settle_make() {
     a_addi(0x71, 1, ZR, S2, 1); e_bc(C_EQ, add);
     a_addi(0x71, 1, ZR, S2, 2); e_bc(C_EQ, or);
     a_addi(0x71, 1, ZR, S2, 7); e_bc(C_EQ, xor);
+    if jit_no2 & 32 == 0 {
+        a_addi(0x71, 1, ZR, S2, 0x25); e_bc(C_EQ, sh_at[1]);
+        a_addi(0x71, 1, ZR, S2, 0x24); e_bc(C_EQ, sh_at[0]);
+        a_addi(0x71, 1, ZR, S2, 0x27); e_bc(C_EQ, sh_at[2]);
+        a_addi(0x71, 1, ZR, S2, 0x50); e_bc(C_EQ, bt);
+        a_addi(0x71, 1, ZR, S2, 17); e_bc(C_EQ, id_at[1]);
+        a_addi(0x71, 1, ZR, S2, 16); e_bc(C_EQ, id_at[0]);
+    }
     e_b(fail);
 }
 
@@ -1507,11 +1606,18 @@ fn j_flags_dead(q: u64, page_end: u64) -> bool {
     let keep_at = j_at;
     var at = q;
     var dead = false;
+    var why = 1;
     for i in 12 {
-        if at >= page_end || !j_entry(at) { break; }
+        if at >= page_end { why = 1; break; }
+        if !j_entry(at) { why = 2; break; }
         let len = j_len();
-        if len == 0 { break; }
         let k = jk;
+        if k == K_JCC8 || (k >= K_JCC32 && k < K_CMOV) { why = 4; }
+        else if k == K_CALL || k == K_JMP8 || k == K_JMP32 { why = 5; }
+        else if k == K_RET || (k == K_GRP5 && je.reg & 7 >= 2) { why = 6; }
+        else if k >= K_CMOV { why = 7; }
+        else { why = 3; }
+        if len == 0 { break; }
         let op = je.op;
         let f = je.reg & 7;
         var full = false;
@@ -1528,10 +1634,12 @@ fn j_flags_dead(q: u64, page_end: u64) -> bool {
             K_GRP5 => { neutral = f < 2; },
             _ => {},
         }
-        if full { dead = true; break; }
+        if full { dead = true; why = 0; break; }
         if !neutral { break; }
         at += len;
+        why = 8;
     }
+    if jit_why { jf[why] += 1; }
     je = keep;
     jk = keep_k;
     j_at = keep_at;

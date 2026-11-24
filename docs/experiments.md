@@ -12681,3 +12681,72 @@ other. From here the distance to QEMU is the two side by side; KVM on hal stays 
 **Next.** The records: which instructions that set flags still make one, counted as they
 are translated; a load of one byte without the last byte's page; the blocks left for an
 instruction that is not translated (50 million).
+
+----
+
+## E172: a shift's record, BT's and INC's settled in generated code (2026-11-24)
+
+Where the time outside the blocks goes, after E171: about a quarter of the cycles is the
+interpreter and the way in and out, for 124 million entries into blocks and some 90
+million instructions interpreted between them: 120 cycles for each. A block is left for
+the interpreter 123 million times in the three files: 50 million for an instruction that
+is not translated (the longest list: REP STOS 5.0 million, instructions that lie across
+a page's end some 8 million, OUT, RDTSC, CLI, BT with a constant, XADD, SETcc and PUSH of
+memory, ...), **28.5 million because the next block reads RFLAGS in memory and a record
+waits that only the interpreter settles** (E146 settles ADD, SUB, CMP, AND, TEST, OR and
+XOR in generated code): a shift's 20.5 million, BT's 4.1 million, DEC's 1.9 million, MUL's
+1.0 million.
+
+(The look for dead flags, as blocks are translated: dead 1.75 million times, ended at an
+instruction with no entry 625 thousand, at CALL or JMP 441 thousand, at a conditional
+jump 374 thousand, at RET 143 thousand. By the count of instructions run that is under a
+percent each, and not what is next.)
+
+- **Hypothesis**: **with the records of SHL, SHR and SAR (32 and 64 bits), BT (any width)
+  and INC and DEC (any width) settled by the routine E146 made, the blocks left with a
+  record waiting fall from 28.5 million to under 3 million, the entries from the
+  interpreter by 25 million, and the three files take 2% fewer cycles beside E171.**
+- **What changed since last time**: the count by the record's kind. Only the routine; no
+  block's code changes.
+- **Next move for each result**:
+  - As guessed → the untranslated instructions blocks are left for, the cheapest first
+    (CLD and STD, LEAVE, SETcc and PUSH of memory, XADD)
+  - Exits fall and cycles do not → an exit and entry cost less than 120 cycles, and the
+    interpreter's own instructions are what is left: by kind again
+- **Cut-off**: one form; a test as `j_settle` is (the same flags by the interpreter and
+  by the routine, traced on hal), wrong routines made on purpose; the gate; the race.
+
+**Result: the blocks left with a record waiting fell from 28.5 million to 1.6 million, the
+entries from the interpreter from 124.3 to 99.6 million; 3.2% fewer host instructions and
+2.5% fewer cycles beside E171.**
+
+| The three files, four at once (two of each) | E171 | E172 | |
+|---|---:|---:|---:|
+| Host instructions | 333.63 G, 333.58 G | 323.05 G, 323.11 G | −3.2% |
+| Cycles | 133.58 G, 133.27 G | 129.97 G, 130.19 G | −2.5% |
+| Left with a record waiting | 28.5 million | 1.6 million | |
+| Entries from the interpreter | 124.3 million | 99.6 million | |
+
+- **The hypothesis** held on all three counts.
+- **What a block left and entered again costs, by these numbers**: 10.5 G instructions
+  and 3.35 G cycles for 24.7 million of them: **425 host instructions and 136 cycles
+  each**, with no guest instruction interpreted between (the record settled, the next
+  block entered). The 99.6 million that are left are an eighth of all the instructions
+  retired.
+- **The form**: in the settling routine (`j_settle_make`): SHL, SHR and SAR at 32 and 64
+  bits as `shift` makes their flags (OF from the operand at every count, AF cleared),
+  BT (CF alone), INC and DEC (ADD and SUB of one with CF as it was). What is left to the
+  interpreter: MUL (0.96 million), 16-bit and 8-bit shifts, BSF and BSR, the rotations.
+  `--jit-off2 32` leaves the routine as E146 made it.
+- **The test** `j_settle2` (68 cases, the trace from hal): each case's flags once by the
+  interpreter and once by the routine, compared in the program itself. Six wrong
+  routines fail it (SHR leaves OF clear; SHL takes CF from the wrong bit; SAR without
+  the sign; BT leaves CF clear; INC and DEC clear CF; DEC adds). A seventh passes: with
+  the routine's test for a count of nothing taken out. No record is made for such a
+  count (the translator's shift by CL makes one only when the count is not nothing), so
+  that test is never reached; it stays, as the interpreter's own has it.
+- **The gate**: 117 ok and `make-rc=0` in 447 s.
+
+**Next.** The trip itself: 425 instructions to leave a block and enter the next is what
+100 million entries pay. Counted on a loop that does nothing else, and read under the
+sampler; then the instructions blocks are left for.
