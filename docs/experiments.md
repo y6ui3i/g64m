@@ -13016,3 +13016,91 @@ entries into blocks.**
 **Next.** BTS and BTR of memory with a constant (2.2 million), XADD (1.5 million), REP STOS
 and REP MOVS as a loop in the block (6.4 million), PUSHFQ; then the build against QEMU
 again.
+
+----
+
+## E177: five more a block was left for: BT of memory by a constant, XADD, SETcc and PUSH of memory, XCHG (2026-11-24)
+
+The next of E176's list that are ordinary code and a few host instructions each: BTS, BTR
+and BT of memory by a constant (2.2 million arrivals at the interpreter in the three
+files: the kernel's bit operations on its flags words), XADD (1.5 million: its counters),
+SETcc into memory (some 1.3 million by the hottest addresses), PUSH of memory (1.4
+million), XCHG of a register and memory (0.5 million). REP STOS and REP MOVS are not in
+this: a loop in the block would take sixteen host instructions for each word where the
+interpreter moves a page's stretch at once (E113).
+
+- **Hypothesis**: **with those five translated, the entries into blocks fall by 6 million
+  (90.5 to under 85 million) and the three files retire 1.5% fewer host instructions and
+  take 1% fewer cycles beside E176.**
+- **What changed since last time**: E176 took the first six of the list. Five arms more.
+- **Next move for each result**:
+  - As guessed → the whole build beside QEMU again; then what one `exec64` does for an
+    instruction it interprets (128 host instructions for a NOP)
+  - Under half of it → the count of arrivals was not the count of trips for these (a
+    block ends where the one behind is not translated either): the list by what stands
+    behind each
+- **Cut-off**: one form; a test traced on hal, each in a loop, compared instruction by
+  instruction under `--jit` and `--jit-check`; wrong translators; the gate; the race.
+
+**Result: 2.5% fewer host instructions and 2.2% fewer cycles beside E176; 8.5 million fewer
+entries into blocks.**
+
+| The three files, four at once (two of each) | E176 | E177 | |
+|---|---:|---:|---:|
+| Host instructions | 294.79 G, 294.69 G | 287.47 G, 287.47 G | −2.5% |
+| Cycles | 117.83 G, 117.60 G | 114.96 G, 115.31 G | −2.2% |
+| Entries into blocks | 90.5 million | 82.0 million | |
+
+- **The hypothesis** held, by more than guessed (6 million entries, 1.5% and 1%).
+- **The guest's count of instructions** was 23,868,286,048 in the old build's run and
+  23,859,377,403 in the new one's. It is not the same from run to run of one binary
+  either (23,857,067,687 for E176 an hour before; the guest's clock is the host's): that
+  the two were alike to the last instruction in E176's race said less than its entry
+  took it to say. What holds RDTSC to the interpreter is the wrong translator that fails
+  the boot.
+- **The form** (`--jit-off2 128` leaves all five to the interpreter):
+  - BT, BTS, BTR, BTC of memory by a constant: the operand loaded, the record and the
+    host's test as for a register, stored back for the three that change it (`j_bt`);
+    not by a register, whose number reaches outside the operand;
+  - XADD at 32 and 64 bits (`j_xadd`): the record ADD's, made before the register is
+    given the operand's old value;
+  - SETcc into memory: the address and its checks change no host flag, so the
+    condition is still the instruction's before;
+  - PUSH of memory: read before the stack is touched;
+  - XCHG of a register with a register or memory (87h), 32 and 64 bits.
+- **The test** `j_more` (1,882 instructions traced on hal; the sum compared in the
+  program under `--jit`). Seven wrong translators fail it: XADD leaves the register as
+  it was; XADD without the host's flags; BTS of memory stores nothing; BT's record names
+  the bit beside; SETcc into memory the other way round; PUSH of memory pushes half;
+  XCHG of memory stores nothing.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 460 s.
+
+**Next.** The build against QEMU again, whole. Then the entries that are left (82
+million): STI, PUSHFQ and POPFQ, OUT and IN, IRET, MOV to CR3, REP STOS and REP MOVS are
+the kernel's own and the interpreter's to do; what can still be taken off is what each
+costs (`exec64`'s 128 instructions, the way in and out).
+
+**Beside QEMU, four times, and a correction to E173 and E175.** g64m (E177) and QEMU
+started together, the three files, nothing else running:
+
+| Pair | g64m: s, cycles | QEMU: s, cycles | By the clock | By cycles |
+|---|---:|---:|---:|---:|
+| 1 | 36.6, 99.99 G | 62.9, 181.75 G | 1.72 | 1.82 |
+| 2 | 38.6, 97.74 G | 65.0, 179.90 G | 1.68 | 1.84 |
+| 3 | 42.0, 99.74 G | 70.0, 181.03 G | 1.67 | 1.81 |
+| 4 | 40.7, 91.45 G | 65.6, 168.49 G | 1.61 | 1.84 |
+
+**1.81 to 1.84 by cycles, 1.61 to 1.72 by the clock.** E173's entry said 1.93 by the
+clock and 1.98 by cycles from one pair, in which QEMU took 203.94 G cycles and 67.1 s for
+the same work it does here in 168 to 182 G: one pair is not a measurement of QEMU. E177
+is 5% ahead of E173 by cycles in the same race (E176 and E177), so E173 stood at about
+1.75 by cycles, not 1.98; and E175's whole build (1.86 by the clock, 1.91 by cycles) is
+one pair too. QEMU's instructions are steady (495 to 502 G) and its cycles are not
+(168 to 208 G over the day): it has more than one thread, and where the host runs them,
+on its four fast cores or its four slow ones, is the host's choice. g64m's are 91 to 100
+G here for 286 to 290 G instructions. The clock's ratio is lower than the cycles' today
+because the host gave g64m fewer cycles a second than QEMU (2.4 G against 2.8 G a
+second in these pairs; it was 3.0 G for both in E173's pair).
+
+From here: **the distance to QEMU is the cycles' ratio over at least three pairs**, with
+the clock's beside it, and never one pair.
