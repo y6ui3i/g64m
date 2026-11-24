@@ -1922,7 +1922,7 @@ fn exec64_rest() -> bool {
 // (In this order: each is a multiple of 64 bytes long down to mem, so that with pad_arrays
 // in front every one of them begins on a line of the cache; the odd-sized ones come last.
 // tools/layout.sh says whether they still do.)
-var pad_arrays: u8[7] = [0; 7];
+var pad_arrays: u8[55] = [0; 55];
 var tlb_tag: u64[12 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 12 * TLB_SIZE];
 var sp_tag: u64[6 * SP_SIZE] = [0xFFFFFFFFFFFFFFFF; 6 * SP_SIZE];
 var sp_add: u64[6 * SP_SIZE] = [0; 6 * SP_SIZE];

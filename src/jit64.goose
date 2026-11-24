@@ -99,8 +99,19 @@ fn bt_put(ph: u64, code: u32, n: u8, level: u8, needs: bool) {
 
 // The decode cache's entry `slot` has just been made for the instruction at the block's
 // first: the block is the entry's again.
+// The place of the block that begins at ph and was made at this level, or -1.
+fn bt_at(ph: u64, level: u8) -> i64 {
+    let at = bt_find(ph);
+    if at >= 0 && (bt_what[at] >> 8 & 0xFF) as! u8 == level { return at; }
+    return -1;
+}
+
 fn bt_attach(at: i64, slot: i64) {
     let w = bt_what[at];
+    // The exits that came to wait for this address while its block had no entry are
+    // made branches to it now (E180), as they are when a block is made: they were left
+    // waiting for good, and each use of one was a trip through the interpreter.
+    if jit_no2 & 1024 == 0 { j_wake(dc[slot].tag, bt_code[at], (w >> 8 & 0xFF) as! u8); }
     dc_code[slot] = bt_code[at];
     dc_n[slot] = (w & 0xFF) as! u8;
     dc_cpl[slot] = (w >> 8 & 0xFF) as! u8;
@@ -154,7 +165,8 @@ fn jt_idx() {
 }
 
 // No pair holds an address: each tag is one its own place is not chosen by.
-var jt_clears: i64[4] = [0; 4];       // --jit-why: emptied with something in it; and the cells put back, in all
+var jt_clears: i64[4] = [0; 4];
+var jh_bytes: i64[2] = [0; 2];        // --jit-why: bytes of blocks made, and of them before the first way out behind the block       // --jit-why: emptied with something in it; and the cells put back, in all
 fn jt_clear() {
     if jit_why && (jx[39] != 0 || jx[32] != 0) { jt_clears[0] += 1; jt_clears[1] += jx[39] as! i64; }
     // The cells filled since the last time (E178) ask again.
@@ -919,6 +931,27 @@ let SH_MAX = 64;
 var sh_n = 0;
 var sh_pos: i64[SH_MAX] = [0; SH_MAX];
 
+// The exits that wait for a block at `head` made at `level` are made branches to `code`;
+// the others of the chain stay on it.
+fn j_wake(head: u64, code: i64, level: u8) {
+    let wk = dc_slot(head);
+    var w = dc_wait[wk];
+    var kept: u32 = 0;
+    while w != 0 {
+        let site = (w - 1) as! i64;
+        let next = (jit_peek64(j_mem + site + 4) & 0xFFFFFFFF) as! u32;
+        let to = jit_peek64(j_mem + site + 8) as! u64;
+        let lv = (jit_peek64(j_mem + site + 16) & 0xFF) as! u8;
+        if to == head && lv == level { j_patch(site, code); }
+        else {
+            if next != kept { j_poke32(site + 4, kept); }
+            kept = w;
+        }
+        w = next;
+    }
+    dc_wait[wk] = kept;
+}
+
 // Makes the branch at `site` in the mapping go to `to`.
 // Writes the word w at `site` in the mapping.
 fn j_poke32(site: i64, w: u32) {
@@ -1518,6 +1551,7 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
         let slot = dc_find(t);
         if t == j_head && sh_n < SH_MAX { own = true; jit_links += 1; }
         else if dc[slot].tag == t && dc_n[slot] != 0 && dc_cpl[slot] == cpl { to = dc_code[slot]; jit_links += 1; }
+        else if jit_no2 & 1024 == 0 && bt_at(t, cpl) >= 0 { to = bt_code[bt_at(t, cpl)]; jit_links += 1; }       // (a block whose entry was given up, E180)
         else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; waits = true; }
     }
     // In a machine, an address on another page: looked up as it is jumped to.
@@ -3307,6 +3341,7 @@ fn jit_translate_in(ph: u64) {
                 e_at(tp_pos[i] + 4, dc_wait[ws]);
                 dc_wait[ws] = (j_used + tp_pos[i] + 1) as! u32;
             }
+            if jit_why { jh_bytes[0] += jc.len; jh_bytes[1] += if so_n > 0 { so_at[0] } else { jc.len }; }
             jit_write(j_mem + j_used, jc[..]);
             // The ones that waited for this are made branches to it; the ones in the same
             // chain that wait for another address are chained again.
