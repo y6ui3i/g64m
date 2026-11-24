@@ -13433,3 +13433,54 @@ at E180. (QEMU alone on the host for its last 26 s, which is in its favour.)
 
 **Next.** The whole build beside QEMU, three times as this was; the boot (1.46 at E175);
 the primitives under twice.
+
+----
+
+## E182: everything against QEMU again, at E181 (a measurement; 2026-11-24)
+
+The owner's bar is everything at twice QEMU. The three files are there (E181: 2.01 by
+cycles, the middle of three pairs). The rest by E175's tools, with `main` at E181.
+
+- **Hypothesis**: **the whole build is at twice QEMU as the three files are; the boot is
+  under it; the primitives that were under it are still: what E176 to E181 changed is a
+  machine's blocks, the interpreter's share and the script's look, none of which a
+  program without a kernel has.**
+- **What changed since last time**: E176 to E181.
+- **Next move for each result**:
+  - As guessed → the boot and the twelve primitives are what is left of the bar; which
+    first is the owner's to say
+  - The whole build under 1.9 → what the other files have that the three do not
+- **Cut-off**: one whole build of each side by side (it is twenty minutes: one pair, and
+  said to be one); `tools/boot_race.py`; `tools/prim64_long.sh`.
+
+**Result: the whole build is at 2.18 by the clock and 2.22 by cycles (one pair); the boot
+at 1.78; eleven primitives at twice or more and twelve under, as before.**
+
+| NetHack built in the guest, the two side by side | g64m | QEMU | QEMU / g64m |
+|---|---:|---:|---:|
+| Seconds | 490.7 | 1,069.2 | 2.18 |
+| CPU seconds | 488.7 | 1,073.9 | 2.20 |
+| Cycles | 1,504.4 G | 3,336.6 G | 2.22 |
+| Host instructions | 4,588.0 G | 8,646.1 G | 1.88 |
+
+(One pair: E177's entry says what one pair is worth. QEMU's cycles here are 3,337 G
+where E175's pair had 3,575 G for the same work, so this is not QEMU at its slowest;
+it ran its last 580 s alone, which is in its favour. g64m: 625 s at E173, 491 s now.
+`make-rc=2` in both as always.)
+
+The boot to the shell's prompt, the best of three: g64m 1.50 s, QEMU 2.67 s: **1.78**
+(1.73 s and 1.46 at E175).
+
+The primitives (`tools/prim64_long.sh`), QEMU / g64m: `p_dbl_conv` 14.1, `p_loop` 8.0,
+`p_muldiv` 5.1, `p_dbl_cmp` 4.4, `p_recursion` 3.5, `p_funcptr` 2.8, `p_sha` 2.5,
+`p_float` 2.2, `p_dbl_arith` 2.1, `p_fill` 2.1, `p_switch` 2.1; then `p_ternary` 1.71,
+`p_simd` 1.60, `p_bignum` 1.59, `p_index` 1.58, `p_if` 1.47, `p_pointer` 1.47, `p_shift`
+1.46, `p_rotate` 1.36, `p_bytes` 1.32, `p_pixel` 1.23, `p_ldbl` 1.10, `p_bitfield` 1.07.
+(A tenth either way between runs of the container, as E175 said: `p_sha` was 1.97 there
+and `p_bitfield` 1.45.)
+
+- **The hypothesis** held in all three parts.
+- **Where the bar stands**: the build is past it, whole and in three files. The boot
+  wants 1.33 s where it takes 1.50. Twelve primitives are under it, the furthest
+  `p_bitfield`, `p_ldbl` and `p_pixel`, which are where they were at the first
+  milestone.
