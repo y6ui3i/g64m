@@ -744,6 +744,7 @@ fn jit64_init() -> bool {
             j_fark_at[lv] = jc.len;
             // (x30 is the exit's that called the table's routine: x4 and x29 are used.)
             if jit_why { a_ldr(29, CTX, 248); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 248); }
+            if jit_why { a_ldr(29, CTX, (280 + lv * 8) as! u32); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, (280 + lv * 8) as! u32); }
             a_shifti(5, 1, S2, S1, 12);
             e(0x92402C00 | S2 << 5 | S3);                    // and x3, x2, #0xFFF
             e(0x91400000 | ((4 + lv) as! u32) << 10 | S3 << 5 | S3);         // the table for fetches
@@ -796,6 +797,7 @@ fn jit64_init() -> bool {
             for k in 3 {
                 jt_at[k] = jc.len;
                 if jit_why { a_ldr(29, CTX, 216); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 216); }
+                if jit_why && k == 0 { a_ldr(29, CTX, 296); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 296); }
                 a_ldr(29, CTX, if k == 1 { 240 } else { 232 });
                 jt_idx();
                 e(0x8B001000 | S2 << 16 | 29 << 5 | 29);                         // add x29, x29, x2, lsl #4
@@ -1464,7 +1466,7 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
     // A way out that leaves the instruction it stands at to the interpreter says so
     // (E155): what lies behind that instruction is where a block is wanted.
     if !link { a_imm(30, 1); a_str(30, CTX, 192); }
-    if far { e_far(); }
+    if far { e_far_direct = true; e_far(); e_far_direct = false; }
     else if own {
         // (To this block's own entry, which is known when the block is whole.)
         sh_pos[sh_n] = jc.len;
@@ -1499,8 +1501,10 @@ fn j_far() -> i64 {
 
 // The jump to the block at the address in x1, if there is one: through the table (E165:
 // the routine leaves the block's address, or the way out's, in x29), or by the far way.
+var e_far_direct = false;     // the exit being made is to a constant address (--jit-why counts them)
 fn e_far() {
     let to = j_far();
+    if jit_why && e_far_direct { a_ldr(29, CTX, 304); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 304); }
     var k = 2;
     if machine { k = if cpl == 0 { 0 } else { 1 }; }
     if to != j_out_at && jt_at[k] != 0 {
