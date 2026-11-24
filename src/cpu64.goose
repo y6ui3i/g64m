@@ -1922,7 +1922,7 @@ fn exec64_rest() -> bool {
 // (In this order: each is a multiple of 64 bytes long down to mem, so that with pad_arrays
 // in front every one of them begins on a line of the cache; the odd-sized ones come last.
 // tools/layout.sh says whether they still do.)
-var pad_arrays: u8[55] = [0; 55];
+var pad_arrays: u8[23] = [0; 23];
 var tlb_tag: u64[12 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 12 * TLB_SIZE];
 var sp_tag: u64[6 * SP_SIZE] = [0xFFFFFFFFFFFFFFFF; 6 * SP_SIZE];
 var sp_add: u64[6 * SP_SIZE] = [0; 6 * SP_SIZE];
@@ -1950,6 +1950,8 @@ var dc_cpl: u8[DC_SIZE] = [0; DC_SIZE];
 var jcell: u64[JC_SIZE] = [0; JC_SIZE];
 var jcell_home: u32[JC_SIZE] = [0; JC_SIZE];
 var jdirty: u32[JD_SIZE] = [0; JD_SIZE];
+var tf_list: u32[TF_MAX] = [0; TF_MAX];
+var jtd: u32[JTD_SIZE] = [0; JTD_SIZE];
 var ji_op: i64[512] = [0; 512];      // and for one not behind 0Fh, by its opcode (256 on with REP)
 var jw_op: i64[256] = [0; 256];
 var jw_rk: i64[256] = [0; 256];      // and which records those were (the low byte of the kind), 255 for one with more above the width

@@ -13463,3 +13463,45 @@ they hold; INVLPG looks at 512 places in each of the six.
   - The two fall and the boot does not reach 1.33 s → the same, in that order
 - **Cut-off**: one form; `y_tlb`, `y_paging`, `y_table` (they are about what an emptying
   and INVLPG must forget) with wrong forms made on purpose; the gate; the boot's race.
+
+**Result: the boot takes 1.31 s (it was 1.50 s) beside QEMU's 2.67 s: 2.04. The three
+files' build takes 1.0% fewer cycles.**
+
+| The boot to the shell's prompt | E181 | E185, the TLB's list | E185, and the table's |
+|---|---:|---:|---:|
+| Seconds (three runs) | 1.50 to 1.53 | 1.37, 1.38, 1.38 | 1.32, 1.33, 1.33 |
+| Host instructions | 18.6 G | 17.8 G | 17.55 G |
+| Cycles | 4.72 G | 4.29 G | 4.12 G |
+
+`tools/boot_race.py`, the best of three, twice: QEMU 2.68 and 2.67 s, g64m 1.31 and
+1.31 s: **2.04** (1.78 at E182). The three files, four at once: 258.17 G host
+instructions and 97.41 G cycles for E181, 257.22 G and 96.44 G for E185 (−0.4%, −1.0%).
+
+- **The hypothesis** held: 1.33 s or less. (The sample was not taken again; the seconds
+  are what it was for.)
+- **The form** (`--jit-off2 4096` empties everything as before):
+  - `tf_list`: the walk puts each place of the TLB's tables it fills on it (4,096 at
+    most; over that, `tf_over`); `tlb_flush` writes the listed places' tags, or all
+    24,576 if the list ran over; `tlb_forget` (INVLPG) looks through the list when it
+    is under 1,024 long, where it looked at 3,072 places;
+  - `jtd`: the far way lists the pair of the blocks' table it fills (1,024 at most, the
+    count in `jx[44]`), and `jt_clear` gives the listed pairs their empty tags, or all
+    8,192 if there were more. The first emptying, before anything is listed, is of
+    every pair.
+- **Wrong forms**, against `y_tlb`, `y_paging`, `y_table`, `y_cheap` and `y_user` under
+  `--jit`: the place beside the one filled listed, and INVLPG through the list
+  forgetting nothing, fail the first three; a pair filled in a machine not listed fails
+  `y_table`, after a part was added to it (an address gone to by RET, which asks the
+  table and not a cell, made another page: taken on hal under KVM). That part's first
+  form had its routine at a page's start, which is the table's first place, and the
+  wrong form's list of nothing but zeros emptied the right pair by chance. **One wrong
+  form passes everything**: level 3's pair listed as level 0's. No test goes to a
+  remapped address by RET at level 3; it is owed.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 427 s.
+
+**Where the bar stands** (everything at twice QEMU; Rosetta's time for the seven
+primitives where that is under it): the build 2.18 whole and 1.99 in three files
+(E182), the boot 2.04, ten primitives at twice or more, seven within 4 to 36% of
+Rosetta, six with room that want the guest's memory held another way (E184).
+
+**Next.** The test owed here. Then the owner's: the six primitives are M11's design.

@@ -9,6 +9,8 @@ two addresses that choose the same place in the table
 three calls in one loop, each to its own address; two of the addresses made other pages
 560155555554FF54
 AAAC55555554AAA9
+an address gone to by RET, made another page
+0000000000001818
 a 2 MB page made another, INVLPG given an address elsewhere in it
 0000000000001818
 a block made at level 0, asked for at level 3

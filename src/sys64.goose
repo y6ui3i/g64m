@@ -201,6 +201,15 @@ var tlb_has_1g = false;
 var xf_big: u64[64] = [0; 64];
 var xf_any = false;
 
+// The places of the TLB's tables filled since it was last emptied (E185): the walk puts
+// each on the list, an emptying writes those, INVLPG looks through them. Run over, the
+// whole tables are gone through as before. (tf_list is at the end of cpu64.goose.)
+let TF_MAX = 4096;
+var tf_n = 0;
+var tf_over = false;
+var tf_off = false;          // --jit-off2 4096: as before E185
+var pad_tf: u8[6] = [0; 6];
+
 var tlb_flushes: u64 = 0;        // how often the TLB was emptied
 
 fn tlb_flush() {
@@ -213,7 +222,12 @@ fn tlb_flush() {
         xf_any = false;
     }
     code_end = 0;
-    for i in 6 * TLB_SIZE { tlb_tag[2 * i] = TLB_EMPTY; }
+    // The places filled since the last time, and no others (E185); all of them if the
+    // list ran over.
+    if tf_over || tf_off { for i in 6 * TLB_SIZE { tlb_tag[2 * i] = TLB_EMPTY; } }
+    else { for k in tf_n { tlb_tag[2 * (tf_list[k] as i64)] = TLB_EMPTY; } }
+    tf_n = 0;
+    tf_over = false;
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
     tlb_has_1g = false;
 }
@@ -230,6 +244,16 @@ fn tlb_forget(a: u64) {
     if tlb_has_1g { tlb_flush(); return; }
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
     let first = a >> 12 & 0xFFFFFFFFFFFFFE00;
+    // (Through the list of places filled, when that is shorter than the 3,072 places an
+    // address's 2 MB has in the six tables: E185. The list holds every place that can
+    // hold an entry.)
+    if !tf_over && !tf_off && tf_n < 1024 {
+        for k in tf_n {
+            let i: i64 = tf_list[k];
+            if tlb_tag[2 * i] >> 9 == first >> 9 { tlb_tag[2 * i] = TLB_EMPTY; }
+        }
+        return;
+    }
     for k in 512 {
         let i = ((first + (k as! u64)) & (TLB_SIZE - 1)) as! i64;
         for t in 6 {
@@ -312,6 +336,8 @@ fn walk(a: u64, acc: u8) -> u64 {
         let i = tlb_table(acc) + ((a >> 12 & (TLB_SIZE - 1)) as! i64);
         tlb_tag[2 * i] = a >> 12;
         tlb_tag[2 * i + 1] = add;
+        // (On the list of places filled since the TLB was last emptied, E185.)
+        if tf_n < TF_MAX { tf_list[tf_n] = i as! u32; tf_n += 1; } else { tf_over = true; }
     }
     // (For INVLPG and the blocks' table, E168: code has been fetched from this page.)
     if acc & ACC_EXEC != 0 {
