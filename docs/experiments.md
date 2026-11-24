@@ -13079,3 +13079,28 @@ entries into blocks.**
 million): STI, PUSHFQ and POPFQ, OUT and IN, IRET, MOV to CR3, REP STOS and REP MOVS are
 the kernel's own and the interpreter's to do; what can still be taken off is what each
 costs (`exec64`'s 128 instructions, the way in and out).
+
+**Beside QEMU, four times, and a correction to E173 and E175.** g64m (E177) and QEMU
+started together, the three files, nothing else running:
+
+| Pair | g64m: s, cycles | QEMU: s, cycles | By the clock | By cycles |
+|---|---:|---:|---:|---:|
+| 1 | 36.6, 99.99 G | 62.9, 181.75 G | 1.72 | 1.82 |
+| 2 | 38.6, 97.74 G | 65.0, 179.90 G | 1.68 | 1.84 |
+| 3 | 42.0, 99.74 G | 70.0, 181.03 G | 1.67 | 1.81 |
+| 4 | 40.7, 91.45 G | 65.6, 168.49 G | 1.61 | 1.84 |
+
+**1.81 to 1.84 by cycles, 1.61 to 1.72 by the clock.** E173's entry said 1.93 by the
+clock and 1.98 by cycles from one pair, in which QEMU took 203.94 G cycles and 67.1 s for
+the same work it does here in 168 to 182 G: one pair is not a measurement of QEMU. E177
+is 5% ahead of E173 by cycles in the same race (E176 and E177), so E173 stood at about
+1.75 by cycles, not 1.98; and E175's whole build (1.86 by the clock, 1.91 by cycles) is
+one pair too. QEMU's instructions are steady (495 to 502 G) and its cycles are not
+(168 to 208 G over the day): it has more than one thread, and where the host runs them,
+on its four fast cores or its four slow ones, is the host's choice. g64m's are 91 to 100
+G here for 286 to 290 G instructions. The clock's ratio is lower than the cycles' today
+because the host gave g64m fewer cycles a second than QEMU (2.4 G against 2.8 G a
+second in these pairs; it was 3.0 G for both in E173's pair).
+
+From here: **the distance to QEMU is the cycles' ratio over at least three pairs**, with
+the clock's beside it, and never one pair.
