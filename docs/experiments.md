@@ -12814,6 +12814,11 @@ entered again 678 (it was 812).**
 - **The gate**: 117 ok and `make-rc=0` in 447 s (before the layout's check was added to
   it; the check by hand: aligned).
 
+**Where this stands against QEMU, the two side by side** (started together, nothing else
+running): g64m 34.8 s, 33.9 s of CPU and 103.04 G cycles; QEMU 67.1 s, 66.5 s and
+203.94 G: **1.93 by the clock, 1.96 by CPU time, 1.98 by cycles** (QEMU ran its last 32 s
+alone, which is in its favour). It was 1.75 after E171. KVM on hal: 25 s.
+
 **Next.** One `exec64` again under the debugger, now that the offsets are out of it: what
 the 128 are (the start saved for a fault is a copy of sixteen registers at some
 instructions; the decode cache's entry is copied whole into `ins`); and the way into a
