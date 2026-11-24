@@ -13388,3 +13388,48 @@ thousand.
   - Refusals fall and cycles do not → the instructions before a stop were cheap; on to
     the blocks left for a block on another page (7.5 million)
 - **Cut-off**: one constant; the gate (every script in it waits and types); the race.
+
+**Result: 5.4% fewer host instructions and 6.9% fewer cycles beside E180; the three files
+are at twice QEMU. The first form failed the gate and was changed.**
+
+| The three files, four at once (two of each) | E180 | E181 | |
+|---|---:|---:|---:|
+| Host instructions | 273.98 G, 274.44 G | 259.46 G, 259.45 G | −5.4% |
+| Cycles | 100.29 G, 100.90 G | 93.87 G, 93.52 G | −6.9% |
+| Blocks turned away for time | 10.5 million | 3.55 million | |
+| Guest instructions | 23.870 G, 23.870 G | 23.862 G, 23.862 G | |
+
+- **The hypothesis** guessed 1.5% and 1%: it is four times that. A stop is not only the
+  blocks turned away before it: the script's look itself writes the console out and
+  searches it, 1.46 million times.
+- **The first form** (the constant alone, 262,144) was 5.5% and 7.7%, and **failed the
+  gate**: six of the Linux tests end at a text the script waits for and compare what was
+  printed up to there; with the look later the guest had printed its next prompt as
+  well. The guest did nothing wrong, but a script that sees its text 3 ms late is a
+  worse script, and the guest idled 1.6% more instructions between the characters typed
+  to it.
+- **The form kept**: the serial port's output sets `com_said` (and `replan`, which the
+  run loop already stops for), and the script looks then; while it is typing it looks
+  every 16,384 instructions as before; while it waits for a text and nothing is
+  printed, every 262,144. A text waited for is seen sooner than before, not later.
+- **What this was**: not the emulator's speed at the guest's instructions but its own
+  housekeeping when no terminal is attached, which is how every measurement here is
+  run. With a terminal the look was already every hundredth of a second of the guest's
+  time (some 800 thousand instructions).
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 436 s. The 32-bit machine,
+  which shares `dev.goose`, builds.
+
+**Beside QEMU, three pairs** (the three files, started together, nothing else running):
+
+| Pair | g64m: s, CPU s, cycles | QEMU: s, CPU s, cycles | By the clock | By cycles |
+|---|---:|---:|---:|---:|
+| 1 | 27.3, 27.1, 83.17 G | 59.8, 59.6, 184.33 G | 2.19 | 2.22 |
+| 2 | 27.0, 26.9, 82.54 G | 53.7, 53.7, 166.32 G | 1.99 | 2.01 |
+| 3 | 27.2, 27.0, 82.92 G | 53.8, 53.8, 166.40 G | 1.98 | 2.01 |
+
+**The middle of three: 2.01 by cycles, 1.99 by the clock.** The three files' build is at
+twice QEMU, by a hair, and takes 27 s where KVM on hal takes 25 s. It was 1.89 and 1.80
+at E180. (QEMU alone on the host for its last 26 s, which is in its favour.)
+
+**Next.** The whole build beside QEMU, three times as this was; the boot (1.46 at E175);
+the primitives under twice.

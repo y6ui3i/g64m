@@ -572,7 +572,10 @@ fn main() {
         if fb_w != 0 && screen_open(fb_w as! i32, fb_h as! i32) == 0 { screen_on = true; }
     }
     // How often the terminal, or the script, is looked at: a hundredth of a second of guest
-    // time for the terminal, 16,384 instructions for a script.
+    // time for the terminal; for a script 16,384 instructions while it is typing, and
+    // while it waits for a text only when the guest has printed something, or 262,144
+    // instructions have gone by (E181: it was 16,384 always, and a block is not entered
+    // across a stop: ten million were turned away for time in three files of the build).
     let slice: u64 = if terminal { (insns_per_second() / 100) as! u64 } else { 16384 };
     var next_look = slice;
     var quit = false;
@@ -588,11 +591,14 @@ fn main() {
         // machine is asleep or a request is waiting is there anything to do between two
         // instructions.
         vtime = steps as! i64;
-        if kernel && steps >= next_look {
+        if kernel && (steps >= next_look || com_said) {
+            com_said = false;
             next_look = steps + slice;
             if terminal { if !terminal_step() { quit = true; break; } }
             else {
                 if script_step(a) { scripted = true; break; }
+                // (Waiting for a text now: the next look is when something is printed.)
+                if step_at >= step_kind.len || step_kind[step_at] == 1 { next_look = steps + 262144; }
                 // The network is the host's and runs on the host's time: with a script and
                 // no terminal, the guest is held to the clock for it.
                 if net_on { pace(); }
