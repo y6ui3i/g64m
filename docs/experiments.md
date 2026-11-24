@@ -12857,3 +12857,32 @@ to `jit_enter` again.
   - Entries do not fall → where blocks go when they are left, counted again
 - **Cut-off**: one form; the gate (the boot's count of instructions must be the plain
   boot's to the last one, with `--jit`); the race beside E173.
+
+**Result: not kept. Only 8 million of 98 million entries were from the block before; the
+three files retire 0.7% more host instructions and take the same cycles.**
+
+| The three files, four at once (two of each) | E173 | E174 |
+|---|---:|---:|
+| Host instructions | 302.73 G, 302.65 G | 304.71 G, 304.70 G |
+| Cycles | 122.07 G, 122.34 G | 122.29 G, 122.67 G |
+| Entries into blocks | 99.6 million (E172's count) | 98.0 million, 7.95 million of them straight from the block before |
+
+- **The hypothesis** was wrong in its count: "some 30 million go to a block's first
+  instruction" was E168's number less the records, and E172's settling had taken most of
+  the rest with them (a block left with a record waiting was counted among those that
+  went to a block). What is left to enter straight is 8 million, and the look in the
+  decode cache that every other leaving then pays costs more than those save.
+- **So the entries are what follows an interpreted instruction**: nine in ten times a
+  block is entered from the run loop, the instruction before was interpreted (not
+  translated, not in the cache, cold, or the block's own first). Fewer entries means
+  fewer instructions interpreted; a cheaper entry means `exec64` and `jit_enter`
+  themselves.
+- **The layout's check, added to the gate in E173, failed on this build as it should**:
+  one more global of eight bytes in `jit64.goose` moved the arrays eight past their
+  lines. The gate's other parts passed (117 ok, `make-rc=0`); the guest's count of
+  instructions was the same in old and new (23,864,025,065).
+- The code is taken out again; nothing of E174 is in the tree but this entry.
+
+**Next.** The instructions blocks are left for, by how many each is (E172's list): the
+ones that lie across a page's end are the largest group that is ordinary code; and what
+`exec64` does for each instruction it interprets.
