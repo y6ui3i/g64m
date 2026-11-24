@@ -13433,3 +13433,33 @@ at E180. (QEMU alone on the host for its last 26 s, which is in its favour.)
 
 **Next.** The whole build beside QEMU, three times as this was; the boot (1.46 at E175);
 the primitives under twice.
+
+----
+
+## E185: the TLB emptied by what was put in it (2026-11-24)
+
+The owner's choice: the boot next (1.78 of QEMU at E182; twice is 1.33 s where it takes
+1.50). The boot to the shell's prompt by the counts: 1,516 million guest instructions,
+1,482 million of them in blocks, 4.2 million entries into blocks, 50 ms translating,
+18.6 G host instructions and 4.71 G cycles. **The TLB is emptied 21,474 times in it**
+(the kernel writes CR3 as it sets its tables up, and for every process it starts). Under
+the sampler from the start (1,093 samples): generated code 35%, **`tlb_flush` 10.9%**,
+`sys_group7` 5.9% (INVLPG), `jt_clear` 3.5%, the run loop 9%, `exec64` 8%, `exec64_rest`
+7%, `exec64_miss` 6%. An emptying writes all 24,576 tags of the six tables, whatever
+they hold; INVLPG looks at 512 places in each of the six.
+
+- **Hypothesis**: **with the places filled since the last emptying kept on a list (the
+  walk is the only thing that fills one), and an emptying that writes those and no
+  others (all of them if the list ran over), and INVLPG looking through the list when
+  it is short, `tlb_flush` and `sys_group7` together fall from 17% of the boot's
+  samples to under 4%, and the boot takes 1.33 s or less (1.50 s now), which is twice
+  QEMU's 2.67 s.**
+- **What changed since last time**: the boot sampled; the build's sample had `tlb_flush`
+  nowhere near (23 thousand emptyings in twenty times the instructions).
+- **Next move for each result**:
+  - As guessed → the blocks' table emptied the same way (`jt_clear`, 3.5%), then the
+    boot's first tenths of a second (the start, and the kernel unpacking itself with
+    nothing translated yet)
+  - The two fall and the boot does not reach 1.33 s → the same, in that order
+- **Cut-off**: one form; `y_tlb`, `y_paging`, `y_table` (they are about what an emptying
+  and INVLPG must forget) with wrong forms made on purpose; the gate; the boot's race.
