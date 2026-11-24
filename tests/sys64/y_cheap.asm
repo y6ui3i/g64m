@@ -2,10 +2,13 @@
 ; enough to be translated: CLD and STD (seen by which way MOVSB then goes), CLI (seen in
 ; what PUSHFQ pushes), LEAVE, LFENCE, and SWAPGS (seen in the two bases read back). What
 ; RDTSC gives is the emulator's own count and no CPU's: it is held to the interpreter by
-; the boot's count of instructions with the JIT and without (tools/systest64.sh).
+; the boot's count of instructions with the JIT and without (tools/systest64.sh). Last, a
+; routine with CLI in it called at level 0 until it is a block, then at level 3, where CLI
+; faults: the block made at level 0 is not level 3's (E178 owed this test).
 %include "sys.inc"
     jmp test
 %include "idt.inc"
+%include "ring3.inc"
 
 ROUNDS equ 24
 
@@ -22,8 +25,17 @@ framed:
     leave
     ret
 
+; A routine of its own page, so that the call to it leaves the caller's page: CLI in it.
+    align 4096
+cli_r:
+    cli
+    mov eax, 5
+    ret
+
+    align 4096
 test:
     call idt_init
+    call ring3_init
 
     PUTS "CLD and STD"
     xor r12, r12
@@ -118,7 +130,34 @@ test:
     wrmsr
     mov ecx, 0xC0000102
     wrmsr
+
+    PUTS "a block with CLI made at level 0, called at level 3"
+    xor r12, r12
+    mov r14d, ROUNDS
+.k:
+    call cli_r
+    add r12, rax
+    sub r14d, 1
+    jnz .k
+    PRINT r12
+    mov qword [f_count], 0
+    USER .u
+    PRINT [f_count]                             ; CLI faults there every time
+    PRINT r12
     EXIT
+.u:
+    xor r12, r12
+    mov r14d, ROUNDS
+.ul:
+    lea rax, [.u1]
+    mov [f_resume], rax
+    call cli_r
+    add r12, rax                                ; (not reached)
+.u1:
+    mov rsp, USER_STACK                         ; (the call's return address is left behind)
+    sub r14d, 1
+    jnz .ul
+    LEAVE_USER
 
 ; (On a page of its own: a page of code that is written to is not translated from.)
     align 4096

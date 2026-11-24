@@ -478,6 +478,7 @@ fn e_bc(c: u32, to: i64) { e(0x54000000 | ((((to - jc.len) >> 2) as! u32) & 0x7F
 // as such an entry always did. x2, x3, x4 and x29 are used; x0 (the time), x1 (RIP) and
 // the guest's registers are not touched.
 var j_settle_at = 0;
+var j_leave_at: i64 = 0;      // the routine a way out that leaves an instruction to the interpreter calls (E179)
 var j_mark_at: u64 = 0;
 fn j_settle_make() {
     let fail = jc.len;
@@ -846,6 +847,17 @@ fn jit64_init() -> bool {
             }
         }
     }
+    // The routine for a way out that leaves an instruction to the interpreter (E179): the
+    // word behind the call (x30) holds the instructions run in its upper half and how far
+    // from the block's first the instruction left is in its lower.
+    j_leave_at = jc.len;
+    e(0xB9400000 | 30 << 5 | S2);                            // ldr w2, [x30]
+    e(0xCB400000 | S2 << 16 | 16 << 10 | 0 << 5 | 0);        // sub x0, x0, x2, lsr #16
+    e(0x92403C00 | S2 << 5 | S2);                            // and x2, x2, #0xFFFF
+    a_rrr(A_ADD, 1, S1, RIPB, S2);
+    a_imm(30, 1);
+    a_str(30, CTX, 192);
+    e_b(j_out_at);
     j_settle_make();
     jit_write(j_mem, jc[..]);
     j_keep = jc.len;
@@ -1477,6 +1489,15 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
     var to = j_out_at;
     var waits = false;
     var own = false;
+    // The way out that leaves an instruction to the interpreter (E179): two words, a
+    // call of the routine that does it and what it is to know behind the call. There is
+    // one such way out for every load and store of a block, and they are almost never
+    // taken: five words each made the blocks lie a fifth further apart.
+    if !link && !jit_check && j_leave_at != 0 && off < 0x10000 && cnt < 0x10000 && jit_no2 & 512 == 0 {
+        e(0x94000000 | (((j_leave_at - (j_used + jc.len)) >> 2) as! u32) & 0x3FFFFFF);
+        e((cnt as! u32) << 16 | (off as! u32));
+        return;
+    }
     // In a machine a link stays on the page: there an address's page is known to be this
     // block's. (And blocks are for one privilege level, which nothing in a block changes.)
     let linked = link && !jit_check && jit_no >> 63 == 0 && (!machine || (j_head + off) >> 12 == j_head >> 12);
