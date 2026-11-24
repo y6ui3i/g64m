@@ -13016,3 +13016,28 @@ entries into blocks.**
 **Next.** BTS and BTR of memory with a constant (2.2 million), XADD (1.5 million), REP STOS
 and REP MOVS as a loop in the block (6.4 million), PUSHFQ; then the build against QEMU
 again.
+
+----
+
+## E177: five more a block was left for: BT of memory by a constant, XADD, SETcc and PUSH of memory, XCHG (2026-11-24)
+
+The next of E176's list that are ordinary code and a few host instructions each: BTS, BTR
+and BT of memory by a constant (2.2 million arrivals at the interpreter in the three
+files: the kernel's bit operations on its flags words), XADD (1.5 million: its counters),
+SETcc into memory (some 1.3 million by the hottest addresses), PUSH of memory (1.4
+million), XCHG of a register and memory (0.5 million). REP STOS and REP MOVS are not in
+this: a loop in the block would take sixteen host instructions for each word where the
+interpreter moves a page's stretch at once (E113).
+
+- **Hypothesis**: **with those five translated, the entries into blocks fall by 6 million
+  (90.5 to under 85 million) and the three files retire 1.5% fewer host instructions and
+  take 1% fewer cycles beside E176.**
+- **What changed since last time**: E176 took the first six of the list. Five arms more.
+- **Next move for each result**:
+  - As guessed → the whole build beside QEMU again; then what one `exec64` does for an
+    instruction it interprets (128 host instructions for a NOP)
+  - Under half of it → the count of arrivals was not the count of trips for these (a
+    block ends where the one behind is not translated either): the list by what stands
+    behind each
+- **Cut-off**: one form; a test traced on hal, each in a loop, compared instruction by
+  instruction under `--jit` and `--jit-check`; wrong translators; the gate; the race.
