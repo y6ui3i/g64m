@@ -13547,3 +13547,87 @@ At twice or more: `p_dbl_conv` 13.6, `p_muldiv` 4.7, `p_dbl_cmp` 4.2, `p_loop` 4
 
 **Next.** The owner's word on the bar for the seven. Then `p_ldbl` (the furthest in
 seconds), `p_simd`, `p_index`.
+## E184: an operand's address made once: base and index in one instruction, the same address and its neighbours not made and tested again (2026-11-24)
+
+The bar for the primitives (the owner, 2026-11-24): Rosetta's time for the seven where
+twice QEMU is under it; twice QEMU for the six with room. `p_ldbl` is the furthest in
+seconds and is not first: under the sampler 46% of it is the 80-bit arithmetic itself,
+27% the call's giving and taking and 18% the choosing of the operation, and twice QEMU
+wants 45% off. The four that are 3.5 to 4.7 host instructions for a guest instruction
+are (`p_index`, `p_bignum`, `p_pointer`, `p_bytes`), where the ones near Rosetta are 1.1
+to 1.8.
+
+`p_index`'s two loops read off the dump (a program without a kernel; 32 host
+instructions for the 9 guest instructions of the first):
+
+- `mov x1, x17`, `add x1, x1, x8, lsl #2` for `[r9 + rax*4]`: two where the host has one;
+- `mov eax, [rsi + rax*4]` ... `mov [rsi + rax*4], edx` with neither register changed
+  between: the address made again and tested again for being in memory (four
+  instructions), though x1 still holds it;
+- `[r8 + 507826h]`, `[r8 + 507824h]`, `[r8 + 507820h]`, `[r8 + 507828h]` one after
+  another (the fields of one record): `mov`, `movk`, `add` each time, where the last
+  address is two or four bytes away.
+
+- **Hypothesis**: **with the address of base and index made by one `add`, and x1 kept
+  known as the address of the operand last made (until x1, the base or the index is
+  written), so that the same operand is neither made nor tested again and one with
+  another constant is an `add` of the difference, `p_index` retires a fifth fewer host
+  instructions and is at 1.75 of QEMU or more by `tools/prim64_long.sh 200` (1.49 now);
+  `p_pointer`, `p_bytes` and `p_bignum` each gain a tenth; the three files' build does
+  not lose.**
+- **What changed since last time**: E164 kept which *registers* had been tested as
+  addresses; this keeps the address itself. A program without a kernel only: in a
+  machine x1 is made the physical address by the TLB's look-up.
+- **Next move for each result**:
+  - As guessed → the store's look for remembered instructions in three instructions
+    (six now), then the others' loops read the same way
+  - `p_index` gains and the others do not → their loops read, each
+- **Cut-off**: one form; a test traced on hal with the register changed between two
+  uses, the neighbours, a store behind a load; wrong translators; the gate; the
+  primitives at 200 rounds.
+
+**Result: `p_index` retires 14% fewer host instructions and takes 9% fewer cycles;
+`p_pointer` 7% fewer instructions and the same cycles; the other four and the build do
+not move.**
+
+| 200 rounds, by the host's counters | E181: instructions, cycles | E184 | cycles |
+|---|---:|---:|---:|
+| `p_index` | 25,305 M, 3,871 M | 21,797 M, 3,511 M | −9.3% |
+| `p_pointer` | 24,704 M, 4,566 M | 23,063 M, 4,593 M | +0.6% |
+| `p_bytes` | 24,921 M, 3,676 M | 24,903 M, 3,618 M | −1.6% |
+| `p_bignum` | 42,455 M, 5,484 M | 42,216 M, 5,475 M | |
+| `p_if`, `p_simd` | 17,666 M, 4,415 M; 14,982 M, 5,080 M | the same | |
+| The three files' build (four at once) | 258.6 G, 93.9 G | 258.4 G, 94.0 G | |
+
+- **The hypothesis** did not hold: a fifth fewer instructions for `p_index` was a
+  seventh, which puts it near 1.64 of QEMU where 1.75 was guessed (not measured again in
+  the container); "a tenth each" for the other three was nothing. Their loops are not
+  `p_index`'s.
+- **What `p_index`'s loop is now**: 28 host instructions for 9 guest, at six host
+  instructions a cycle: it is the count that holds it. Thirteen of the 28 are tests: is
+  the address in memory (two instructions, four times), does the store's page hold
+  remembered instructions (five). QEMU's user mode makes neither: its guest's memory is
+  the host's own at an offset, and a wild address is the host's fault to take. That is
+  the distance that is left to Rosetta on these four, and no instruction saved here and
+  there closes it.
+- **The form** (`--jit-off2 2048` leaves it out): `j_addr` keeps `ma_base`, `ma_index`,
+  `ma_scale`, `ma_disp` and what was tested (`ma_rd`, `ma_wn`); the emitter clears
+  `ma_ok` when an instruction's destination is x1 or the host register of the base or
+  the index, and at a call and at `ldp`; `j_chk_n` skips what was tested; `j_lea_into`
+  makes base and index with no constant one `add`. A program without a kernel only.
+- **The test** `j_addr` (1,474 instructions traced on hal): the same operand read then
+  written; its base changed between; its index changed between; the stack used
+  between; neighbours up and down and further than an `add` takes; another scale;
+  relative to RIP. Six wrong translators fail it (the base written and the address
+  kept; the index; x1; the difference taken the wrong way; the scale not looked at;
+  base and index without the scale). Two of the six passed its first form: the value
+  pushed between was the one just read, so the stack's address read the same; and no
+  two operands differed in scale alone.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 429 s (before the test was
+  added; `difftest64` with it: ok).
+
+**Next.** What the six with room would take, put to the owner before more is done: the
+tests of an address are the guest's memory being an array of the emulator's. With the
+guest's memory a mapping of its own and the host's protection round it, a program without
+a kernel needs neither test (QEMU's user mode and what M11's backend would be). That is
+M11's design, not a peephole.
