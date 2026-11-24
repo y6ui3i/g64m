@@ -197,6 +197,14 @@ fn jit_ran_one(slot: i64, ph: u64) {
     if dc_cov[slot] != 0 { ji[2] += 1; return; }
     if dc_heat[slot] < J_HOT { ji[3] += 1; return; }
     ji[4] += 1;
+    // (Of those with a kind: how many lie across the page's end, by whether their
+    // operand's length was ever remembered and where they begin; and by the last
+    // fifteen bytes of the page.)
+    if dc[slot].ins.kind != 0 {
+        if dc[slot].ins.mlen == 0 && (ph & 0xFFF) >= 0xFF1 { ji[5] += 1; }
+        else if (ph & 0xFFF) >= 0xFF1 { ji[6] += 1; }
+        else { ji[7] += 1; }
+    }
     let k: i64 = dc[slot].ins.kind;
     ji_kind[k & 63] += 1;
     if k == 0 {

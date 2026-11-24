@@ -664,6 +664,7 @@ fn main() {
             format(m3, "g64m: jit-why: the look for dead flags: dead ", jf[0], ", the page's end ", jf[1], ", no entry ", jf[2], ", other ", jf[3], ", a conditional jump ", jf[4], ", CALL or JMP ", jf[5], ", RET or through an operand ", jf[6], ", CMOVcc or SETcc ", jf[7], ", twelve ", jf[8], "\n");
             for i in 8192 { if jn_n[i] > 150000 { format(m3, "g64m: jit-why: hot ", jn_n[i], " "); hex64(m3, mem_rd(jn_ph[i], 64)); format(m3, " "); hex64(m3, mem_rd(jn_ph[i] + 8, 64)); format(m3, " at "); hex64(m3, jn_ph[i]); format(m3, "\n"); } }
             for i in 64 { if jq_k[i] != 0 { format(m3, "g64m: jit-why: not run, first of kind ", i, " ", jq_k[i], "\n"); } }
+            format(m3, "g64m: jit-why: refused with a kind: in the page's last fifteen bytes with no operand remembered ", ji[5], ", there with one ", ji[6], ", elsewhere ", ji[7], "\n");
             for i in 64 { if ji_kind[i] != 0 { format(m3, "g64m: jit-why: interpreted kind ", i, " ", ji_kind[i], "\n"); } }
             for i in 512 { if ji_op[i] != 0 { format(m3, "g64m: jit-why: interpreted op ", i, " ", ji_op[i], "\n"); } }
             for i in 1024 { if ji_grp[i] != 0 { format(m3, "g64m: jit-why: interpreted group ", i / 256, " byte ", i % 256, " ", ji_grp[i], "\n"); } }
