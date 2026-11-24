@@ -13285,3 +13285,64 @@ The sampler has `exec64` and `exec64_rest` at 13% of the time by themselves.
     by what the instruction with no entry is); the arrays made one all the same
 - **Cut-off**: three sizes built from one tree and raced with 2^20 at the same time, the
   counts beside; the gate at the size kept.
+
+**Result: the hypothesis was wrong, and what the sizes showed led to something else. A
+smaller cache is much slower; a larger one is faster; and most of what the larger one
+buys is had at this size by linking the exits that were left waiting: 3.1% fewer host
+instructions and 1.7% fewer cycles beside E179.**
+
+The sizes, four at once from one tree (then three at once for the larger ones; the guest's
+count the same in all, 23,869,198,452):
+
+| Entries | Host instructions | Cycles | Entries into blocks | Entries of a block's first given up | Maximum resident set |
+|---|---:|---:|---:|---:|---:|
+| 2^14 | 721.64 G | 258.87 G | 898 million | 110 million | |
+| 2^16 | 421.26 G | 166.80 G | 336 million | 20.7 million | |
+| 2^18 | 311.24 G | 131.16 G | 131 million | 4.8 million | |
+| 2^20 (as it is) | 280.97 G | 116.74 G | 75 million | 0.96 million | |
+| 2^20, again beside the next two | 282.97 G | 105.63 G | 81 million | 1.13 million | 484 MB |
+| 2^21 | 276.39 G | 102.52 G (−2.9%) | 67 million | 0.59 million | 617 MB |
+| 2^22 | 273.61 G | 101.24 G (−4.2%) | 60 million | 1.19 million | 722 MB |
+
+- **The hypothesis** ("2^16 is 2% faster, more decoded again but closer together") was
+  wrong by a factor: 43% slower. The cache is not only the interpreter's: the far way
+  finds a block by its first instruction's entry, and an entry given up sends every jump
+  to that block through the interpreter until it is decoded again.
+- **Choosing the entry to give up** (an empty one; one inside a block; one that is no
+  block's first; the colder), tried again now that a block outlives its entry: 16
+  million blocks' entries given up where there were 0.95 million, 103 million entries
+  into blocks for 72 million, 1.9% more cycles. Taken back, as in E152.
+- **Why the larger cache is faster**, by `--jit-why` at 2^20 and 2^22: the blocks left
+  for an address that *is* a block's first instruction are 31.6 million at 2^20 (13.4
+  million on the page, 18.2 million on another) and 14.1 million at 2^22. On the page
+  those are exits that wait: a block made while the block it jumps to had no entry puts
+  its exit on the list of those waiting for that address, the list is gone through
+  when a block is *made*, and a block that comes back to a new entry (E166) is not
+  made. Such an exit stayed a trip through the interpreter for good.
+- **What is kept** (`--jit-off2 1024` leaves it out): an exit to an address on its page
+  is linked at once to a block that has no entry now (`bt_at`: the blocks' own table,
+  at this level); and a block that comes back to an entry takes the exits that wait for
+  it (`j_wake`, the loop a new block has). Beside E179, four at once:
+
+| The three files | E179 | E180 | |
+|---|---:|---:|---:|
+| Host instructions | 282.60 G, 282.44 G | 273.66 G, 273.90 G | −3.1% |
+| Cycles | 112.10 G, 112.24 G | 110.19 G, 110.35 G | −1.7% |
+| Entries into blocks | 77.8 million | 58.2 to 61.1 million | |
+| Left for a block's first instruction: on the page, on another | 13.4, 18.2 million | 4.5, 7.5 million | |
+
+  At 2^20 the entries are now what they were at 2^22 (61 million); 2^22 was still 2.7%
+  ahead by cycles in the one race that had all three (99.51 G against 102.25 G and
+  103.29 G), which is not the entries and was not looked into.
+- **Two wrong forms**, against the system tests under `--jit`: a block that comes back
+  taking every exit of its chain whatever address each waits for fails the Linux boots;
+  a link to a block of the other level fails the boot on a frame buffer. No small test
+  has an exit left waiting: the boots are what holds this.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 450 s.
+
+**The size is the owner's, as in E152**: 2^21 would be 133 MB more resident and 2^22 237
+MB more, for what is now under 3%.
+
+**Next.** What 2^22 still has over this (the same entries, 2.7% fewer cycles): the
+instructions decoded again, or the arrays' lines. The 7.5 million left for a block on
+another page: the far way finding it in the blocks' own table.
