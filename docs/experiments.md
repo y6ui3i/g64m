@@ -12750,3 +12750,36 @@ entries from the interpreter from 124.3 to 99.6 million; 3.2% fewer host instruc
 **Next.** The trip itself: 425 instructions to leave a block and enter the next is what
 100 million entries pay. Counted on a loop that does nothing else, and read under the
 sampler; then the instructions blocks are left for.
+
+----
+
+## E173: the globals the interpreter uses, near the start of the block (2026-11-24)
+
+E172 put a number on leaving a block and entering the next: 425 host instructions. A loop
+in a machine that does nothing else (a system test's frame, `nop` and `sub; jnz`) says
+what the interpreter itself takes: **172 host instructions for a NOP** and 40 cycles
+(nine NOPs against one, ten million rounds), and 800 for a round that leaves the block
+for one CLD. One `exec64` stepped under the debugger: 130 instructions, **some ninety of
+them `mov`, `movk` and the load or store of one global**. Goose packs the globals into
+one block in the order the files come, and the first 48 MB of it are arrays (the TLB's
+tables, the tables of blocks: sys64's and jit64's come before cpu64's); RIP, RFLAGS, the
+registers, the count of instructions and the rest of the interpreter's state lie behind
+them, mem (256 MB) behind those, and what is declared after that (`rep_until`, the
+devices' flags) 363 MB in. An offset over 64 KB costs two instructions to make before
+the access.
+
+- **Hypothesis**: **with every array of 2 KB or more declared at the end of the last of
+  the three files, so that the scalars of all three come first in the block (an access
+  is then one instruction under 32 KB and two under 64 KB), a NOP in the interpreter is
+  under 120 host instructions, and the three files retire 5% fewer host instructions and
+  take 2% fewer cycles beside E172.**
+- **What changed since last time**: the trip measured (E172), and the debugger's count.
+  Nothing but where 37 arrays are declared.
+- **Next move for each result**:
+  - As guessed → what else one `exec64` does (the start saved for a fault, the two looks
+    in the decode cache), and the same for the way into a block
+  - The NOP's count falls and the build's cycles do not → `mov` and `movk` cost this
+    host nothing; the trip's 136 cycles are elsewhere, and the sampler's addresses in
+    `exec64` are next
+- **Cut-off**: one form; the offsets printed before and after; the loop's count; the
+  gate; the race beside E172.
