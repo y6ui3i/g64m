@@ -13700,3 +13700,58 @@ primitives where that is under it): the build 2.18 whole and 1.99 in three files
 Rosetta, six with room that want the guest's memory held another way (E184).
 
 **Next.** The test owed here. Then the owner's: the six primitives are M11's design.
+
+----
+
+## E186: the whole build beside QEMU three times, at E185 (a measurement; 2026-11-24)
+
+E182 had the whole build at 2.18 of QEMU by the clock and 2.22 by cycles, from one pair,
+and said one pair is not a measurement. Before the work leaves this repository (the owner,
+2026-11-24: what comes next is made in Rust, as r64m), the same three times, with `main`
+at E185.
+
+- **Hypothesis**: **the middle of three pairs is 2.0 or more by cycles, and under E182's
+  2.22: that pair had QEMU slow or g64m quick.**
+- **What changed since last time**: E184 and E185 (the build 1% fewer cycles); three pairs
+  where there was one.
+- **Next move for each result**:
+  - As guessed → the number that is written down for the build is this one
+  - Under 1.9 → the same, and E182's taken back
+- **Cut-off**: three pairs, an hour.
+
+**Result: 1.98 by the clock and 2.03 by cycles (the middle of three). E182's 2.18 and 2.22
+were one pair.**
+
+| Pair | g64m: s, CPU s, cycles | QEMU: s, CPU s, cycles | By the clock | By cycles |
+|---|---:|---:|---:|---:|
+| 1 | 552.6, 537.4, 1,622.8 G | 1,091.4, 1,074.9, 3,290.4 G | 1.98 | 2.03 |
+| 2 | 561.8, 544.9, 1,618.4 G | 1,090.2, 1,076.6, 3,270.1 G | 1.94 | 2.02 |
+| 3 | 634.7, 622.0, 1,558.5 G | 1,320.9, 1,313.4, 3,693.7 G | 2.08 | 2.37 |
+
+(`make-rc=2` in all six as always. Host instructions: g64m 4,586 to 4,592 G, QEMU 8,698 to
+8,806 G: 1.90. The third pair is the host busy or warm: both took longer, and QEMU's
+cycles are an eighth over its other two.)
+
+- **The hypothesis** held: 2.03 by cycles, under 2.22.
+- **g64m's own cycles for the same work**: 1,504 G in E182's pair, 1,559 to 1,623 G here,
+  with E184 and E185 in it, which take cycles off. A twentieth either way is this host,
+  not the emulator; over twenty minutes it does not average out.
+
+**Where g64m stands when the work moves to r64m**, each the middle of three or the best
+of three as said:
+
+| | QEMU / g64m | |
+|---|---:|---|
+| NetHack built in the guest, whole | 1.98 by the clock, 2.03 by cycles | three pairs (this) |
+| The three files | 1.99, 2.01 | three pairs (E181; E184 and E185 take 1% more off) |
+| The boot to the shell's prompt | 2.04 | the best of three, twice (E185) |
+| Ten primitives | 2.0 to 13.6 | 200 rounds (E183) |
+| Seven primitives | 1.03 to 1.64; 1.04 to 1.36 of Rosetta, which is their bar | E183 |
+| Six primitives | 1.10 to 1.52 (`p_index` about 1.64 since E184, by the counters) | E183 |
+
+The three files take 27 s where KVM on hal takes 25 s.
+
+**What is owed and not done**: a test that tells level 3's pair of the blocks' table
+listed as level 0's (E185); a small test with an exit left waiting (E180). **What was
+found to be the language's and not mended**: E184's and E173's entries, and r64m's
+`docs/adr/0001`.
