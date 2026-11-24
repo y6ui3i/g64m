@@ -12823,3 +12823,37 @@ alone, which is in its favour). It was 1.75 after E171. KVM on hal: 25 s.
 the 128 are (the start saved for a fault is a copy of sixteen registers at some
 instructions; the decode cache's entry is copied whole into `ins`); and the way into a
 block the same way.
+
+----
+
+## E174: from a block to the next block without the run loop between (2026-11-24)
+
+One round of the CLD loop stepped under the debugger, by function (E173's build). The
+block entered from the interpreter: `exec64` 78 instructions, `exec64_rest` 104 (it is
+`jit_enter`, in line), `jit_call4` 6, generated code 51 (the way in, three guest
+instructions, the way out), `exec64_rest` 25, `j_settle` 26 and `alu` 63 (the record the
+block left, made into RFLAGS), `exec64_rest` 32, `exec64` 10, the run loop 33: 428. The
+CLD interpreted: `exec64` 91, `exec64_rest` 97, `exec64` 10, the run loop 33: 231.
+
+Of the 100 million times a block is left for the interpreter, some 30 million go to an
+address that is a block's first instruction (E168's count less the records E172 took):
+the far way did not find it (its entry of the decode cache was given up, E166 gives the
+block back at the next decoding), or the way out was one that does not link. Nothing is
+interpreted between; the run loop, `exec64` and `exec64_rest` are gone through to come
+to `jit_enter` again.
+
+- **Hypothesis**: **with `jit_enter` looking, when a block comes back, whether the address
+  it went to is a block's first instruction with time left for it, and entering that
+  block at once (the count of instructions moved on as the run loop would have), the
+  entries from the run loop fall from 100 million to under 75 million and the three files
+  retire 1.5% fewer host instructions and take 1% fewer cycles beside E173.**
+- **What changed since last time**: the round stepped. A block cannot change what the run
+  loop asks between two instructions (a request from a device, `attn`, `replan`, TF and
+  IF are set by interpreted instructions and by the devices' turn only), so nothing is
+  skipped but the asking.
+- **Next move for each result**:
+  - As guessed → the record left waiting over such an entry (89 instructions of the 428
+    are its settling, and the next block may not read it)
+  - Entries do not fall → where blocks go when they are left, counted again
+- **Cut-off**: one form; the gate (the boot's count of instructions must be the plain
+  boot's to the last one, with `--jit`); the race beside E173.
