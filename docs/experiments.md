@@ -12972,3 +12972,47 @@ the most part.)
 - **Cut-off**: one form; a system test taken on hal for the five the real CPU can be
   asked about; RDTSC by the boot's count of instructions with and without the JIT; wrong
   translators; the gate; the race.
+
+**Result: 2.5% fewer host instructions and 1.8% fewer cycles beside E173; 9.1 million fewer
+entries into blocks.**
+
+| The three files, four at once (two of each) | E173 | E176 | |
+|---|---:|---:|---:|
+| Host instructions | 302.54 G, 302.53 G | 294.82 G, 294.82 G | −2.5% |
+| Cycles | 122.90 G, 122.87 G | 120.66 G, 120.78 G | −1.8% |
+| Entries into blocks | 99.6 million | 90.5 million | |
+| Guest instructions | 23,857,067,687 | 23,857,067,687 | |
+
+- **The hypothesis** held (2% and 1.5% guessed); the entries fell by 9.1 million where 11
+  were guessed. The guest's count is the same to the last instruction, which is what
+  says RDTSC reads in a block what it reads in the interpreter: the kernel times itself
+  by it.
+- **The form** (`j_one`'s first arm for an instruction with no kind, `--jit-off2 64`
+  leaves them to the interpreter):
+  - CLD and STD: bit 10 of RFLAGS as the blocks have it in memory; CLI the same for bit
+    9, in a machine at level 0 only;
+  - LEAVE: RBP's word loaded (the block is left there if its page is not at hand, with
+    nothing changed), then RSP and RBP;
+  - LFENCE, MFENCE, SFENCE: nothing;
+  - RDTSC: the count the run may come to (`jx[34]`) less the time left (x0) and the
+    block's instructions before it; not under `--jit-check`, whose blocks are given
+    their own length for time;
+  - SWAPGS at level 0: `jx[18]` and `jx[33]` change places, and `jit_enter` takes both
+    back into `gs_base` and `msr_kernel_gs`.
+- **A fault of `--jit-check` found on the way**: `jit_both` did not take RFLAGS back from
+  where the block has it in memory, only the record. Nothing wrote there but the record's
+  settling until now; with CLD in a block the checked run said the block differed, which
+  it did not. It reads it back now.
+- **The test** `y_cheap` (taken on hal under KVM): CLD and STD seen by which way MOVSB
+  goes, CLI by what PUSHFQ pushes, LEAVE in a frame, LFENCE, SWAPGS by the two bases read
+  back. Five wrong translators fail it (CLD and STD the wrong way round; CLI clears
+  nothing; LEAVE leaves RSP at the saved RBP; SWAPGS moves one base only; the base kept
+  aside not taken back). Its first form had its data on the page of its code: a page of
+  code that is written to is not translated from, and all five passed. RDTSC wrong (the
+  block's instructions before it left out) fails the boot on a frame buffer in
+  `systest64` under `--jit`, and nothing else.
+- **The gate**: 120 ok, the layout aligned, `make-rc=0`, in 454 s.
+
+**Next.** BTS and BTR of memory with a constant (2.2 million), XADD (1.5 million), REP STOS
+and REP MOVS as a loop in the block (6.4 million), PUSHFQ; then the build against QEMU
+again.

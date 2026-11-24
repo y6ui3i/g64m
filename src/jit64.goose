@@ -200,7 +200,12 @@ fn jit_ran_one(slot: i64, ph: u64) {
     let k: i64 = dc[slot].ins.kind;
     ji_kind[k & 63] += 1;
     if k == 0 {
-        if dc[slot].ins.op == 0x0F { ji_0f[mem_rd(ph + dc[slot].ins.plen, 8) as! i64] += 1; }
+        if dc[slot].ins.op == 0x0F {
+            let o2 = mem_rd(ph + dc[slot].ins.plen, 8) as! i64;
+            ji_0f[o2] += 1;
+            // (The byte behind, for the groups: 0F 01, 0F AE, 0F BA, 0F C7.)
+            if o2 == 0x01 || o2 == 0xAE || o2 == 0xBA || o2 == 0xC7 { ji_grp[(if o2 == 0x01 { 0 } else if o2 == 0xAE { 256 } else if o2 == 0xBA { 512 } else { 768 }) + (mem_rd(ph + dc[slot].ins.plen + 1, 8) as! i64)] += 1; }
+        }
         else { ji_0f[256] += 1; ji_op[dc[slot].ins.op as i64 + (if dc[slot].ins.rep != 0 { 256 } else { 0 })] += 1; }
     }
 }
@@ -295,6 +300,9 @@ var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made 
 // zero when the SSE unit is not to be used (E139: a machine's CR0.TS or EM set, or
 // CR4.OSFXSR clear; the interpreter faults), [23] dc_runs (--jit-time), [24] set by a way
 // out that leaves an instruction to the interpreter (E155).
+// [33] the GS base kept aside (SWAPGS in a block) and [34] the count of instructions the run
+// may come to (RDTSC in a block), E176; [32] not zero when the far way has put something
+// in the table of blocks since it was emptied (E165).
 var pad_jx: u8[6] = [0; 6];      // (jx at a multiple of 8 in the block: tools/layout.sh, E173)
 var jx: u64[40] = [0; 40];
 // --jit-check: each store's address and the eight bytes that were there.
@@ -911,8 +919,14 @@ fn j_len() -> u64 {
         // No kind: an SSE instruction's length is known if its operand's is (all of them
         // have one but EMMS), with a constant behind it for some.
         if op >= 0xD8 && op <= 0xDF { return m; }                // the x87 (E161): ModRM and nothing behind it
+        // CLI, CLD, STD and LEAVE (E176): the opcode is all of them.
+        if op == 0xFA || op == 0xFC || op == 0xFD || op == 0xC9 { return p; }
         if op != 0x0F { return 0; }
         let op2 = mem_rd(j_at + p, 8) as! u8;
+        // RDTSC; LFENCE, MFENCE and SFENCE; SWAPGS (E176).
+        if op2 == 0x31 { return p + 1; }
+        if op2 == 0xAE && mem_rd(j_at + p + 1, 8) >= 0xE8 { return p + 2; }
+        if op2 == 0x01 && mem_rd(j_at + p + 1, 8) == 0xF8 { return p + 2; }
         if op2 >= 0xC8 && op2 <= 0xCF { return p + 1; }      // BSWAP (E147): no operand's bytes
         if m == 0 { return 0; }
         if op2 == 0xBC || op2 == 0xBD || op2 == 0xB1 { return m; }       // BSF, BSR, CMPXCHG
@@ -2313,6 +2327,69 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     let op = je.op;
     let k = jk;
     if k == 0 {
+        // E176: six instructions with no operand in memory but LEAVE's, that a block was
+        // left for some twelve million times in three files of the build.
+        let plain = !je.asz32 && je.sg == 0 && je.rep == 0 && !je.p66 && jit_no2 & 64 == 0;
+        if op == 0xFC || op == 0xFD {
+            // CLD and STD: DF, in RFLAGS as the blocks have it in memory.
+            if !plain { return 0; }
+            a_ldr(29, CTX, 0);
+            e((if op == 0xFC { 0x12000000 } else { 0x32000000 }) | 1 << 31 | a_logimm(if op == 0xFC { ~(0x400 as u64) } else { 0x400 }, 1) << 10 | 29 << 5 | 29);
+            a_str(29, CTX, 0);
+            return len;
+        }
+        if op == 0xFA {
+            // CLI, at level 0 (no I/O privilege level stands above it): IF cleared.
+            if !plain || !machine || cpl != 0 { return 0; }
+            a_ldr(29, CTX, 0);
+            e(0x12000000 | 1 << 31 | a_logimm(~(0x200 as u64), 1) << 10 | 29 << 5 | 29);
+            a_str(29, CTX, 0);
+            return len;
+        }
+        if op == 0xC9 {
+            // LEAVE: RBP's word is read before anything is changed.
+            if !plain || je.rex != 0 || machine && jit_no >> 56 & 1 != 0 { return 0; }
+            a_mov(1, S1, hg(5));
+            j_chk(false);
+            j_load(64, S3);
+            a_addi(0x11, 1, hg(4), hg(5), 8);
+            a_mov(1, hg(5), S3);
+            return len;
+        }
+        if op == 0x0F && plain {
+            let op2 = mem_rd(q + je.plen, 8) as! u8;
+            let b = mem_rd(q + je.plen + 1, 8) as! u8;
+            if op2 == 0x31 {
+                // RDTSC is the count of instructions (cpu64.goose): the time the block was
+                // given is what was left of the run's (jx[34]) when it was entered, so
+                // the count before this instruction is that less x0, and the instructions
+                // of the block before this one. Not under --jit-check, whose blocks are
+                // given their own length for time.
+                if jit_check { return 0; }
+                a_ldr(29, CTX, 272);
+                a_rrr(A_SUB, 1, 29, 29, 0);
+                if cnt != 0 { a_addi(0x11, 1, 29, 29, cnt as! u32); }
+                e(0x2A0003E0 | 29 << 16 | hg(0));            // mov w(RAX), w29
+                a_shifti(5, 1, hg(2), 29, 32);
+                return len;
+            }
+            if op2 == 0xAE && b >= 0xE8 { return len; }      // LFENCE, MFENCE, SFENCE: nothing here
+            if op2 == 0x01 && b == 0xF8 {
+                // SWAPGS, at level 0: GS's base as the block has it (jx[18]) and the one
+                // kept aside (jx[33]) change places; jit_enter takes both back.
+                if !machine || cpl != 0 { return 0; }
+                a_ldr(29, CTX, 144);
+                a_ldr(30, CTX, 264);
+                a_str(30, CTX, 144);
+                a_str(29, CTX, 264);
+                return len;
+            }
+        }
+        if op == 0xFA || op == 0xC9 { return 0; }
+        if op == 0x0F {
+            let o2 = mem_rd(q + je.plen, 8) as! u8;
+            if o2 == 0x31 || (o2 == 0xAE && mem_rd(q + je.plen + 1, 8) >= 0xE8) || (o2 == 0x01 && mem_rd(q + je.plen + 1, 8) == 0xF8) { return 0; }
+        }
         // BT, BTS, BTR, BTC and the double shifts (E138), in a machine too.
         if op == 0x0F && !je.asz32 && je.sg == 0 && je.rep == 0 {
             let op2 = mem_rd(q + je.plen, 8) as! u8;
@@ -3222,6 +3299,9 @@ fn jit_enter() -> bool {
     // (In a machine: this level's table for reads, E171; a store's is two tables on.)
     jx[6] = if machine { jx[19] + (if cpl == 3 { 16 * TLB_SIZE } else { 0 }) } else { j_mark_at };
     jx[22] = if machine && (cr4 & 0x200 == 0 || cr0 & 0xC != 0) { 1 } else { 0 };
+    // (For SWAPGS and RDTSC in a block, E176.)
+    jx[33] = msr_kernel_gs;
+    jx[34] = rep_until;
     if jit_check { return jit_both(slot, n); }
     var t0: i64 = 0;
     var t1: i64 = 0;
@@ -3252,6 +3332,8 @@ fn jit_enter() -> bool {
     // (RFLAGS as the blocks left it in memory: a record settled on the way into one, E146.)
     rflags = jx[0];
     rip = jx[4];
+    gs_base = jx[18];
+    msr_kernel_gs = jx[33];
     j_settle();
     // Where the block went is where a jump landed; or, an instruction left, behind it.
     jit_land = !left;
@@ -3292,6 +3374,8 @@ fn jit_both(slot: i64, n: u64) -> bool {
     jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + j_lead(dc_needs[slot] != 0), rip as! i64);
     let ran = n - jx[9];
     if ran == 0 { return false; }
+    // (RFLAGS as the block left it in memory: CLI, CLD and STD change it there, E176.)
+    rflags = jx[0];
     j_settle();
     // What the block stored is kept and taken back, last store first.
     jv_stores = jx[7] as! i64;
