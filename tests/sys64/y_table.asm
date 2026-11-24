@@ -29,6 +29,22 @@ run:
     jnz .l
     ret
 
+; Goes to the routine at V + 50234h by RET, ROUNDS times, and adds what it leaves in EAX
+; to R12.
+byret:
+    mov r14d, ROUNDS
+.l:
+    lea rax, [.b]
+    push rax
+    mov rax, V + 0x50234
+    push rax
+    ret
+.b:
+    add r12, rax
+    sub r14d, 1
+    jnz .l
+    ret
+
 ; Calls three routines ROUNDS times, each from its own place, and mixes what they leave
 ; into R12.
 three:
@@ -126,6 +142,22 @@ test:
     mov rax, V + 0x34000
     invlpg [rax]
     call three
+    PRINT r12
+
+    PUTS "an address gone to by RET, made another page"
+    mov rax, P + 0x3234                         ; (memory's first gigabyte is mapped to itself;
+    mov dword [rax], 0x000001B8                 ; not at a page's start: the table's place
+    mov word [rax + 4], 0xC300                  ; for it is not its first)
+    mov rax, P + 0x4234
+    mov dword [rax], 0x000100B8
+    mov word [rax + 4], 0xC300
+    MAP V + 0x50000, P + 0x3000, 3
+    xor r12, r12
+    call byret                                  ; (RET asks the table, not a cell: E185)
+    MAP V + 0x50000, P + 0x4000, 3
+    mov rax, V + 0x50000
+    invlpg [rax]
+    call byret
     PRINT r12
 
     PUTS "a 2 MB page made another, INVLPG given an address elsewhere in it"

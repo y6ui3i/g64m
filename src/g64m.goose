@@ -484,6 +484,7 @@ fn main() {
             let n, ok = parse_int(a[i]);
             guard ok else { write_stderr("g64m: --jit-off2 needs a number\n"); exit(2); }
             jit_no2 = n as! u64;
+            tf_off = jit_no2 & 4096 != 0;
         }
         else if a[i] == "--headless" { headless = true; }
         else if a[i] == "--disk" && i + 1 < a.len { i++; disk_arg = i; }

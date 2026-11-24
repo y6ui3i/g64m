@@ -142,6 +142,7 @@ fn bt_clear() {
 // when a page with blocks is written to and when the blocks are forgotten: an address may
 // then mean another page, or the code there be wrong. A block whose entry the decode cache
 // gave up stays in the table: it is right code for its page until the page is written.
+let JTD_SIZE = 1024;         // pairs of the table filled since it was emptied that are listed (E185)
 let JT_BITS = 12;
 let JT_SIZE = 1 << JT_BITS;
 var jt_at: i64[3] = [0; 3];          // the routines: a machine's levels 0 and 3, a program
@@ -176,8 +177,16 @@ fn jt_clear() {
     // (Only if the far way has put something in since the last time: jx[32].)
     if jx[32] == 0 { return; }
     jx[32] = 0;
+    // The pairs filled since the last time, and no others (E185); all of them if the
+    // list ran over. A pair that holds no address has a tag its place is not chosen by:
+    // 0, and 1 in the place that 0 chooses.
+    let nt = jx[44] as! i64;
+    jx[44] = 0;
+    if nt <= JTD_SIZE && !tf_off {
+        for k in nt { let at: i64 = jtd[k]; jt[at * 2] = if at & (JT_SIZE - 1) == 0 { 1 } else { 0 }; }
+        return;
+    }
     for i in 2 * JT_SIZE { jt[i * 2] = 0; }
-    // (Place 0 is chosen by 0 with or without the fold; 1 chooses place 1.)
     jt[0] = 1;
     jt[JT_SIZE * 2] = 1;
 }
@@ -777,6 +786,14 @@ fn jit64_init() -> bool {
             e(0x8B001000 | S2 << 16 | 29 << 5 | 29);                             // add x29, x29, x2, lsl #4
             a_stp(S1, S3, 29, 0);
             a_str(S3, CTX, 256);                             // the table holds something
+            // Which pair, on the list of those filled since the table was emptied (E185).
+            a_ldr(S4, CTX, 352);
+            a_addi(0x71, 1, ZR, S4, JTD_SIZE);
+            e(0x54000002 | 3 << 5);                          // b.hs three on
+            a_ldr(29, CTX, 360);
+            e(0xB8207800 | S4 << 16 | 29 << 5 | S2);         // str w2, [x29, x4, lsl #2]
+            a_addi(0x11, 1, S4, S4, 1);
+            a_str(S4, CTX, 352);
             a_mov(1, 29, S3);
             e(0xD65F03C0);                                   // ret
         } else { e(0xD61F0000 | S3 << 5); }                  // br x3
@@ -853,6 +870,15 @@ fn jit64_init() -> bool {
                 e(0x8B001000 | S2 << 16 | S4 << 5 | S4);                         // add x4, x4, x2, lsl #4
                 a_stp(S1, 29, S4, 0);
                 a_str(29, CTX, 256);
+                // Which pair (level 3's are JT_SIZE on), on the list of those filled (E185).
+                if lv == 1 { e(0x91400000 | ((JT_SIZE >> 12) as! u32) << 10 | S2 << 5 | S2); }
+                a_ldr(S3, CTX, 352);
+                a_addi(0x71, 1, ZR, S3, JTD_SIZE);
+                e(0x54000002 | 3 << 5);                      // b.hs three on
+                a_ldr(S4, CTX, 360);
+                e(0xB8207800 | S3 << 16 | S4 << 5 | S2);     // str w2, [x4, x3, lsl #2]
+                a_addi(0x11, 1, S3, S3, 1);
+                a_str(S3, CTX, 352);
                 e(0xD65F03C0);                               // ret: to the exit's `br x29`
             } else { e(0xD61F0000 | 29 << 5); }
         }
@@ -860,7 +886,9 @@ fn jit64_init() -> bool {
         // block's, from the table or from the far way.
         if jit_no2 & 1 == 0 {
             jx[32] = 1;
+            jx[44] = JTD_SIZE + 1;             // (the first emptying is of every pair)
             jt_clear();
+            jx[45] = jit_addr32(jtd[..]) as! u64;
             jx[40] = jit_addr_u64(jcell[..]) as! u64;
             jx[41] = jit_addr32(jdirty[..]) as! u64;
             jx[29] = jit_addr_u64(jt[..]) as! u64;
