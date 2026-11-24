@@ -13104,3 +13104,91 @@ second in these pairs; it was 3.0 G for both in E173's pair).
 
 From here: **the distance to QEMU is the cycles' ratio over at least three pairs**, with
 the clock's beside it, and never one pair.
+
+----
+
+## E178: a cell for each jump to a constant address on another page (2026-11-24)
+
+The build at E177 under the sampler: 58% in the blocks, **11% in the routines at the head
+of the room for code**, the rest the interpreter. The 11% is E165's table and the far way
+behind it: the table is asked 1,081 million times in the three files (265 million at
+level 0) and does not hold the address 109 million times (38 million at level 0, 70
+million at level 3); the sampler's addresses are the table's load and the `ret` behind
+it, and the far way's first instruction (where a miss, mispredicted, lands). **531
+million of the questions are for a constant address**: a jump, a call or the side of a
+conditional jump that goes to another page. The other 550 million are returns and jumps
+through an operand.
+
+For a constant address the table is more than is needed: the exit always asks for the
+same one. Two counts made on the way are in `--jit-why` from here: the questions by level
+and those for a constant address. (The refused instructions with a kind, counted for the
+same choice: 10.7 million of 15.0 million lie across a page's end. Not this experiment.)
+
+- **Hypothesis**: **with a cell of its own for each such exit (a word that holds where
+  the block is, or a few instructions behind the exit that ask the far way and fill the
+  cell; the exit is the cell's address, a load and `br`), emptied when the table is by a
+  list of the cells filled since, the table's questions fall to the 550 million that are
+  not constant, its misses by a third, and the three files retire 1% fewer host
+  instructions and take 1.5% fewer cycles beside E177.**
+- **What changed since last time**: the count by kind of address. The table stays for
+  returns and jumps through an operand; a cell is right for as long as a pair of the
+  table is (the same events empty both).
+- **Next move for each result**:
+  - As guessed → the returns: the address a CALL pushes kept beside where its block is
+  - Instructions fall and cycles do not → the load of the cell waits as the table's
+    did; the sampler's addresses again
+- **Cut-off**: one form; `y_table` and `y_evict` (their calls are to constant addresses:
+  they become tests of the cells) with their wrong translators made again for the
+  cells; the gate; the race.
+
+**Result: 1.3% fewer host instructions and 0.6% fewer cycles beside E177; the far way is
+gone to 36 million times where it was 109 million. Its first form did nothing at all.**
+
+| The three files | E177 | E178, its first form | E178 |
+|---|---:|---:|---:|
+| The table asked | 1,081 million | 550 million | 550 million |
+| The far way from the table | 109 million | 21.5 million | 25.3 million |
+| The far way from a cell | | 81.9 million | 10.5 million |
+| Host instructions, four at once | 285.32 G, 285.33 G | 283.98 G | 281.50 G, 281.49 G (−1.3%) |
+| Cycles | 109.53 G, 109.10 G | +0.2% beside its own E177 | 108.92 G, 108.46 G (−0.6%) |
+
+- **The hypothesis**: the table's questions (550 million) and the instructions (1%) held;
+  the cycles did not (0.6% for 1.5% guessed). Two thirds of the far way's runs are gone
+  and the cycles hardly moved: the sampler's 11% in those routines was not the misses.
+  What is left there is the table's load for the 550 million returns and jumps through
+  an operand, and that is next.
+- **The first form had a list of 16,384 cells to put back, and it filled**: where the
+  compiler runs for long between two emptyings, more exits than that are met; a cell
+  not on the list may not be filled (it would never be put back), and asked the far way
+  every time: 82 million times, as many as the table had missed before. The count said
+  so (77 million blocks found by a cell's far way, 2.4 million cells ever put back), not
+  the time, which was the same as before. The list is 262,144 now, more than the cells
+  there are (162 thousand in the three files).
+- **The misses were not two addresses wanting one pair** (E165's guess for what a larger
+  table would save, and this card's "by a third"): with a cell for each exit there is
+  nothing to share, and the far way from the cells and the table together was what the
+  table's alone had been until the list was long enough. They were cells and pairs that
+  had been emptied.
+- **The form**: `jcell` (2^20 words), `jcell_home` (where each cell's own instructions
+  are) and `jdirty`, at the end of `cpu64.goose`; an exit to a constant address on
+  another page in a machine is `ldr x2, [x26, #320]`, an `add` for the cell's 4 KB,
+  `ldr x29`, `br x29`, and behind it `mov x30, #cell` and a branch to the far way made
+  for cells, which stores the block's address in the cell and the cell's number on the
+  list. `jt_clear` puts the listed cells back. `--jit-off2 256` makes such exits ask the
+  table as before.
+- **The test**: `y_table` has three calls in one loop, each to its own address, run
+  before and after two of the addresses are made other pages (taken on hal under KVM).
+  Three wrong translators fail it: the cells not put back; a filled cell not put on the
+  list; the neighbour's cell filled. A fourth passes every test there is: level 3's
+  cells asking level 0's far way. Since E171 a block's loads and stores use the level it
+  is run at, so a level 0 block run at level 3 faults where it should in what the tests
+  do; it would not for CLI or SWAPGS in such a block (E176 translates them at level 0
+  only). No test has that, and it is owed.
+- **`--jit-why`** says how often the table and cells were emptied with something in
+  them, how many cells were put back, and how often INVLPG emptied them and did not
+  (E168's bits): 16,744 times and 362,685 in one run, 0 and 375,410 in another.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 481 s.
+
+**Next.** A test for a block made at level 0 with CLI in it, met at level 3. Then the 550
+million returns: the address a CALL pushes kept with where its block is, so that RET
+compares one address and asks no table.

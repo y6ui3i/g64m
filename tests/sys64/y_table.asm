@@ -5,7 +5,8 @@
 ; again: the address made another page and the TLB told by INVLPG, and by CR3 written;
 ; the page's code written through another address; two addresses that choose the same
 ; place in the table, in turn; a 2 MB page changed, and INVLPG given another address in
-; it (E168); a block made at privilege level 0, asked for at level 3.
+; it (E168); three calls in one loop, each to its own address, two of them changed (the
+; exits' own cells, E178); a block made at privilege level 0, asked for at level 3.
 %include "sys.inc"
     jmp test
 %include "idt.inc"
@@ -25,6 +26,24 @@ run:
     call V
     add r12, rax
     sub r14d, 1
+    jnz .l
+    ret
+
+; Calls three routines ROUNDS times, each from its own place, and mixes what they leave
+; into R12.
+three:
+    xor r12, r12
+    mov r13d, ROUNDS
+.l:
+    call V + 0x30000
+    add r12, rax
+    shl r12, 1
+    call V + 0x32000
+    add r12, rax
+    shl r12, 1
+    call V + 0x34000
+    add r12, rax
+    sub r13d, 1
     jnz .l
     ret
 
@@ -86,6 +105,27 @@ test:
     add r12, rax
     sub r13d, 1
     jnz .two
+    PRINT r12
+
+    PUTS "three calls in one loop, each to its own address; two of the addresses made other pages"
+    MAP V + 0x30000, P, 3
+    MAP V + 0x32000, P + 0x1000, 3
+    MAP V + 0x34000, P + 0x2000, 3
+    mov rax, V + 0x100000                       ; (the first page's routine was written over above)
+    mov dword [rax], 0x000001B8                 ; MOV EAX, 1
+    MAP V + 0x102000, P + 0x2000, 3
+    mov rax, V + 0x102000
+    mov dword [rax], 0x010000B8                 ; MOV EAX, 10000h
+    mov word [rax + 4], 0xC300                  ; RET
+    call three                                  ; the same three exits both times
+    PRINT r12
+    MAP V + 0x32000, P + 0x2000, 3              ; the second is the third's page now,
+    MAP V + 0x34000, P, 3                       ; and the third the first's
+    mov rax, V + 0x32000
+    invlpg [rax]
+    mov rax, V + 0x34000
+    invlpg [rax]
+    call three
     PRINT r12
 
     PUTS "a 2 MB page made another, INVLPG given an address elsewhere in it"

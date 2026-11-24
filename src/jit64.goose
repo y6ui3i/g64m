@@ -134,6 +134,15 @@ fn bt_clear() {
 let JT_BITS = 12;
 let JT_SIZE = 1 << JT_BITS;
 var jt_at: i64[3] = [0; 3];          // the routines: a machine's levels 0 and 3, a program
+// A cell for each exit to a constant address on another page (E178): where its block is,
+// or where the exit's own instructions that ask the far way are (jcell_home). The cells
+// filled since the table of blocks was last emptied are on jdirty (their count is jx[39],
+// which generated code moves on), and jt_clear puts those back: a cell is right for as
+// long as a pair of the table is. The arrays are at the end of cpu64.goose.
+let JC_SIZE = 1 << 20;
+let JD_SIZE = 262144;       // (as many as there can be cells in an afternoon of the build: 162 thousand)
+var jcell_n = 0;
+var jcell_far: i64[2] = [0; 2];      // the far way that fills a cell, for levels 0 and 3
 var jit_no2: u64 = 0;                // --jit-off2: bit 0 the table of where blocks are
 
 // x2: which pair the address in x1 chooses.
@@ -145,7 +154,13 @@ fn jt_idx() {
 }
 
 // No pair holds an address: each tag is one its own place is not chosen by.
+var jt_clears: i64[4] = [0; 4];       // --jit-why: emptied with something in it; and the cells put back, in all
 fn jt_clear() {
+    if jit_why && (jx[39] != 0 || jx[32] != 0) { jt_clears[0] += 1; jt_clears[1] += jx[39] as! i64; }
+    // The cells filled since the last time (E178) ask again.
+    let nd = jx[39] as! i64;
+    for i in nd { let c: i64 = jdirty[i]; jcell[c] = (j_mem + jcell_home[c]) as! u64; }
+    jx[39] = 0;
     // (Only if the far way has put something in since the last time: jx[32].)
     if jx[32] == 0 { return; }
     jx[32] = 0;
@@ -197,6 +212,14 @@ fn jit_ran_one(slot: i64, ph: u64) {
     if dc_cov[slot] != 0 { ji[2] += 1; return; }
     if dc_heat[slot] < J_HOT { ji[3] += 1; return; }
     ji[4] += 1;
+    // (Of those with a kind: how many lie across the page's end, by whether their
+    // operand's length was ever remembered and where they begin; and by the last
+    // fifteen bytes of the page.)
+    if dc[slot].ins.kind != 0 {
+        if dc[slot].ins.mlen == 0 && (ph & 0xFFF) >= 0xFF1 { ji[5] += 1; }
+        else if (ph & 0xFFF) >= 0xFF1 { ji[6] += 1; }
+        else { ji[7] += 1; }
+    }
     let k: i64 = dc[slot].ins.kind;
     ji_kind[k & 63] += 1;
     if k == 0 {
@@ -304,7 +327,7 @@ var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made 
 // may come to (RDTSC in a block), E176; [32] not zero when the far way has put something
 // in the table of blocks since it was emptied (E165).
 var pad_jx: u8[6] = [0; 6];      // (jx at a multiple of 8 in the block: tools/layout.sh, E173)
-var jx: u64[40] = [0; 40];
+var jx: u64[48] = [0; 48];
 // --jit-check: each store's address and the eight bytes that were there.
 
 var jc: u8[>..];             // the code being generated
@@ -730,12 +753,19 @@ fn jit64_init() -> bool {
         // then the look-up above by the physical address, and the block must be one
         // made at this level.
         jx[21] = jit_addr8(dc_cpl[..]) as! u64;
-        for lv in 2 {
+        // Made twice for each level: the far way the table's routine goes on to, and the
+        // one a cell's few instructions go to (E178), which ends by filling the cell
+        // named in x30.
+        for pass in 4 {
+            let lv = pass & 1;
+            let cells = pass >= 2;
             let out2 = jc.len;
             e(0x14000000 | (((j_out_at - jc.len) >> 2) as! u32) & 0x3FFFFFF);
-            j_fark_at[lv] = jc.len;
+            if cells { jcell_far[lv] = jc.len; } else { j_fark_at[lv] = jc.len; }
             // (x30 is the exit's that called the table's routine: x4 and x29 are used.)
-            if jit_why { a_ldr(29, CTX, 248); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 248); }
+            if jit_why && !cells { a_ldr(29, CTX, 248); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 248); }
+            if jit_why && !cells { a_ldr(29, CTX, (280 + lv * 8) as! u32); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, (280 + lv * 8) as! u32); }
+            if jit_why && cells { a_ldr(29, CTX, 336); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 336); }
             a_shifti(5, 1, S2, S1, 12);
             e(0x92402C00 | S2 << 5 | S3);                    // and x3, x2, #0xFFF
             e(0x91400000 | ((4 + lv) as! u32) << 10 | S3 << 5 | S3);         // the table for fetches
@@ -769,7 +799,22 @@ fn jit64_init() -> bool {
             a_ldr(S4, CTX, 112);
             a_rrr(A_ADD, 1, 29, S4, 29);
             if jit_why { a_ldr(S4, CTX, 224); a_addi(0x11, 1, S4, S4, 1); a_str(S4, CTX, 224); }
-            if jit_no2 & 1 == 0 {
+            if cells && jit_why { a_ldr(S4, CTX, 344); a_addi(0x11, 1, S4, S4, 1); a_str(S4, CTX, 344); }
+            if cells {
+                // The cell (its number in x30) is given the block's address, and its
+                // number put on the list of cells filled since the table was emptied;
+                // with the list full, the cell is left to ask again.
+                a_ldr(S2, CTX, 312);
+                e(0xF1400000 | (JD_SIZE >> 12) << 10 | S2 << 5 | ZR);            // cmp x2, #JD_SIZE
+                e(0x54000002 | 7 << 5);                                          // b.hs seven on: the br
+                a_ldr(S4, CTX, 320);
+                e(0xF8207800 | 30 << 16 | S4 << 5 | 29);                         // str x29, [x4, x30, lsl #3]
+                a_ldr(S4, CTX, 328);
+                e(0xB8207800 | S2 << 16 | S4 << 5 | 30);                         // str w30, [x4, x2, lsl #2]
+                a_addi(0x11, 1, S2, S2, 1);
+                a_str(S2, CTX, 312);
+                e(0xD61F0000 | 29 << 5);                                         // br x29
+            } else if jit_no2 & 1 == 0 {
                 a_ldr(S4, CTX, (232 + lv * 8) as! u32);
                 jt_idx();
                 e(0x8B001000 | S2 << 16 | S4 << 5 | S4);                         // add x4, x4, x2, lsl #4
@@ -783,11 +828,14 @@ fn jit64_init() -> bool {
         if jit_no2 & 1 == 0 {
             jx[32] = 1;
             jt_clear();
+            jx[40] = jit_addr_u64(jcell[..]) as! u64;
+            jx[41] = jit_addr32(jdirty[..]) as! u64;
             jx[29] = jit_addr_u64(jt[..]) as! u64;
             jx[30] = (jit_addr_u64(jt[..]) + JT_SIZE * 16) as! u64;
             for k in 3 {
                 jt_at[k] = jc.len;
                 if jit_why { a_ldr(29, CTX, 216); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 216); }
+                if jit_why && k == 0 { a_ldr(29, CTX, 296); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 296); }
                 a_ldr(29, CTX, if k == 1 { 240 } else { 232 });
                 jt_idx();
                 e(0x8B001000 | S2 << 16 | 29 << 5 | 29);                         // add x29, x29, x2, lsl #4
@@ -1456,7 +1504,7 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
     // A way out that leaves the instruction it stands at to the interpreter says so
     // (E155): what lies behind that instruction is where a block is wanted.
     if !link { a_imm(30, 1); a_str(30, CTX, 192); }
-    if far { e_far(); }
+    if far { e_far_direct = true; e_far(); e_far_direct = false; }
     else if own {
         // (To this block's own entry, which is known when the block is whole.)
         sh_pos[sh_n] = jc.len;
@@ -1491,10 +1539,30 @@ fn j_far() -> i64 {
 
 // The jump to the block at the address in x1, if there is one: through the table (E165:
 // the routine leaves the block's address, or the way out's, in x29), or by the far way.
+var pad_far: u8[7] = [0; 7];    // (with e_far_direct, eight bytes: tools/layout.sh)
+var e_far_direct = false;     // the exit being made is to a constant address (--jit-why counts them)
 fn e_far() {
     let to = j_far();
+    if jit_why && e_far_direct { a_ldr(29, CTX, 304); a_addi(0x11, 1, 29, 29, 1); a_str(29, CTX, 304); }
     var k = 2;
     if machine { k = if cpl == 0 { 0 } else { 1 }; }
+    if to != j_out_at && e_far_direct && machine && jcell_far[k] != 0 && jcell_n < JC_SIZE && jit_no2 & 256 == 0 {
+        // To a constant address (E178): the exit's own cell holds where the block is, or
+        // where the instructions behind this `br` are, which name the cell and go to
+        // the far way that fills it.
+        let c = jcell_n;
+        jcell_n += 1;
+        let hi: u32 = ((c * 8) >> 12) as! u32;
+        a_ldr(S2, CTX, 320);
+        if hi != 0 { e(0x91400000 | hi << 10 | S2 << 5 | S2); }                            // add x2, x2, #hi, lsl #12
+        a_ldr(29, S2, ((c * 8) & 0xFFF) as! u32);
+        e(0xD61F0000 | 29 << 5);                                                           // br x29
+        jcell_home[c] = (j_used + jc.len) as! u32;
+        jcell[c] = (j_mem + j_used + jc.len) as! u64;
+        a_imm(30, c as! u64);
+        e(0x14000000 | (((jcell_far[k] - (j_used + jc.len)) >> 2) as! u32) & 0x3FFFFFF);
+        return;
+    }
     if to != j_out_at && jt_at[k] != 0 {
         e(0x94000000 | (((jt_at[k] - (j_used + jc.len)) >> 2) as! u32) & 0x3FFFFFF);        // bl the routine
         e(0xD61F0000 | 29 << 5);                                                           // br x29
@@ -3090,6 +3158,7 @@ fn jit_flush() {
     bt_clear();
     for i in 1 << JH_BITS { jh[i] = 0; }
     jt_clear();
+    jcell_n = 0;
     j_used = j_keep;
     j_flushes += 1;
 }
