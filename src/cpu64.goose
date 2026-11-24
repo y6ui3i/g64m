@@ -1958,3 +1958,4 @@ var jit_page: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 var dc_calm: u16[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 var jw_0f: i64[257] = [0; 257];
 var ji_0f: i64[257] = [0; 257];
+var ji_grp: i64[1024] = [0; 1024];       // --jit-why: 0F 01, 0F AE, 0F BA and 0F C7 interpreted, by the byte behind

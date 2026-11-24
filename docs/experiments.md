@@ -12940,3 +12940,79 @@ container; E164's were 1.04 to 1.07 for the last three and 1.33 to 1.56 for the 
   1.26 s (its first second is the kernel unpacking itself and the interpreter before
   anything is hot); thirteen primitives, each its own loop, the furthest `p_pixel` and
   `p_ldbl` (the x87 by a call, E161).
+
+----
+
+## E176: six instructions a block was left for, translated: LFENCE, RDTSC, CLI, SWAPGS, CLD and STD, LEAVE (2026-11-24)
+
+The owner's bar (2026-11-24): everything at twice QEMU, the whole build, the boot and the
+primitives. The build wants 7% more. E174 showed what its entries are: nine in ten follow
+an interpreted instruction, and each such instruction with the block left before it and
+entered after it is some 650 host instructions (E173). The instructions the interpreter
+runs from their entries in the three files, counted again with the byte behind the
+groups' opcodes: RDTSC 3.87 million, CLI 2.83 million, LFENCE 2.21 million (the kernel's
+barrier behind a bounds check), SWAPGS 1.50 million, CLD 0.74 million, LEAVE 0.65
+million: 11.8 million of some 54 million, and each a few host instructions if a block
+did it. (Not in this: REP STOS 5.1 million, OUT 2.5 million, BTS and BTR of memory with a
+constant 2.2 million, XADD 1.5 million, REP MOVS 1.3 million, STI, IRET, PUSHF, and the
+19 million of kinds that are translated elsewhere: instructions across a page's end for
+the most part.)
+
+- **Hypothesis**: **with those six translated (RDTSC from the time the block is given:
+  the count of instructions is what it reads; CLI at level 0 only; SWAPGS by the two
+  bases given to the block and taken back), the instructions run from their entries and
+  refused fall by 11 million, the entries into blocks by as many, and the three files
+  retire 2% fewer host instructions and take 1.5% fewer cycles beside E173.**
+- **What changed since last time**: the count. Six arms in the translator.
+- **Next move for each result**:
+  - As guessed → the next of the list: BTS and BTR of memory, XADD, REP STOS and REP
+    MOVS as a loop in the block
+  - Refused instructions fall and entries do not → what stands behind each of the six
+    (a block ends where the next is not translated)
+- **Cut-off**: one form; a system test taken on hal for the five the real CPU can be
+  asked about; RDTSC by the boot's count of instructions with and without the JIT; wrong
+  translators; the gate; the race.
+
+**Result: 2.5% fewer host instructions and 1.8% fewer cycles beside E173; 9.1 million fewer
+entries into blocks.**
+
+| The three files, four at once (two of each) | E173 | E176 | |
+|---|---:|---:|---:|
+| Host instructions | 302.54 G, 302.53 G | 294.82 G, 294.82 G | −2.5% |
+| Cycles | 122.90 G, 122.87 G | 120.66 G, 120.78 G | −1.8% |
+| Entries into blocks | 99.6 million | 90.5 million | |
+| Guest instructions | 23,857,067,687 | 23,857,067,687 | |
+
+- **The hypothesis** held (2% and 1.5% guessed); the entries fell by 9.1 million where 11
+  were guessed. The guest's count is the same to the last instruction, which is what
+  says RDTSC reads in a block what it reads in the interpreter: the kernel times itself
+  by it.
+- **The form** (`j_one`'s first arm for an instruction with no kind, `--jit-off2 64`
+  leaves them to the interpreter):
+  - CLD and STD: bit 10 of RFLAGS as the blocks have it in memory; CLI the same for bit
+    9, in a machine at level 0 only;
+  - LEAVE: RBP's word loaded (the block is left there if its page is not at hand, with
+    nothing changed), then RSP and RBP;
+  - LFENCE, MFENCE, SFENCE: nothing;
+  - RDTSC: the count the run may come to (`jx[34]`) less the time left (x0) and the
+    block's instructions before it; not under `--jit-check`, whose blocks are given
+    their own length for time;
+  - SWAPGS at level 0: `jx[18]` and `jx[33]` change places, and `jit_enter` takes both
+    back into `gs_base` and `msr_kernel_gs`.
+- **A fault of `--jit-check` found on the way**: `jit_both` did not take RFLAGS back from
+  where the block has it in memory, only the record. Nothing wrote there but the record's
+  settling until now; with CLD in a block the checked run said the block differed, which
+  it did not. It reads it back now.
+- **The test** `y_cheap` (taken on hal under KVM): CLD and STD seen by which way MOVSB
+  goes, CLI by what PUSHFQ pushes, LEAVE in a frame, LFENCE, SWAPGS by the two bases read
+  back. Five wrong translators fail it (CLD and STD the wrong way round; CLI clears
+  nothing; LEAVE leaves RSP at the saved RBP; SWAPGS moves one base only; the base kept
+  aside not taken back). Its first form had its data on the page of its code: a page of
+  code that is written to is not translated from, and all five passed. RDTSC wrong (the
+  block's instructions before it left out) fails the boot on a frame buffer in
+  `systest64` under `--jit`, and nothing else.
+- **The gate**: 120 ok, the layout aligned, `make-rc=0`, in 454 s.
+
+**Next.** BTS and BTR of memory with a constant (2.2 million), XADD (1.5 million), REP STOS
+and REP MOVS as a loop in the block (6.4 million), PUSHFQ; then the build against QEMU
+again.
