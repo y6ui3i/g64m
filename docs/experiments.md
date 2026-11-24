@@ -12681,3 +12681,37 @@ other. From here the distance to QEMU is the two side by side; KVM on hal stays 
 **Next.** The records: which instructions that set flags still make one, counted as they
 are translated; a load of one byte without the last byte's page; the blocks left for an
 instruction that is not translated (50 million).
+
+----
+
+## E172: a shift's record, BT's and INC's settled in generated code (2026-11-24)
+
+Where the time outside the blocks goes, after E171: about a quarter of the cycles is the
+interpreter and the way in and out, for 124 million entries into blocks and some 90
+million instructions interpreted between them: 120 cycles for each. A block is left for
+the interpreter 123 million times in the three files: 50 million for an instruction that
+is not translated (the longest list: REP STOS 5.0 million, instructions that lie across
+a page's end some 8 million, OUT, RDTSC, CLI, BT with a constant, XADD, SETcc and PUSH of
+memory, ...), **28.5 million because the next block reads RFLAGS in memory and a record
+waits that only the interpreter settles** (E146 settles ADD, SUB, CMP, AND, TEST, OR and
+XOR in generated code): a shift's 20.5 million, BT's 4.1 million, DEC's 1.9 million, MUL's
+1.0 million.
+
+(The look for dead flags, as blocks are translated: dead 1.75 million times, ended at an
+instruction with no entry 625 thousand, at CALL or JMP 441 thousand, at a conditional
+jump 374 thousand, at RET 143 thousand. By the count of instructions run that is under a
+percent each, and not what is next.)
+
+- **Hypothesis**: **with the records of SHL, SHR and SAR (32 and 64 bits), BT (any width)
+  and INC and DEC (any width) settled by the routine E146 made, the blocks left with a
+  record waiting fall from 28.5 million to under 3 million, the entries from the
+  interpreter by 25 million, and the three files take 2% fewer cycles beside E171.**
+- **What changed since last time**: the count by the record's kind. Only the routine; no
+  block's code changes.
+- **Next move for each result**:
+  - As guessed → the untranslated instructions blocks are left for, the cheapest first
+    (CLD and STD, LEAVE, SETcc and PUSH of memory, XADD)
+  - Exits fall and cycles do not → an exit and entry cost less than 120 cycles, and the
+    interpreter's own instructions are what is left: by kind again
+- **Cut-off**: one form; a test as `j_settle` is (the same flags by the interpreter and
+  by the routine, traced on hal), wrong routines made on purpose; the gate; the race.
