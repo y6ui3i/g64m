@@ -13104,3 +13104,39 @@ second in these pairs; it was 3.0 G for both in E173's pair).
 
 From here: **the distance to QEMU is the cycles' ratio over at least three pairs**, with
 the clock's beside it, and never one pair.
+
+----
+
+## E178: a cell for each jump to a constant address on another page (2026-11-24)
+
+The build at E177 under the sampler: 58% in the blocks, **11% in the routines at the head
+of the room for code**, the rest the interpreter. The 11% is E165's table and the far way
+behind it: the table is asked 1,081 million times in the three files (265 million at
+level 0) and does not hold the address 109 million times (38 million at level 0, 70
+million at level 3); the sampler's addresses are the table's load and the `ret` behind
+it, and the far way's first instruction (where a miss, mispredicted, lands). **531
+million of the questions are for a constant address**: a jump, a call or the side of a
+conditional jump that goes to another page. The other 550 million are returns and jumps
+through an operand.
+
+For a constant address the table is more than is needed: the exit always asks for the
+same one. Two counts made on the way are in `--jit-why` from here: the questions by level
+and those for a constant address. (The refused instructions with a kind, counted for the
+same choice: 10.7 million of 15.0 million lie across a page's end. Not this experiment.)
+
+- **Hypothesis**: **with a cell of its own for each such exit (a word that holds where
+  the block is, or a few instructions behind the exit that ask the far way and fill the
+  cell; the exit is the cell's address, a load and `br`), emptied when the table is by a
+  list of the cells filled since, the table's questions fall to the 550 million that are
+  not constant, its misses by a third, and the three files retire 1% fewer host
+  instructions and take 1.5% fewer cycles beside E177.**
+- **What changed since last time**: the count by kind of address. The table stays for
+  returns and jumps through an operand; a cell is right for as long as a pair of the
+  table is (the same events empty both).
+- **Next move for each result**:
+  - As guessed → the returns: the address a CALL pushes kept beside where its block is
+  - Instructions fall and cycles do not → the load of the cell waits as the table's
+    did; the sampler's addresses again
+- **Cut-off**: one form; `y_table` and `y_evict` (their calls are to constant addresses:
+  they become tests of the cells) with their wrong translators made again for the
+  cells; the gate; the race.
