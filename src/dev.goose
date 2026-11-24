@@ -360,6 +360,7 @@ var post_trail: u8[>..];     // every code written to the diagnostic port, in or
 let COM_QUEUE = 1024;
 
 var com_out: u8[>..];
+var com_said = false;       // something has been printed since the script last looked (E181)
 var com_line: u8[>..];       // output not yet written to standard output
 var com_live = false;
 var com_rx: u8[COM_QUEUE] = [0; COM_QUEUE];
@@ -427,6 +428,9 @@ fn com_write(reg: u16, v: u8) {
         0 => {
             if dlab { com_dll = v; return; }
             com_out.push(v);
+            // (The script is to look at what has been printed, at once: E181.)
+            com_said = true;
+            replan = true;
             if com_live {
                 com_line.push(v);
                 if v == '\n' || com_line.len >= 256 { com_flush(); }
