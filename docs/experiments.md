@@ -13140,3 +13140,55 @@ same choice: 10.7 million of 15.0 million lie across a page's end. Not this expe
 - **Cut-off**: one form; `y_table` and `y_evict` (their calls are to constant addresses:
   they become tests of the cells) with their wrong translators made again for the
   cells; the gate; the race.
+
+**Result: 1.3% fewer host instructions and 0.6% fewer cycles beside E177; the far way is
+gone to 36 million times where it was 109 million. Its first form did nothing at all.**
+
+| The three files | E177 | E178, its first form | E178 |
+|---|---:|---:|---:|
+| The table asked | 1,081 million | 550 million | 550 million |
+| The far way from the table | 109 million | 21.5 million | 25.3 million |
+| The far way from a cell | | 81.9 million | 10.5 million |
+| Host instructions, four at once | 285.32 G, 285.33 G | 283.98 G | 281.50 G, 281.49 G (−1.3%) |
+| Cycles | 109.53 G, 109.10 G | +0.2% beside its own E177 | 108.92 G, 108.46 G (−0.6%) |
+
+- **The hypothesis**: the table's questions (550 million) and the instructions (1%) held;
+  the cycles did not (0.6% for 1.5% guessed). Two thirds of the far way's runs are gone
+  and the cycles hardly moved: the sampler's 11% in those routines was not the misses.
+  What is left there is the table's load for the 550 million returns and jumps through
+  an operand, and that is next.
+- **The first form had a list of 16,384 cells to put back, and it filled**: where the
+  compiler runs for long between two emptyings, more exits than that are met; a cell
+  not on the list may not be filled (it would never be put back), and asked the far way
+  every time: 82 million times, as many as the table had missed before. The count said
+  so (77 million blocks found by a cell's far way, 2.4 million cells ever put back), not
+  the time, which was the same as before. The list is 262,144 now, more than the cells
+  there are (162 thousand in the three files).
+- **The misses were not two addresses wanting one pair** (E165's guess for what a larger
+  table would save, and this card's "by a third"): with a cell for each exit there is
+  nothing to share, and the far way from the cells and the table together was what the
+  table's alone had been until the list was long enough. They were cells and pairs that
+  had been emptied.
+- **The form**: `jcell` (2^20 words), `jcell_home` (where each cell's own instructions
+  are) and `jdirty`, at the end of `cpu64.goose`; an exit to a constant address on
+  another page in a machine is `ldr x2, [x26, #320]`, an `add` for the cell's 4 KB,
+  `ldr x29`, `br x29`, and behind it `mov x30, #cell` and a branch to the far way made
+  for cells, which stores the block's address in the cell and the cell's number on the
+  list. `jt_clear` puts the listed cells back. `--jit-off2 256` makes such exits ask the
+  table as before.
+- **The test**: `y_table` has three calls in one loop, each to its own address, run
+  before and after two of the addresses are made other pages (taken on hal under KVM).
+  Three wrong translators fail it: the cells not put back; a filled cell not put on the
+  list; the neighbour's cell filled. A fourth passes every test there is: level 3's
+  cells asking level 0's far way. Since E171 a block's loads and stores use the level it
+  is run at, so a level 0 block run at level 3 faults where it should in what the tests
+  do; it would not for CLI or SWAPGS in such a block (E176 translates them at level 0
+  only). No test has that, and it is owed.
+- **`--jit-why`** says how often the table and cells were emptied with something in
+  them, how many cells were put back, and how often INVLPG emptied them and did not
+  (E168's bits): 16,744 times and 362,685 in one run, 0 and 375,410 in another.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 481 s.
+
+**Next.** A test for a block made at level 0 with CLI in it, met at level 3. Then the 550
+million returns: the address a CALL pushes kept with where its block is, so that RET
+compares one address and asks no table.

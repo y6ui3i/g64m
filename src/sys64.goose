@@ -225,7 +225,7 @@ fn tlb_forget(a: u64) {
     code_page = TLB_EMPTY;
     let n4 = a >> 12 & 0xFFFF;
     let n2 = a >> 21 & 0xFFF;
-    if jit_no2 & 8 != 0 || xf_page[(n4 >> 6) as! i64] >> (n4 & 63) & 1 != 0 || xf_big[(n2 >> 6) as! i64] >> (n2 & 63) & 1 != 0 { jt_clear(); }
+    if jit_no2 & 8 != 0 || xf_page[(n4 >> 6) as! i64] >> (n4 & 63) & 1 != 0 || xf_big[(n2 >> 6) as! i64] >> (n2 & 63) & 1 != 0 { jt_clears[2] += 1; jt_clear(); } else { jt_clears[3] += 1; }
     code_end = 0;
     if tlb_has_1g { tlb_flush(); return; }
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
