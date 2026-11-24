@@ -165,7 +165,6 @@ let TLB_EMPTY: u64 = 0xFFFFFFFFFFFFFFFF;       // no page has this number
 // For each place a pair (E171): the tag, and what is added to a linear address to make the
 // physical one, the physical page less the linear page (E150). Place i's tag is at 2 * i
 // and its addend behind it, so that generated code reads both with one `ldp`.
-var tlb_tag: u64[12 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 12 * TLB_SIZE];
 
 // The six tables hold only what a block may use with nothing more to check (E150): a page
 // of plain memory, and in the tables for writes a page that holds no remembered
@@ -173,8 +172,6 @@ var tlb_tag: u64[12 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 12 * TLB_SIZE];
 // the walk looks at, so that the interpreter does not walk for each access to a device's
 // page; an entry here is looked at again each time, since a page can stop being special.
 let SP_SIZE = 64;
-var sp_tag: u64[6 * SP_SIZE] = [0xFFFFFFFFFFFFFFFF; 6 * SP_SIZE];
-var sp_add: u64[6 * SP_SIZE] = [0; 6 * SP_SIZE];
 
 // Whether the physical page p is one a block may not use through the table for acc.
 inline fn tlb_special(p: u64, acc: u8) -> bool {
@@ -201,7 +198,6 @@ var tlb_has_1g = false;
 // in. The table of where blocks are (jit64.goose) is filled from the TLB's table for
 // fetches, so it holds no address of a page that has no bit here, and INVLPG for such a
 // page leaves it alone.
-var xf_page: u64[1024] = [0; 1024];
 var xf_big: u64[64] = [0; 64];
 var xf_any = false;
 

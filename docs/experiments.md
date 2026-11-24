@@ -12783,3 +12783,38 @@ the access.
     `exec64` are next
 - **Cut-off**: one form; the offsets printed before and after; the loop's count; the
   gate; the race beside E172.
+
+**Result: 5.6% fewer host instructions and 2.9% fewer cycles beside E172; a NOP in the
+interpreter is 128 host instructions (it was 172), a block left for one instruction and
+entered again 678 (it was 812).**
+
+| | E172 | E173 | |
+|---|---:|---:|---:|
+| The three files, four at once: host instructions | 319.09 G, 319.18 G | 301.25 G, 301.25 G | −5.6% |
+| cycles | 130.00 G, 129.85 G | 126.03 G, 126.29 G | −2.9% |
+| A NOP interpreted in a machine: host instructions, cycles | 171.5, 38.7 | 128.1, 35.5 | |
+| A round that leaves its block for one CLD | 812, 118 | 678, 102 | |
+
+- **The hypothesis**: the build held (5% and 2% guessed). "A NOP under 120" did not: 128.
+  What is left is two instructions for a byte beyond 4 KB of the block's start, and the
+  work itself.
+- **Where the globals are now** (`PROG=g64m tools/layout.sh`): the registers at 24,112,
+  RIP 24,240, RFLAGS 24,248, the count 24,272, `ins` 24,304, `rep_until` 24,840, `jx`
+  4,592, all at multiples of 8 (`pad_reg`, `pad_jx`); then the arrays, `tlb_tag` first at
+  25,152. They were at 47.9 MB, and `rep_until` at 363 MB.
+- **The arrays begin on lines of the cache** (`pad_arrays`, and their order: every one
+  down to `mem` is a multiple of 64 bytes long). They did not before: the decode cache
+  began 10 bytes past a line, so that the two entries of a set, which E142 put side by
+  side to share a line, lay across two; `mem` began 2 bytes past a multiple of 8. How
+  much of the 2.9% is that and how much the shorter accesses was not taken apart.
+- **The form**: 34 declarations moved to the end of `cpu64.goose`, in an order that
+  keeps them aligned; the comments over where they stood are still there. The gate now
+  runs `PROG=g64m tools/layout.sh --check`, which fails if a watched global is off its
+  alignment: one byte declared in front moves everything behind it.
+- **The gate**: 117 ok and `make-rc=0` in 447 s (before the layout's check was added to
+  it; the check by hand: aligned).
+
+**Next.** One `exec64` again under the debugger, now that the offsets are out of it: what
+the 128 are (the start saved for a fault is a copy of sixteen registers at some
+instructions; the decode cache's entry is copied whole into `ins`); and the way into a
+block the same way.

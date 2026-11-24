@@ -43,6 +43,7 @@ let SF = 0x0080; let TF = 0x0100; let IF = 0x0200; let DF = 0x0400; let OF = 0x0
 let RF = 0x10000;
 let ARITH = 0x8D5;              // CF, PF, AF, ZF, SF and OF
 
+var pad_reg: u8[4] = [0; 4];     // (the registers and what follows at multiples of 8: tools/layout.sh, E173)
 var reg: u64[16] = [0; 16];
 var rip: u64 = 0;
 var rflags: u64 = 0x202;
@@ -122,7 +123,6 @@ var cpl: u8 = 3;
 // (Sixteen bytes more than a program can name, since E163: an access of up to eight bytes
 // that begins anywhere under MEM_SIZE is inside the array, so the test of an address is
 // one comparison with MEM_SIZE, in the interpreter and in a block alike.)
-var mem: u8[MEM_SIZE + 16];
 
 // A 64-bit number as sixteen hex digits (format_int would write an address in the upper half
 // as a negative number).
@@ -242,31 +242,18 @@ struct Entry {
     tag: u64,            // all ones for none
     ins: Ins,
 }
-var dc: Entry[DC_SIZE] = [Entry { tag: 0xFFFFFFFFFFFFFFFF, ins: Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
-                          mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, kind: 0, disp: 0 } }; DC_SIZE];
-var dc_mark: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];      // 1: holds entries; 2: given up
-var dc_drops: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 
 // Beside each entry of the decode cache, for the JIT (jit64.goose). (Here, behind the
 // memory, so that they do not push the CPU's own state away from the front of the globals.)
-var dc_heat: u8[DC_SIZE] = [0; DC_SIZE];     // arrivals counted
-var dc_cov: u8[DC_SIZE] = [0; DC_SIZE];      // 1: inside a block (E137)
 var jit_land = false;                       // the instruction at hand is where a jump landed
 var jit_resume = false;                     // the next one is to be taken so: a block left this one to the interpreter (E155)
-var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
-var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
 var j_evicted: u64 = 0;                     // blocks lost to another instruction taking the entry
-var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
 // Links (E122): the exits that wait for a block at an address, chained from the entry that
 // address has; and which pages hold blocks.
-var dc_wait: u32[DC_SIZE] = [0; DC_SIZE];
 // The privilege level a block was translated at (E133): a machine's loads and stores use
 // that level's tables of the TLB.
-var dc_cpl: u8[DC_SIZE] = [0; DC_SIZE];
-var jit_page: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 // How often a page that was given up has been run from since the last write to it.
 let DC_CALM = 4096;
-var dc_calm: u16[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
 
 
 inline fn dc_slot(p: u64) -> i64 { return ((p ^ p >> DC_BITS) & (DC_SIZE - 1)) as! i64; }
@@ -1921,3 +1908,53 @@ fn exec64_rest() -> bool {
     rip = if jump { next } else { ip };
     return true;
 }
+
+// ---- The arrays ----
+//
+// Every array of 2 KB or more of the 64-bit machine, its TLB and its JIT is declared here,
+// at the end of the last of the three files (E173). Goose lays the globals out in one
+// block in the order they are declared, file after file, and reaches a global by its
+// offset from the block's start: under 32 KB that is one instruction, over 64 KB three.
+// With the arrays last, the scalars of sys64.goose, jit64.goose and this file are the
+// block's first tens of kilobytes. What each array is for is said where it is used: the
+// comment that stood over its declaration is still there.
+
+// (In this order: each is a multiple of 64 bytes long down to mem, so that with pad_arrays
+// in front every one of them begins on a line of the cache; the odd-sized ones come last.
+// tools/layout.sh says whether they still do.)
+var pad_arrays: u8[31] = [0; 31];
+var tlb_tag: u64[12 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 12 * TLB_SIZE];
+var sp_tag: u64[6 * SP_SIZE] = [0xFFFFFFFFFFFFFFFF; 6 * SP_SIZE];
+var sp_add: u64[6 * SP_SIZE] = [0; 6 * SP_SIZE];
+var xf_page: u64[1024] = [0; 1024];
+var bt_tag: u64[BT_SIZE] = [0xFFFFFFFFFFFFFFFF; BT_SIZE];
+var bt_code: u32[BT_SIZE] = [0; BT_SIZE];
+var bt_what: u32[BT_SIZE] = [0; BT_SIZE];        // the length, the level << 8, 1 << 16 if it reads RFLAGS
+var jt: u64[4 * JT_SIZE] = [0; 4 * JT_SIZE];
+var dc_runs: u32[DC_SIZE] = [0; DC_SIZE];
+var jh: u8[1 << JH_BITS] = [0; 1 << JH_BITS];
+var jm_n: u8[4194304] = [0; 4194304];
+var dc_needs: u8[DC_SIZE] = [0; DC_SIZE];
+var jw_form: i64[4096] = [0; 4096];      // for a kind: kind * 64 + the ModRM's field * 8 + (4 a register, 0 memory) + (2 the prefix 66h) + (1 REP)
+var jn_ph: u64[8192] = [0; 8192];
+var jn_n: i64[8192] = [0; 8192];
+var dc: Entry[DC_SIZE] = [Entry { tag: 0xFFFFFFFFFFFFFFFF, ins: Ins { op: 0, rex: 0, osz: 32, rep: 0, p66: false, asz32: false, sg: 0, plen: 0,
+                          mlen: 0, mod: 0, reg: 0, rm: 0, base: 16, index: 16, scale: 0, kind: 0, disp: 0 } }; DC_SIZE];
+var dc_heat: u8[DC_SIZE] = [0; DC_SIZE];     // arrivals counted
+var dc_cov: u8[DC_SIZE] = [0; DC_SIZE];      // 1: inside a block (E137)
+var dc_k0: u8[DC_SIZE] = [0; DC_SIZE];       // a block's first instruction's own kind
+var dc_n: u8[DC_SIZE] = [0; DC_SIZE];        // how many instructions the block is
+var dc_code: u32[DC_SIZE] = [0; DC_SIZE];    // where in the mapping it is
+var dc_wait: u32[DC_SIZE] = [0; DC_SIZE];
+var dc_cpl: u8[DC_SIZE] = [0; DC_SIZE];
+var ji_op: i64[512] = [0; 512];      // and for one not behind 0Fh, by its opcode (256 on with REP)
+var jw_op: i64[256] = [0; 256];
+var jw_rk: i64[256] = [0; 256];      // and which records those were (the low byte of the kind), 255 for one with more above the width
+var jlog: u64[256] = [0; 256];
+var mem: u8[MEM_SIZE + 16];
+var dc_mark: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];      // 1: holds entries; 2: given up
+var dc_drops: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
+var jit_page: u8[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
+var dc_calm: u16[(MEM_SIZE >> 12) + 1] = [0; (MEM_SIZE >> 12) + 1];
+var jw_0f: i64[257] = [0; 257];
+var ji_0f: i64[257] = [0; 257];

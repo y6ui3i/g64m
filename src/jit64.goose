@@ -74,9 +74,6 @@ var j_far_at = 0;            // the far way: to the block at the address in x1, 
 // written to loses its own.
 let BT_BITS = 19;
 let BT_SIZE = 4 << BT_BITS;
-var bt_tag: u64[BT_SIZE] = [0xFFFFFFFFFFFFFFFF; BT_SIZE];
-var bt_code: u32[BT_SIZE] = [0; BT_SIZE];
-var bt_what: u32[BT_SIZE] = [0; BT_SIZE];        // the length, the level << 8, 1 << 16 if it reads RFLAGS
 var bt_back: u64 = 0;        // blocks given back to a new entry
 var bt_lost: u64 = 0;        // blocks that lost their place in this table to another
 
@@ -136,7 +133,6 @@ fn bt_clear() {
 // gave up stays in the table: it is right code for its page until the page is written.
 let JT_BITS = 12;
 let JT_SIZE = 1 << JT_BITS;
-var jt: u64[4 * JT_SIZE] = [0; 4 * JT_SIZE];
 var jt_at: i64[3] = [0; 3];          // the routines: a machine's levels 0 and 3, a program
 var jit_no2: u64 = 0;                // --jit-off2: bit 0 the table of where blocks are
 
@@ -172,7 +168,6 @@ var jt_translate: i64 = 0;
 var jt_enter: i64 = 0;
 var jt_body: i64 = 0;
 var jt_clock: i64 = 0;
-var dc_runs: u32[DC_SIZE] = [0; DC_SIZE];
 var jr_never: i64 = 0;
 var jr_few: i64 = 0;
 var jr_many: i64 = 0;
@@ -184,9 +179,6 @@ var jr_many: i64 = 0;
 var jit_why = false;
 var jw: i64[8] = [0; 8];
 var jw_kind: i64[64] = [0; 64];
-var jw_0f: i64[257] = [0; 257];
-var jw_op: i64[256] = [0; 256];
-var jw_form: i64[4096] = [0; 4096];      // for a kind: kind * 64 + the ModRM's field * 8 + (4 a register, 0 memory) + (2 the prefix 66h) + (1 REP)
 
 // The same for an address on another page, found as the far way finds it (the TLB's table
 // for fetches at this level): jw2, with 0 for one not in the TLB; and of the blocks that
@@ -199,8 +191,6 @@ var jw2: i64[8] = [0; 8];
 // ji_kind, for no kind by the byte behind 0Fh in ji_0f, 256 for one not behind 0Fh).
 var ji: i64[8] = [0; 8];
 var ji_kind: i64[64] = [0; 64];
-var ji_0f: i64[257] = [0; 257];
-var ji_op: i64[512] = [0; 512];      // and for one not behind 0Fh, by its opcode (256 on with REP)
 
 fn jit_ran_one(slot: i64, ph: u64) {
     if dc_n[slot] != 0 { ji[1] += 1; return; }
@@ -222,12 +212,9 @@ fn jit_ran_one(slot: i64, ph: u64) {
 // made for whichever comes at that time, and the other's is made when it is run from its
 // entry, as before.) Counted from nothing when the blocks are forgotten.
 let JH_BITS = 22;
-var jh: u8[1 << JH_BITS] = [0; 1 << JH_BITS];
 var jit_miss_hot = false;    // the instruction just decoded is at its J_HOT-th time
 var jh_made: u64 = 0;        // blocks made that way
 var jw_rec: i64[2] = [0; 2];
-var jn_ph: u64[8192] = [0; 8192];
-var jn_n: i64[8192] = [0; 8192];
 // --jit-why: where the look for dead flags ended, as blocks were translated: 0 dead, 1 the
 // page's end, 2 an instruction with no entry, 3 one that is neither (it reads flags, or
 // is not known), 4 a conditional jump, 5 CALL or JMP, 6 RET or a jump through an
@@ -236,7 +223,6 @@ var jf: i64[9] = [0; 9];
 // --jit-why: how often each address has come to the interpreter with no entry (by a hash
 // of the address, with no tag: a count, not a proof), and the arrivals by that number; and
 // of those, how many got a block back (E166).
-var jm_n: u8[4194304] = [0; 4194304];
 var jm_hist: i64[6] = [0; 6];
 var jm_why: i64[2] = [0; 2];
 fn jit_missed(ph: u64) {
@@ -247,8 +233,6 @@ fn jit_missed(ph: u64) {
 }
 var jq: i64[8] = [0; 8];
 var jq_k: i64[64] = [0; 64];
-var jw_rk: i64[256] = [0; 256];      // and which records those were (the low byte of the kind), 255 for one with more above the width
-var dc_needs: u8[DC_SIZE] = [0; DC_SIZE];
 
 fn jit_went() {
     var ph = rip - code_delta;
@@ -311,9 +295,9 @@ var cv_slot: i64[J_MAX] = [0; J_MAX];    // the entries of the block being made 
 // zero when the SSE unit is not to be used (E139: a machine's CR0.TS or EM set, or
 // CR4.OSFXSR clear; the interpreter faults), [23] dc_runs (--jit-time), [24] set by a way
 // out that leaves an instruction to the interpreter (E155).
+var pad_jx: u8[6] = [0; 6];      // (jx at a multiple of 8 in the block: tools/layout.sh, E173)
 var jx: u64[40] = [0; 40];
 // --jit-check: each store's address and the eight bytes that were there.
-var jlog: u64[256] = [0; 256];
 
 var jc: u8[>..];             // the code being generated
 
