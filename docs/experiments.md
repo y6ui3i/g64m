@@ -12823,3 +12823,120 @@ alone, which is in its favour). It was 1.75 after E171. KVM on hal: 25 s.
 the 128 are (the start saved for a fault is a copy of sixteen registers at some
 instructions; the decode cache's entry is copied whole into `ins`); and the way into a
 block the same way.
+
+----
+
+## E174: from a block to the next block without the run loop between (2026-11-24)
+
+One round of the CLD loop stepped under the debugger, by function (E173's build). The
+block entered from the interpreter: `exec64` 78 instructions, `exec64_rest` 104 (it is
+`jit_enter`, in line), `jit_call4` 6, generated code 51 (the way in, three guest
+instructions, the way out), `exec64_rest` 25, `j_settle` 26 and `alu` 63 (the record the
+block left, made into RFLAGS), `exec64_rest` 32, `exec64` 10, the run loop 33: 428. The
+CLD interpreted: `exec64` 91, `exec64_rest` 97, `exec64` 10, the run loop 33: 231.
+
+Of the 100 million times a block is left for the interpreter, some 30 million go to an
+address that is a block's first instruction (E168's count less the records E172 took):
+the far way did not find it (its entry of the decode cache was given up, E166 gives the
+block back at the next decoding), or the way out was one that does not link. Nothing is
+interpreted between; the run loop, `exec64` and `exec64_rest` are gone through to come
+to `jit_enter` again.
+
+- **Hypothesis**: **with `jit_enter` looking, when a block comes back, whether the address
+  it went to is a block's first instruction with time left for it, and entering that
+  block at once (the count of instructions moved on as the run loop would have), the
+  entries from the run loop fall from 100 million to under 75 million and the three files
+  retire 1.5% fewer host instructions and take 1% fewer cycles beside E173.**
+- **What changed since last time**: the round stepped. A block cannot change what the run
+  loop asks between two instructions (a request from a device, `attn`, `replan`, TF and
+  IF are set by interpreted instructions and by the devices' turn only), so nothing is
+  skipped but the asking.
+- **Next move for each result**:
+  - As guessed → the record left waiting over such an entry (89 instructions of the 428
+    are its settling, and the next block may not read it)
+  - Entries do not fall → where blocks go when they are left, counted again
+- **Cut-off**: one form; the gate (the boot's count of instructions must be the plain
+  boot's to the last one, with `--jit`); the race beside E173.
+
+**Result: not kept. Only 8 million of 98 million entries were from the block before; the
+three files retire 0.7% more host instructions and take the same cycles.**
+
+| The three files, four at once (two of each) | E173 | E174 |
+|---|---:|---:|
+| Host instructions | 302.73 G, 302.65 G | 304.71 G, 304.70 G |
+| Cycles | 122.07 G, 122.34 G | 122.29 G, 122.67 G |
+| Entries into blocks | 99.6 million (E172's count) | 98.0 million, 7.95 million of them straight from the block before |
+
+- **The hypothesis** was wrong in its count: "some 30 million go to a block's first
+  instruction" was E168's number less the records, and E172's settling had taken most of
+  the rest with them (a block left with a record waiting was counted among those that
+  went to a block). What is left to enter straight is 8 million, and the look in the
+  decode cache that every other leaving then pays costs more than those save.
+- **So the entries are what follows an interpreted instruction**: nine in ten times a
+  block is entered from the run loop, the instruction before was interpreted (not
+  translated, not in the cache, cold, or the block's own first). Fewer entries means
+  fewer instructions interpreted; a cheaper entry means `exec64` and `jit_enter`
+  themselves.
+- **The layout's check, added to the gate in E173, failed on this build as it should**:
+  one more global of eight bytes in `jit64.goose` moved the arrays eight past their
+  lines. The gate's other parts passed (117 ok, `make-rc=0`); the guest's count of
+  instructions was the same in old and new (23,864,025,065).
+- The code is taken out again; nothing of E174 is in the tree but this entry.
+
+**Next.** The instructions blocks are left for, by how many each is (E172's list): the
+ones that lie across a page's end are the largest group that is ordinary code; and what
+`exec64` does for each instruction it interprets.
+
+----
+
+## E175: everything measured against QEMU again, at E173 (a measurement; 2026-11-24)
+
+The owner's bar since this morning is twice QEMU. The three files' build is at 1.93
+(E173). Whether the rest is: the whole build, the boot and the 23 primitives, by the tools
+that measured them for the first milestone (E157, E158, E164), with g64m as `main` has it
+(E173; E174 is not in it).
+
+- **Hypothesis**: **the whole build is at 1.85 or more beside QEMU, as the three files
+  are; the boot and the primitives that were nearest QEMU (`p_bitfield`, `p_ldbl`,
+  `p_pixel`) are not at twice: E165 to E173 were read off the build, and what they
+  changed is a machine's blocks and the interpreter's share, which those have little of.**
+- **What changed since last time**: E165 to E173.
+- **Next move for each result**:
+  - As guessed → the owner's to say what "twice" is to hold for; the build's next steps
+    are in E174's entry, the primitives' in E164's
+  - The whole build under 1.7 → what the other files do that the three do not
+- **Cut-off**: one whole build of each side by side; `tools/boot_race.py`;
+  `tools/prim64_long.sh`.
+
+**Result: the whole build is at 1.86 by the clock and 1.91 by cycles; the boot at 1.46;
+eleven of the 23 primitives are at twice QEMU or more, the nearest three where they were.**
+
+| NetHack built in the guest, the two side by side | g64m | QEMU | QEMU / g64m |
+|---|---:|---:|---:|
+| Seconds | 625.0 | 1,161.5 | 1.86 |
+| CPU seconds | 613.3 | 1,159.6 | 1.89 |
+| Cycles | 1,867.7 G | 3,574.7 G | 1.91 |
+| Host instructions | 5,264.6 G | 8,704.5 G | 1.65 |
+
+(`make-rc=2` in both as always: the Guidebook's step; both NetHacks say their version.
+QEMU ran its last 536 s alone, which is in its favour. E157 had 812 s against 1,074 s
+alone, 1.32.)
+
+The boot to the shell's prompt, the best of three (`tools/boot_race.py`; QEMU's time has
+its firmware in it): g64m 1.73 s, QEMU 2.52 s: **1.46** (E158: 2.0 s against 2.5).
+
+The primitives (`tools/prim64_long.sh`, the container's clock, each less the time of a
+program that does nothing), QEMU / g64m: `p_dbl_conv` 13.9, `p_muldiv` 4.8, `p_loop`
+4.7, `p_dbl_cmp` 4.2, `p_recursion` 3.2 (it was 2.6: E165), `p_funcptr` 3.0 (2.3),
+`p_float` 2.2, `p_fill` 2.1, `p_dbl_arith` 2.1, `p_switch` 2.0; then `p_sha` 1.97,
+`p_bignum` 1.74, `p_index` 1.64, `p_ternary` 1.53, `p_bitfield` 1.45, `p_if` 1.42,
+`p_pointer` 1.39, `p_rotate` 1.35, `p_simd` 1.34, `p_bytes` 1.30, `p_shift` 1.29,
+`p_ldbl` 1.11, `p_pixel` 1.07. (These ratios move by a tenth between runs of the
+container; E164's were 1.04 to 1.07 for the last three and 1.33 to 1.56 for the middle.)
+
+- **The hypothesis** held: the build, whole, is where the three files are; the boot and
+  the primitives are not at twice.
+- **What twice would take, each**: the build 580 s where it is 625 (7% more); the boot
+  1.26 s (its first second is the kernel unpacking itself and the interpreter before
+  anything is hot); thirteen primitives, each its own loop, the furthest `p_pixel` and
+  `p_ldbl` (the x87 by a call, E161).
