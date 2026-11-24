@@ -12595,3 +12595,30 @@ there is no hot block to mend, only what all of them do). Read off the blocks:
     on to the TLB's pair all the same
 - **Cut-off**: one form; the gate (blocks that read RFLAGS are entered both ways in the
   boot under `--jit-check`); the race beside E169.
+
+**Result: 1.6% fewer host instructions and 1.2% fewer cycles beside E169.**
+
+| The three files, four at once (two of each) | E169 | E170 | |
+|---|---:|---:|---:|
+| Host instructions | 354.08 G, 354.07 G | 348.41 G, 348.39 G | −1.6% |
+| Cycles | 143.32 G, 143.22 G | 142.03 G, 141.21 G | −1.2% |
+
+- **The hypothesis**: the instructions fell by 1.6%, not 2%: 5.7 G fewer at three for
+  each entry is 1.9 billion entries from another block, one for twelve guest
+  instructions and not for six to eight (the blocks sampled were shorter than the
+  blocks run). The cycles held.
+- **The form**: six words before the body (`BODY_AT` 24). In a block that does not read
+  RFLAGS in memory: two unused, the branch out, `cmp x0, #n`, `b.lo` back to it, `mov
+  x25, x1`; in one that does: the branch out, `cmp`, `b.lo`, `cbz x7`, `bl` the
+  settling, `mov`. The entry (`dc_code`, and what the table of blocks and the links
+  hold) is the `cmp`: 12 or 20 bytes before the body (`j_lead`), and the interpreter
+  enters that far behind it. A branch back to the block's own entry is filled in when
+  the block is whole (`sh_pos`), since which of the two it is is known only then.
+- **No switch and no wrong translator**: the layout is every block's. The gate's boot
+  under `--jit-check` and the build enter blocks of both sorts from blocks and from the
+  interpreter.
+- **The gate**: 116 ok and `make-rc=0` in 419 s.
+
+**Next.** The TLB's tag and addend side by side, read by one `ldp`, and the tables'
+register set to this level's table for reads: eight instructions before a load where
+there are ten.

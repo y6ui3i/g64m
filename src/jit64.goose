@@ -762,7 +762,13 @@ var ss_n = 0;
 var ss_pos: i64[SS_MAX] = [0; SS_MAX];
 // A block begins with what an entry from another block needs (BODY_AT bytes), and the
 // interpreter enters behind it.
-let BODY_AT = 28;
+let BODY_AT = 24;
+// How far before the body the entry from another block is: three instructions, or five
+// in a block that reads RFLAGS in memory (E170).
+inline fn j_lead(needs: bool) -> i64 { return if needs { 20 } else { 12 }; }
+let SH_MAX = 64;
+var sh_n = 0;
+var sh_pos: i64[SH_MAX] = [0; SH_MAX];
 
 // Makes the branch at `site` in the mapping go to `to`.
 // Writes the word w at `site` in the mapping.
@@ -1299,6 +1305,7 @@ fn j_tell() {
 fn j_exit(off: u64, cnt: u64, link: bool) {
     var to = j_out_at;
     var waits = false;
+    var own = false;
     // In a machine a link stays on the page: there an address's page is known to be this
     // block's. (And blocks are for one privilege level, which nothing in a block changes.)
     let linked = link && !jit_check && jit_no >> 63 == 0 && (!machine || (j_head + off) >> 12 == j_head >> 12);
@@ -1317,7 +1324,7 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
     if linked {
         let t = j_head + off;
         let slot = dc_find(t);
-        if t == j_head { to = j_used; jit_links += 1; }
+        if t == j_head && sh_n < SH_MAX { own = true; jit_links += 1; }
         else if dc[slot].tag == t && dc_n[slot] != 0 && dc_cpl[slot] == cpl { to = dc_code[slot]; jit_links += 1; }
         else if tp_n < TP_MAX { tp_pos[tp_n] = jc.len; tp_to[tp_n] = t; tp_n += 1; waits = true; }
     }
@@ -1327,7 +1334,12 @@ fn j_exit(off: u64, cnt: u64, link: bool) {
     // (E155): what lies behind that instruction is where a block is wanted.
     if !link { a_imm(30, 1); a_str(30, CTX, 192); }
     if far { e_far(); }
-    else {
+    else if own {
+        // (To this block's own entry, which is known when the block is whole.)
+        sh_pos[sh_n] = jc.len;
+        sh_n += 1;
+        e(0x14000000);
+    } else {
         let d: u32 = ((to - (j_used + jc.len)) >> 2) as! u32;
         e(0x14000000 | d & 0x3FFFFFF);
     }
@@ -2890,13 +2902,9 @@ fn jit_translate_in(ph: u64) {
         j_needs = false;
         // What an entry from another block needs: time for the whole block, no record
         // waiting if the block reads RFLAGS in memory, and RIP.
-        e(0);                                // cmp x0, #n: filled in below
-        e(0x540000A3);                       // b.lo to the branch out
-        e(0xD503201F);                       // nop, or cbz x7 over the next
-        e(0xD503201F);                       // nop, or bl the record's settling (E146)
-        a_mov(1, RIPB, S1);
-        e(0x14000002);                       // b the body
-        e(0x14000000 | (((j_out_at - (j_used + jc.len)) >> 2) as! u32) & 0x3FFFFFF);
+        // (Six words, filled in when it is known whether the block reads RFLAGS: below.)
+        for i in 6 { e(0); }
+        sh_n = 0;
         if jit_time {
             // The block counts its runs (dc_runs, by its entry): x29 and x30 are free here.
             a_ldr(29, CTX, 184);
@@ -2931,15 +2939,27 @@ fn jit_translate_in(ph: u64) {
                 j_exit(so_off[i], so_cnt[i], so_link[i]);
             }
             if j_used + jc.len + 64 > J_SIZE { jit_flush(); return; }
-            e_at(0, 0xF100001F | (n as! u32) << 10);         // cmp x0, #n
+            // The way in from another block (E170), right before the body: the branch
+            // out, `cmp x0, #n`, `b.lo` back to it, and RIP; and between, in a block that
+            // reads RFLAGS in memory, a record that waits is settled (E146), or the block
+            // left if it is not of a kind that can be. The entry is the `cmp`.
+            let lead = j_lead(j_needs);
+            let in_at = BODY_AT - lead;
+            e_at(in_at - 4, 0x14000000 | (((j_out_at - (j_used + in_at - 4)) >> 2) as! u32) & 0x3FFFFFF);
+            e_at(in_at, 0xF100001F | (n as! u32) << 10);     // cmp x0, #n
+            e_at(in_at + 4, 0x54000003 | 0x7FFFE << 5);      // b.lo two back: the branch out
             if j_needs {
-                // A record waiting, and this block reads RFLAGS in memory: settled here
-                // (E146), or out if it is not of a kind that can be.
                 if jit_no >> 50 & 1 == 0 {
-                    e_at(8, 0xB4000047);                     // cbz x7, two on
-                    e_at(12, 0x94000000 | (((j_settle_at - (j_used + 12)) >> 2) as! u32) & 0x3FFFFFF);       // bl
-                } else { e_at(8, 0xB5000087); }              // cbnz x7, four on: the branch out
+                    e_at(in_at + 8, 0xB4000047);             // cbz x7, two on
+                    e_at(in_at + 12, 0x94000000 | (((j_settle_at - (j_used + in_at + 12)) >> 2) as! u32) & 0x3FFFFFF);       // bl
+                } else {
+                    e_at(in_at + 8, 0xB5000007 | 0x7FFFD << 5);          // cbnz x7, three back: the branch out
+                    e_at(in_at + 12, 0xD503201F);
+                }
             }
+            e_at(BODY_AT - 4, 0xAA0003E0 | S1 << 16 | RIPB);  // mov x25, x1
+            // The branches back to this block's own entry.
+            for i in sh_n { e_at(sh_pos[i], 0x14000000 | (((in_at - sh_pos[i]) >> 2) as! u32) & 0x3FFFFFF); }
             if !j_needs {
                 for i in sl_n {
                     let w = sl_so[i];
@@ -2978,7 +2998,7 @@ fn jit_translate_in(ph: u64) {
                 let next = (jit_peek64(j_mem + site + 4) & 0xFFFFFFFF) as! u32;
                 let to = jit_peek64(j_mem + site + 8) as! u64;
                 let lv = (jit_peek64(j_mem + site + 16) & 0xFF) as! u8;
-                if to == head && lv == cpl { j_patch(site, j_used); }
+                if to == head && lv == cpl { j_patch(site, j_used + in_at); }
                 else {
                     if next != kept { j_poke32(site + 4, kept); }
                     kept = w;
@@ -2987,11 +3007,11 @@ fn jit_translate_in(ph: u64) {
             }
             dc_wait[wk] = kept;
             jit_page[(head >> 12) as! i64] = 1;
-            dc_code[head_slot] = j_used as! u32;
+            dc_code[head_slot] = (j_used + in_at) as! u32;
             dc_n[head_slot] = n as! u8;
             dc_cpl[head_slot] = cpl;
             dc_needs[head_slot] = if j_needs { 1 } else { 0 };
-            if jit_no2 & 2 == 0 { bt_put(head, j_used as! u32, n as! u8, cpl, j_needs); }
+            if jit_no2 & 2 == 0 { bt_put(head, (j_used + in_at) as! u32, n as! u8, cpl, j_needs); }
             dc_k0[head_slot] = dc[head_slot].ins.kind;
             dc[head_slot].ins.kind = 0;
             j_used += jc.len;
@@ -3119,7 +3139,7 @@ fn jit_enter() -> bool {
     jx[9] = time;
     jx[24] = 0;
     if jit_time { t1 = jit_now(); }
-    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + BODY_AT, rip as! i64);
+    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + j_lead(dc_needs[slot] != 0), rip as! i64);
     if jit_time { t2 = jit_now(); }
     // (An x87 opcode that is not written, met in a block: stopped at here, E161.)
     if fp_bad != 0 { stop64("an x87 instruction not written yet, opcode and ModRM", fp_bad as! u64); }
@@ -3176,7 +3196,7 @@ fn jit_both(slot: i64, n: u64) -> bool {
     jx[0] = rflags;
     jx[7] = 0;
     jx[9] = n;
-    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + BODY_AT, rip as! i64);
+    jit_call4(j_mem, j_regs, j_ctx, j_mem + dc_code[slot] + j_lead(dc_needs[slot] != 0), rip as! i64);
     let ran = n - jx[9];
     if ran == 0 { return false; }
     j_settle();
