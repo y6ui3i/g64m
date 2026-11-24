@@ -13228,3 +13228,29 @@ interpreter (one for each load and store, for a page not in the TLB): five words
   - Cycles do not move → the jump: a jump to a constant address on another page made a
     branch the host needs no table for, with the check at the block it goes to
 - **Cut-off**: one form; the gate; the room filled; the race beside E178.
+
+**Result: the room for code filled is 100.7 MB (it was 114.4 MB); the same host
+instructions, 1.25% fewer cycles beside E178.**
+
+| The three files, four at once (two of each) | E178 | E179 | |
+|---|---:|---:|---:|
+| Code written | 114.4 MB | 100.7 MB | −12% |
+| Host instructions | 282.16 G, 282.16 G | 282.35 G, 282.35 G | +0.07% |
+| Cycles | 107.14 G, 106.76 G | 105.56 G, 105.65 G | −1.25% |
+
+- **The hypothesis**: the room fell by an eighth, not a fifth (E178's cells had made the
+  exits to another page longer: 114 MB, where the card counted from 110); the cycles
+  fell with the instructions unchanged, which is the cache's or the TLB's part of the
+  wait and not the jump's. An eighth less room for 1.25%.
+- **The form**: `j_exit` for a way out that does not link is `bl` the routine
+  (`j_leave_at`, at the head of the room) and a word, the instructions run in its upper
+  half and the instruction's place in its lower; the routine reads the word through
+  x30. Not under `--jit-check`, which is told more at each way out. `--jit-off2 512`
+  makes them five words again.
+- **No wrong translator**: every block's loads and stores have one, and the gate's boot
+  and build leave by them all the time (a page not in the TLB).
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 436 s.
+
+**Next.** How much of a block's words are run when nothing leaves it, counted as blocks
+are made; if under two thirds, the ways out in a place of their own near by (a
+conditional branch reaches a megabyte), so that what is run lies together.
