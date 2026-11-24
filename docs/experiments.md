@@ -12715,3 +12715,38 @@ percent each, and not what is next.)
     interpreter's own instructions are what is left: by kind again
 - **Cut-off**: one form; a test as `j_settle` is (the same flags by the interpreter and
   by the routine, traced on hal), wrong routines made on purpose; the gate; the race.
+
+**Result: the blocks left with a record waiting fell from 28.5 million to 1.6 million, the
+entries from the interpreter from 124.3 to 99.6 million; 3.2% fewer host instructions and
+2.5% fewer cycles beside E171.**
+
+| The three files, four at once (two of each) | E171 | E172 | |
+|---|---:|---:|---:|
+| Host instructions | 333.63 G, 333.58 G | 323.05 G, 323.11 G | −3.2% |
+| Cycles | 133.58 G, 133.27 G | 129.97 G, 130.19 G | −2.5% |
+| Left with a record waiting | 28.5 million | 1.6 million | |
+| Entries from the interpreter | 124.3 million | 99.6 million | |
+
+- **The hypothesis** held on all three counts.
+- **What a block left and entered again costs, by these numbers**: 10.5 G instructions
+  and 3.35 G cycles for 24.7 million of them: **425 host instructions and 136 cycles
+  each**, with no guest instruction interpreted between (the record settled, the next
+  block entered). The 99.6 million that are left are an eighth of all the instructions
+  retired.
+- **The form**: in the settling routine (`j_settle_make`): SHL, SHR and SAR at 32 and 64
+  bits as `shift` makes their flags (OF from the operand at every count, AF cleared),
+  BT (CF alone), INC and DEC (ADD and SUB of one with CF as it was). What is left to the
+  interpreter: MUL (0.96 million), 16-bit and 8-bit shifts, BSF and BSR, the rotations.
+  `--jit-off2 32` leaves the routine as E146 made it.
+- **The test** `j_settle2` (68 cases, the trace from hal): each case's flags once by the
+  interpreter and once by the routine, compared in the program itself. Six wrong
+  routines fail it (SHR leaves OF clear; SHL takes CF from the wrong bit; SAR without
+  the sign; BT leaves CF clear; INC and DEC clear CF; DEC adds). A seventh passes: with
+  the routine's test for a count of nothing taken out. No record is made for such a
+  count (the translator's shift by CL makes one only when the count is not nothing), so
+  that test is never reached; it stays, as the interpreter's own has it.
+- **The gate**: 117 ok and `make-rc=0` in 447 s.
+
+**Next.** The trip itself: 425 instructions to leave a block and enter the next is what
+100 million entries pay. Counted on a loop that does nothing else, and read under the
+sampler; then the instructions blocks are left for.

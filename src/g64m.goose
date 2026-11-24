@@ -661,6 +661,8 @@ fn main() {
             format(m3, "g64m: jit-why: blocks ended at an instruction the decode cache does not hold ", jq[6], ", at one not translated ", jq[7], "; blocks given back to a new entry ", bt_back as! i64, ", lost from their own table ", bt_lost as! i64, "\n");
             format(m3, "g64m: jit-why: with no entry: an address's first time ", jm_hist[0], ", its 2nd to 8th ", jm_hist[1], ", 9th to 32nd ", jm_hist[2], ", 33rd to 128th ", jm_hist[3], ", later ", jm_hist[4], "; of all, no block to give back ", jm_hist[5], "; blocks made at the eighth time ", jh_made as! i64, "\n");
             format(m3, "g64m: jit-why: not remembered: on a page given up ", jm_why[0], ", across a page's end ", jm_why[1], "\n");
+            format(m3, "g64m: jit-why: the look for dead flags: dead ", jf[0], ", the page's end ", jf[1], ", no entry ", jf[2], ", other ", jf[3], ", a conditional jump ", jf[4], ", CALL or JMP ", jf[5], ", RET or through an operand ", jf[6], ", CMOVcc or SETcc ", jf[7], ", twelve ", jf[8], "\n");
+            for i in 8192 { if jn_n[i] > 150000 { format(m3, "g64m: jit-why: hot ", jn_n[i], " "); hex64(m3, mem_rd(jn_ph[i], 64)); format(m3, " "); hex64(m3, mem_rd(jn_ph[i] + 8, 64)); format(m3, " at "); hex64(m3, jn_ph[i]); format(m3, "\n"); } }
             for i in 64 { if jq_k[i] != 0 { format(m3, "g64m: jit-why: not run, first of kind ", i, " ", jq_k[i], "\n"); } }
             for i in 64 { if ji_kind[i] != 0 { format(m3, "g64m: jit-why: interpreted kind ", i, " ", ji_kind[i], "\n"); } }
             for i in 512 { if ji_op[i] != 0 { format(m3, "g64m: jit-why: interpreted op ", i, " ", ji_op[i], "\n"); } }
