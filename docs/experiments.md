@@ -12622,3 +12622,62 @@ there is no hot block to mend, only what all of them do). Read off the blocks:
 **Next.** The TLB's tag and addend side by side, read by one `ldp`, and the tables'
 register set to this level's table for reads: eight instructions before a load where
 there are ten.
+
+----
+
+## E171: the TLB's tag and addend side by side: eight instructions before a load, not ten (2026-11-24)
+
+Read off the build's blocks (E170): a load in a machine is the address, then `ubfx` (the
+place), `add` (which table), `ldr` (the tag), `add` and `eor` (the tag against the last
+byte's page), `cbnz`, `add` (the addends' table, 6 × 4,096 places on), `ldr`, `add`: ten
+before the access, with two loads from places 196 KB apart.
+
+- **Hypothesis**: **with the tag and the addend of a place next to each other (one array
+  of pairs, read by one `ldp`) and the register that holds the tables set, on the way
+  into a block, to this privilege level's table for reads (so that a load adds nothing
+  for the table and a store one constant), a load is eight instructions before the
+  access and a store nine; the three files retire 3% fewer host instructions beside E170
+  and take 2% fewer cycles.**
+- **What changed since last time**: E150 made the look-up nine and ten instructions and
+  put both tables in one array, tags first. Here the order inside the array, and what
+  x28 holds.
+- **Next move for each result**:
+  - As guessed → the records (which instructions that set flags still make one, counted
+    as they are translated), and a load of one byte, which cannot cross a page
+  - Under 1% → accesses are fewer among the instructions run than among those read;
+    counted, then the records
+- **Cut-off**: one form; the gate (the system tests are about the TLB's tables and a
+  machine's blocks); the race beside E170.
+
+**Result: 4.4% fewer host instructions and 3.0% fewer cycles beside E170.**
+
+| The three files, four at once (two of each) | E170 | E171 | |
+|---|---:|---:|---:|
+| Host instructions | 349.19 G, 349.18 G | 333.92 G, 333.92 G | −4.4% |
+| Cycles | 138.16 G, 138.11 G | 133.93 G, 134.04 G | −3.0% |
+
+- **The hypothesis** held, by more than guessed: 15.3 G fewer instructions at two for a
+  load is some 7 billion accesses, one for every three guest instructions or so.
+- **The form**: `tlb_tag` holds place i's tag at 2 × i and its addend at 2 × i + 1 (the
+  walk, INVLPG, the flush, `tlb_unwrite` and the interpreter's `xlate` index it so);
+  `jit_enter` gives x28 this level's table for reads; a load is `ubfx`, `add x3, x28, x3,
+  lsl #4`, `ldp x30, x3, [x3]`, `add`, `eor`, `cbnz`, `add`, and a store has one `add`
+  more for its table. The far way reads its pair the same way.
+- **Four wrong translators** against `y_jit`, `y_table`, `y_user`, `y_tlb` under `--jit`:
+  a store that looks in the table for reads, and level 3 looking in level 0's table,
+  fail `y_jit`; the tag added for the addend fails all four; the far way adding the tag
+  passes all four, and is not a wrong answer: the address it then looks for is no
+  block's, and it goes out to the interpreter every time (slower, not wrong).
+- **The gate**: 116 ok and `make-rc=0` in 450 s.
+
+**Where this stands against QEMU, the two side by side** (g64m E171 and QEMU's own
+emulation started together, nothing else running): g64m 39.6 s and 115.45 G cycles, QEMU
+69.3 s and 207.74 G: **1.75 by the clock, 1.80 by cycles** (QEMU ran its last 30 s
+alone, which is in its favour). Times taken alone have moved too much to compare across
+the day: the same QEMU took 54.2 s this morning and 62.0 s now, alone both times (the
+host is a MacBook Air, with no fan), and g64m 34.6 and 38.9 s in two runs one after the
+other. From here the distance to QEMU is the two side by side; KVM on hal stays 25 s.
+
+**Next.** The records: which instructions that set flags still make one, counted as they
+are translated; a load of one byte without the last byte's page; the blocks left for an
+instruction that is not translated (50 million).
