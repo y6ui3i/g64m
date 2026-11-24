@@ -12622,3 +12622,29 @@ there is no hot block to mend, only what all of them do). Read off the blocks:
 **Next.** The TLB's tag and addend side by side, read by one `ldp`, and the tables'
 register set to this level's table for reads: eight instructions before a load where
 there are ten.
+
+----
+
+## E171: the TLB's tag and addend side by side: eight instructions before a load, not ten (2026-11-24)
+
+Read off the build's blocks (E170): a load in a machine is the address, then `ubfx` (the
+place), `add` (which table), `ldr` (the tag), `add` and `eor` (the tag against the last
+byte's page), `cbnz`, `add` (the addends' table, 6 × 4,096 places on), `ldr`, `add`: ten
+before the access, with two loads from places 196 KB apart.
+
+- **Hypothesis**: **with the tag and the addend of a place next to each other (one array
+  of pairs, read by one `ldp`) and the register that holds the tables set, on the way
+  into a block, to this privilege level's table for reads (so that a load adds nothing
+  for the table and a store one constant), a load is eight instructions before the
+  access and a store nine; the three files retire 3% fewer host instructions beside E170
+  and take 2% fewer cycles.**
+- **What changed since last time**: E150 made the look-up nine and ten instructions and
+  put both tables in one array, tags first. Here the order inside the array, and what
+  x28 holds.
+- **Next move for each result**:
+  - As guessed → the records (which instructions that set flags still make one, counted
+    as they are translated), and a load of one byte, which cannot cross a page
+  - Under 1% → accesses are fewer among the instructions run than among those read;
+    counted, then the records
+- **Cut-off**: one form; the gate (the system tests are about the TLB's tables and a
+  machine's blocks); the race beside E170.
