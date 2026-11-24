@@ -32,6 +32,10 @@ if [ -f images/disk64-dev.img ]; then run build env RACE_SHORT=1 python3 -I tool
 wait
 fail=0
 total=0
+# Where the 64-bit machine's globals are (E173): the interpreter's at multiples of 8, the
+# arrays on lines of the cache.
+if PROG=g64m tools/layout.sh --check > "$G/layout.txt" 2>&1; then printf '%-20s aligned\n' "layout"
+else fail=1; printf '%-20s FAILED\n' "layout"; sed 's/^/    /' "$G/layout.txt"; fi
 for name in difftest64 prim64 systest64 systest64-jit systest64-jit-check; do
     n=$(grep -c '^ok' "$G/$name.txt")
     total=$((total + n))
