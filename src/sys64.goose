@@ -162,10 +162,9 @@ let TLB_BITS = 12;
 let TLB_SIZE = 1 << TLB_BITS;
 let TLB_EMPTY: u64 = 0xFFFFFFFFFFFFFFFF;       // no page has this number
 
-// The tags, and behind them (TLB_ADD on) what is added to a linear address to make the
-// physical one: the physical page less the linear page (E150; one array, so that
-// generated code finds both from one address).
-let TLB_ADD = 6 * TLB_SIZE;
+// For each place a pair (E171): the tag, and what is added to a linear address to make the
+// physical one, the physical page less the linear page (E150). Place i's tag is at 2 * i
+// and its addend behind it, so that generated code reads both with one `ldp`.
 var tlb_tag: u64[12 * TLB_SIZE] = [0xFFFFFFFFFFFFFFFF; 12 * TLB_SIZE];
 
 // The six tables hold only what a block may use with nothing more to check (E150): a page
@@ -189,7 +188,7 @@ fn tlb_unwrite(page: i64) {
     let want = (page as! u64) << 12;
     for i in 2 * TLB_SIZE {
         let k = 2 * TLB_SIZE + i;
-        if tlb_tag[k] != TLB_EMPTY && (tlb_tag[k] << 12) + tlb_tag[TLB_ADD + k] == want { tlb_tag[k] = TLB_EMPTY; }
+        if tlb_tag[2 * k] != TLB_EMPTY && (tlb_tag[2 * k] << 12) + tlb_tag[2 * k + 1] == want { tlb_tag[2 * k] = TLB_EMPTY; }
     }
 }
 
@@ -218,7 +217,7 @@ fn tlb_flush() {
         xf_any = false;
     }
     code_end = 0;
-    for i in 6 * TLB_SIZE { tlb_tag[i] = TLB_EMPTY; }
+    for i in 6 * TLB_SIZE { tlb_tag[2 * i] = TLB_EMPTY; }
     for i in 6 * SP_SIZE { sp_tag[i] = TLB_EMPTY; }
     tlb_has_1g = false;
 }
@@ -238,7 +237,7 @@ fn tlb_forget(a: u64) {
     for k in 512 {
         let i = ((first + (k as! u64)) & (TLB_SIZE - 1)) as! i64;
         for t in 6 {
-            if tlb_tag[t * TLB_SIZE + i] >> 9 == first >> 9 { tlb_tag[t * TLB_SIZE + i] = TLB_EMPTY; }
+            if tlb_tag[2 * (t * TLB_SIZE + i)] >> 9 == first >> 9 { tlb_tag[2 * (t * TLB_SIZE + i)] = TLB_EMPTY; }
         }
     }
 }
@@ -255,7 +254,7 @@ inline fn tlb_table(acc: u8) -> i64 {
 inline fn xlate(a: u64, acc: u8) -> u64 {
     let page = a >> 12;
     let i = tlb_table(acc) + ((page & (TLB_SIZE - 1)) as! i64);
-    if tlb_tag[i] == page { return a + tlb_tag[TLB_ADD + i]; }
+    if tlb_tag[2 * i] == page { return a + tlb_tag[2 * i + 1]; }
     return walk(a, acc);
 }
 
@@ -315,8 +314,8 @@ fn walk(a: u64, acc: u8) -> u64 {
         sp_add[si] = add;
     } else {
         let i = tlb_table(acc) + ((a >> 12 & (TLB_SIZE - 1)) as! i64);
-        tlb_tag[i] = a >> 12;
-        tlb_tag[TLB_ADD + i] = add;
+        tlb_tag[2 * i] = a >> 12;
+        tlb_tag[2 * i + 1] = add;
     }
     // (For INVLPG and the blocks' table, E168: code has been fetched from this page.)
     if acc & ACC_EXEC != 0 {

@@ -251,8 +251,8 @@ fn jit_went() {
         if !machine || (cpl != 0 && cpl != 3) { jw[0] += 1; return; }
         let page = rip >> 12;
         let at = (((if cpl == 0 { 4 } else { 5 }) << 12) | (page & 0xFFF)) as! i64;
-        if tlb_tag[at] != page { jw[0] += 1; jw2[0] += 1; return; }
-        ph = rip + tlb_tag[TLB_ADD + at];
+        if tlb_tag[2 * at] != page { jw[0] += 1; jw2[0] += 1; return; }
+        ph = rip + tlb_tag[2 * at + 1];
         jw[0] += 1;
     }
     let s = dc_find(ph);
@@ -545,7 +545,6 @@ fn jit64_init() -> bool {
     jx[10] = j_regs as! u64;
     jx[16] = jit_addr_u64(xmm[..]) as! u64;
     jx[19] = jit_addr_u64(tlb_tag[..]) as! u64;
-    jx[20] = (jit_addr_u64(tlb_tag[..]) + TLB_ADD * 8) as! u64;
     jx[23] = jit_addr32(dc_runs[..]) as! u64;
     jx[25] = jit_x87_addr() as! u64;
     if jit_time {
@@ -650,12 +649,11 @@ fn jit64_init() -> bool {
             e(0x92402C00 | S2 << 5 | S3);                    // and x3, x2, #0xFFF
             e(0x91400000 | ((4 + lv) as! u32) << 10 | S3 << 5 | S3);         // the table for fetches
             a_ldr(29, CTX, 152);
-            e(0xF8607800 | S3 << 16 | 29 << 5 | S4);
+            e(0x8B001000 | S3 << 16 | 29 << 5 | 29);         // add x29, x29, x3, lsl #4: the place's pair (E171)
+            a_ldp(S4, 29, 29, 0);
             a_rrr(A_SUBS, 1, ZR, S4, S2);
             e(0x54000001 | ((((out2 - jc.len) >> 2) as! u32) & 0x7FFFF) << 5);
-            a_ldr(29, CTX, 160);
-            e(0xF8607800 | S3 << 16 | 29 << 5 | S4);
-            a_rrr(A_ADD, 1, S2, S1, S4);                     // the physical address: the entry's addend on
+            a_rrr(A_ADD, 1, S2, S1, 29);                     // the physical address: the entry's addend on
             e(0xCA400000 | S2 << 16 | (DC_BITS as! u32) << 10 | S2 << 5 | S3);       // eor x3, x2, x2, lsr #DC_BITS
             e(0x92400000 | ((DC_BITS - 1) as! u32) << 10 | S3 << 5 | S3);
             a_ldr(S4, CTX, 88);
@@ -1589,18 +1587,20 @@ fn j_chk_n(write: bool, n: u32) {
         // register (x28, which a program without a kernel uses for dc_mark). A page that
         // is not plain memory is never in these tables, nor in those for writes a page
         // with remembered instructions (sys64.goose), so neither is looked for here.
-        let table: u32 = (if write { 2 } else { 0 }) + (if cpl == 3 { 1 } else { 0 });
+        //
+        // Since E171 in seven for a load and eight for a store: a place's tag and addend
+        // lie side by side and are read by one `ldp`, and x28 is this level's table for
+        // reads (jit_enter), the table for writes two tables on.
         e(0xD3400000 | 12 << 16 | 23 << 10 | S1 << 5 | S3);  // ubfx x3, x1, #12, #12
-        if table != 0 { e(0x91400000 | table << 10 | S3 << 5 | S3); }        // add x3, x3, #table, lsl #12
-        e(0xF8607800 | S3 << 16 | MARK << 5 | 30);           // ldr x30, [x28, x3, lsl #3]: the tag
+        e(0x8B001000 | S3 << 16 | MARK << 5 | S3);           // add x3, x28, x3, lsl #4: the place's pair
+        if write { e(0x91400000 | 0x20 << 10 | S3 << 5 | S3); }              // add x3, x3, #0x20, lsl #12: the table for writes
+        a_ldp(30, S3, S3, 0);                                // the tag, the addend
         if n > 1 {
             a_addi(0x11, 1, S2, S1, n - 1);
             e(0xCA400000 | S2 << 16 | 12 << 10 | 30 << 5 | S2);              // eor x2, x30, x2, lsr #12
         } else { e(0xCA400000 | S1 << 16 | 12 << 10 | 30 << 5 | S2); }
         j_leave(S2, false);
-        e(0x91400000 | 6 << 10 | S3 << 5 | S3);              // add x3, x3, #6, lsl #12: TLB_ADD on
-        e(0xF8607800 | S3 << 16 | MARK << 5 | 30);
-        a_rrr(A_ADD, 1, S1, S1, 30);
+        a_rrr(A_ADD, 1, S1, S1, S3);
     } else { j_chk_at(S1, write, n); }
 }
 
@@ -3127,7 +3127,8 @@ fn jit_enter() -> bool {
     jx[17] = fs_base;
     jx[18] = gs_base;
     // (x28 for the blocks: the TLB's tables in a machine, dc_mark in a program, E150.)
-    jx[6] = if machine { jx[19] } else { j_mark_at };
+    // (In a machine: this level's table for reads, E171; a store's is two tables on.)
+    jx[6] = if machine { jx[19] + (if cpl == 3 { 16 * TLB_SIZE } else { 0 }) } else { j_mark_at };
     jx[22] = if machine && (cr4 & 0x200 == 0 || cr0 & 0xC != 0) { 1 } else { 0 };
     if jit_check { return jit_both(slot, n); }
     var t0: i64 = 0;
