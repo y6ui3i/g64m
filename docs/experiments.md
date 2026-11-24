@@ -13433,3 +13433,44 @@ at E180. (QEMU alone on the host for its last 26 s, which is in its favour.)
 
 **Next.** The whole build beside QEMU, three times as this was; the boot (1.46 at E175);
 the primitives under twice.
+
+----
+
+## E184: an operand's address made once: base and index in one instruction, the same address and its neighbours not made and tested again (2026-11-24)
+
+The bar for the primitives (the owner, 2026-11-24): Rosetta's time for the seven where
+twice QEMU is under it; twice QEMU for the six with room. `p_ldbl` is the furthest in
+seconds and is not first: under the sampler 46% of it is the 80-bit arithmetic itself,
+27% the call's giving and taking and 18% the choosing of the operation, and twice QEMU
+wants 45% off. The four that are 3.5 to 4.7 host instructions for a guest instruction
+are (`p_index`, `p_bignum`, `p_pointer`, `p_bytes`), where the ones near Rosetta are 1.1
+to 1.8.
+
+`p_index`'s two loops read off the dump (a program without a kernel; 32 host
+instructions for the 9 guest instructions of the first):
+
+- `mov x1, x17`, `add x1, x1, x8, lsl #2` for `[r9 + rax*4]`: two where the host has one;
+- `mov eax, [rsi + rax*4]` ... `mov [rsi + rax*4], edx` with neither register changed
+  between: the address made again and tested again for being in memory (four
+  instructions), though x1 still holds it;
+- `[r8 + 507826h]`, `[r8 + 507824h]`, `[r8 + 507820h]`, `[r8 + 507828h]` one after
+  another (the fields of one record): `mov`, `movk`, `add` each time, where the last
+  address is two or four bytes away.
+
+- **Hypothesis**: **with the address of base and index made by one `add`, and x1 kept
+  known as the address of the operand last made (until x1, the base or the index is
+  written), so that the same operand is neither made nor tested again and one with
+  another constant is an `add` of the difference, `p_index` retires a fifth fewer host
+  instructions and is at 1.75 of QEMU or more by `tools/prim64_long.sh 200` (1.49 now);
+  `p_pointer`, `p_bytes` and `p_bignum` each gain a tenth; the three files' build does
+  not lose.**
+- **What changed since last time**: E164 kept which *registers* had been tested as
+  addresses; this keeps the address itself. A program without a kernel only: in a
+  machine x1 is made the physical address by the TLB's look-up.
+- **Next move for each result**:
+  - As guessed → the store's look for remembered instructions in three instructions
+    (six now), then the others' loops read the same way
+  - `p_index` gains and the others do not → their loops read, each
+- **Cut-off**: one form; a test traced on hal with the register changed between two
+  uses, the neighbours, a store behind a load; wrong translators; the gate; the
+  primitives at 200 rounds.
