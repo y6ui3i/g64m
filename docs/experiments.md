@@ -13346,3 +13346,18 @@ MB more, for what is now under 3%.
 **Next.** What 2^22 still has over this (the same entries, 2.7% fewer cycles): the
 instructions decoded again, or the arrays' lines. The 7.5 million left for a block on
 another page: the far way finding it in the blocks' own table.
+
+**Beside QEMU at E180, three pairs** (the three files, the two started together, nothing
+else running):
+
+| Pair | g64m: s, CPU s, cycles | QEMU: s, CPU s, cycles | By the clock | By cycles |
+|---|---:|---:|---:|---:|
+| 1 | 33.2, 31.2, 94.77 G | 59.8, 58.5, 179.09 G | 1.80 | 1.89 |
+| 2 | 31.6, 30.7, 93.20 G | 67.1, 64.5, 198.07 G | 2.12 | 2.13 |
+| 3 | 33.5, 31.2, 94.35 G | 59.5, 57.3, 175.67 G | 1.78 | 1.86 |
+
+**1.86 to 1.89 by cycles and 1.78 to 1.80 by the clock in two pairs of three; the third
+(2.13, 2.12) is QEMU slow again**, as in E173's one pair: its cycles were 198 G where the
+other two had 176 and 179 G. g64m's are 93.2 to 94.8 G in all three (they were 91 to 100 G
+at E177). The middle of three is the number: 1.89 by cycles, 1.80 by the clock. At E177
+it was 1.81 to 1.84 and 1.61 to 1.72.
