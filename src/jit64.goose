@@ -373,6 +373,20 @@ let C_NONE = 255;
 // takes the register in its low five bits out of both, which is the one it writes if it
 // writes one (and LDP's second is taken out there); a block is one straight line, and
 // the pages' marks do not change while it runs.
+// The operand whose address x1 is known to be (E184): its base, index, scale and constant,
+// the host registers of the first two (32 for none), whether it has been tested for a
+// read, and for a write of how many bytes.
+var ma_ok = false;
+var ma_base: u8 = 16;
+var ma_index: u8 = 16;
+var ma_scale: u8 = 0;
+var ma_rd = false;
+var pad_ma: u8[3] = [0; 3];     // (eight bytes with the five above: tools/layout.sh)
+var ma_disp: u64 = 0;
+var ma_hb: u32 = 32;
+var ma_hi: u32 = 32;
+var ma_wn: u32 = 0;
+var pad_ma2: u32 = 0;
 var ck_r: u32 = 0;
 var ck_w: u32 = 0;
 
@@ -380,6 +394,12 @@ fn e(w: u32) {
     let gone: u32 = ~((1 as u32) << (w & 31));
     ck_r &= gone;
     ck_w &= gone;
+    // (E184: x1 is no longer the address of the operand last made if x1, the operand's
+    // base or its index is written; a call leaves nothing known.)
+    if ma_ok {
+        let rd = w & 31;
+        if rd == S1 || rd == ma_hb || rd == ma_hi || w & 0xFC000000 == 0x94000000 { ma_ok = false; }
+    }
     jc.push(w as! u8);
     jc.push((w >> 8) as! u8);
     jc.push((w >> 16) as! u8);
@@ -485,7 +505,7 @@ fn a_csel(sf: u32, rd: u32, rn: u32, rm: u32, cond: u32) { e(0x1A800000 | sf << 
 // ldr and str xt, [xn, #off]; ldp and stp x1, x2, [xn, #off]
 fn a_ldr(rt: u32, rn: u32, off: u32) { e(0xF9400000 | (off >> 3) << 10 | rn << 5 | rt); }
 fn a_str(rt: u32, rn: u32, off: u32) { e(0xF9000000 | (off >> 3) << 10 | rn << 5 | rt); }
-fn a_ldp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9400000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); ck_r = 0; ck_w = 0; }
+fn a_ldp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9400000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); ck_r = 0; ck_w = 0; ma_ok = false; }
 fn a_stp(r1: u32, r2: u32, rn: u32, off: u32) { e(0xA9000000 | (off >> 3) << 15 | r2 << 10 | rn << 5 | r1); }
 
 // Branches to a place already generated: b, b.cond, cbnz.
@@ -1825,11 +1845,41 @@ fn j_flags_dead(q: u64, page_end: u64) -> bool {
 
 // The address of je's operand in memory, into S1.
 fn j_addr() {
+    // E184, in a program without a kernel: x1 is kept known as the address of the operand
+    // last made here (its base, index, scale and constant), with what has been tested of
+    // it, until x1 or one of its registers is written (the emitter sees to that, as for
+    // E164's sets). The same operand again is nothing; one that differs in its constant
+    // by less than 4,096 is an `add` or `sub` of the difference, to be tested anew.
+    let keep = !machine && je.sg == 0 && !je.asz32 && jit_no2 & 2048 == 0;
+    let disp = if je.base == 17 { j_off + j_ilen + je.disp } else { je.disp };
+    if keep && ma_ok && ma_base == je.base && ma_index == je.index && (je.index >= 16 || ma_scale == je.scale) {
+        let d = disp - ma_disp;
+        if d == 0 { return; }
+        if d < 4096 || 0 - d < 4096 {
+            if d < 4096 { a_addi(0x11, 1, S1, S1, d as! u32); } else { a_addi(0x51, 1, S1, S1, (0 - d) as! u32); }
+            ma_ok = true;
+            ma_disp = disp;
+            ma_rd = false;
+            ma_wn = 0;
+            return;
+        }
+    }
     j_lea();
     // FS's or GS's base, which a block is given as it is entered.
     if je.sg != 0 {
         a_ldr(29, CTX, if je.sg == 1 { 136 } else { 144 });
         a_rrr(A_ADD, 1, S1, S1, 29);
+    }
+    ma_ok = keep;
+    if keep {
+        ma_base = je.base;
+        ma_index = je.index;
+        ma_scale = je.scale;
+        ma_disp = disp;
+        ma_hb = if je.base < 16 { hg(je.base) } else { 32 };
+        ma_hi = if je.index < 16 { hg(je.index) } else { 32 };
+        ma_rd = false;
+        ma_wn = 0;
     }
 }
 
@@ -1840,6 +1890,11 @@ fn j_lea() { j_lea_into(S1); }
 // alone is a shift, E163.)
 fn j_lea_into(t: u32) {
     if je.base == 17 { a_add_const(t, RIPB, j_off + j_ilen + je.disp); }
+    else if je.base < 16 && je.index < 16 && je.disp == 0 && jit_no2 & 2048 == 0 {
+        // (Base and index and no constant: one instruction, E184.)
+        e(0x8B000000 | hg(je.index) << 16 | (je.scale as u32) << 10 | hg(je.base) << 5 | t);
+        return;
+    }
     else if je.base < 16 { a_add_const(t, hg(je.base), je.disp); }
     else if je.index < 16 && je.disp == 0 && jit_no >> 32 & 1 == 0 {
         if je.scale == 0 { a_mov(1, t, hg(je.index)); }
@@ -1886,7 +1941,17 @@ fn j_chk_n(write: bool, n: u32) {
         } else { e(0xCA400000 | S1 << 16 | 12 << 10 | 30 << 5 | S2); }
         j_leave(S2, false);
         a_rrr(A_ADD, 1, S1, S1, S3);
-    } else { j_chk_at(S1, write, n); }
+    } else {
+        // (What has been tested of the operand whose address x1 is known to be, E184.)
+        if ma_ok && n <= 8 {
+            if write {
+                if ma_wn >= n { return; }
+                if ma_rd { j_chk_mark_at(S1, n); ma_wn = n; return; }
+            } else if ma_rd || ma_wn != 0 { return; }
+        }
+        j_chk_at(S1, write, n);
+        if ma_ok && n <= 8 { ma_rd = true; if write { ma_wn = n; } }
+    }
 }
 
 // The same for a program without a kernel, of the address in host register ar. Up to
@@ -2449,6 +2514,7 @@ fn j_x87() -> bool {
     xv_in = 0;
     ck_r = 0;
     ck_w = 0;
+    ma_ok = false;
     if store {
         j_addr();
         j_store(if n == 2 { 16 } else if n == 4 { 32 } else { 64 }, S4);
@@ -3277,6 +3343,7 @@ fn jit_translate_in(ph: u64) {
         sl_n = 0;
         ck_r = 0;
         ck_w = 0;
+        ma_ok = false;
         j_stale = false;
         xv_in = 0;
         tp_n = 0;

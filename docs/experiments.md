@@ -13436,6 +13436,201 @@ the primitives under twice.
 
 ----
 
+## E182: everything against QEMU again, at E181 (a measurement; 2026-11-24)
+
+The owner's bar is everything at twice QEMU. The three files are there (E181: 2.01 by
+cycles, the middle of three pairs). The rest by E175's tools, with `main` at E181.
+
+- **Hypothesis**: **the whole build is at twice QEMU as the three files are; the boot is
+  under it; the primitives that were under it are still: what E176 to E181 changed is a
+  machine's blocks, the interpreter's share and the script's look, none of which a
+  program without a kernel has.**
+- **What changed since last time**: E176 to E181.
+- **Next move for each result**:
+  - As guessed → the boot and the twelve primitives are what is left of the bar; which
+    first is the owner's to say
+  - The whole build under 1.9 → what the other files have that the three do not
+- **Cut-off**: one whole build of each side by side (it is twenty minutes: one pair, and
+  said to be one); `tools/boot_race.py`; `tools/prim64_long.sh`.
+
+**Result: the whole build is at 2.18 by the clock and 2.22 by cycles (one pair); the boot
+at 1.78; eleven primitives at twice or more and twelve under, as before.**
+
+| NetHack built in the guest, the two side by side | g64m | QEMU | QEMU / g64m |
+|---|---:|---:|---:|
+| Seconds | 490.7 | 1,069.2 | 2.18 |
+| CPU seconds | 488.7 | 1,073.9 | 2.20 |
+| Cycles | 1,504.4 G | 3,336.6 G | 2.22 |
+| Host instructions | 4,588.0 G | 8,646.1 G | 1.88 |
+
+(One pair: E177's entry says what one pair is worth. QEMU's cycles here are 3,337 G
+where E175's pair had 3,575 G for the same work, so this is not QEMU at its slowest;
+it ran its last 580 s alone, which is in its favour. g64m: 625 s at E173, 491 s now.
+`make-rc=2` in both as always.)
+
+The boot to the shell's prompt, the best of three: g64m 1.50 s, QEMU 2.67 s: **1.78**
+(1.73 s and 1.46 at E175).
+
+The primitives (`tools/prim64_long.sh`), QEMU / g64m: `p_dbl_conv` 14.1, `p_loop` 8.0,
+`p_muldiv` 5.1, `p_dbl_cmp` 4.4, `p_recursion` 3.5, `p_funcptr` 2.8, `p_sha` 2.5,
+`p_float` 2.2, `p_dbl_arith` 2.1, `p_fill` 2.1, `p_switch` 2.1; then `p_ternary` 1.71,
+`p_simd` 1.60, `p_bignum` 1.59, `p_index` 1.58, `p_if` 1.47, `p_pointer` 1.47, `p_shift`
+1.46, `p_rotate` 1.36, `p_bytes` 1.32, `p_pixel` 1.23, `p_ldbl` 1.10, `p_bitfield` 1.07.
+(A tenth either way between runs of the container, as E175 said: `p_sha` was 1.97 there
+and `p_bitfield` 1.45.)
+
+- **The hypothesis** held in all three parts.
+- **Where the bar stands**: the build is past it, whole and in three files. The boot
+  wants 1.33 s where it takes 1.50. Twelve primitives are under it, the furthest
+  `p_bitfield`, `p_ldbl` and `p_pixel`, which are where they were at the first
+  milestone.
+
+----
+
+## E183: the primitives with seven times the work in each, and what twice QEMU would mean for them (a measurement; 2026-11-24)
+
+The owner's choice: the primitives first. Before any of them is worked on, the measure:
+`tools/prim64_long.sh` gives each program 30 rounds, which is 0.07 to 0.25 s under g64m
+with 0.08 s of start taken off, read from a clock of hundredths; E175 and E182 gave
+`p_bitfield` 1.45 and 1.07, `p_sha` 1.97 and 2.48. And by the host's counters most of
+those under twice are 1.1 to 1.8 host instructions for a guest instruction already.
+
+- **Hypothesis**: **with 200 rounds (0.2 to 20 s each) the ratios stand still, and the
+  ones under twice are those where the emulator is already near what the host can do
+  with the loop: there Docker's own emulator (Rosetta, which translates the whole
+  program ahead of its run) is no more than a third faster than g64m.**
+- **What changed since last time**: the rounds; and Rosetta's column read, which the tool
+  has always printed.
+- **Next move for each result**:
+  - As guessed → the bar put to the owner for those; the others worked on, the furthest
+    from Rosetta first
+  - The ratios move as much as before → the tool's clock, before anything else
+- **Cut-off**: one run at 200 rounds.
+
+**Result: thirteen are under twice QEMU. For seven of them twice QEMU is faster than
+Rosetta; for six there is room.**
+
+Seconds for 200 rounds, less the start (QEMU's user mode and Rosetta in the container,
+g64m on the host):
+
+| | QEMU | Rosetta | g64m | QEMU / g64m | g64m / Rosetta | Twice QEMU is | |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `p_pixel` | 0.523 | 0.393 | 0.508 | 1.03 | 1.29 | 0.26 | under Rosetta |
+| `p_bitfield` | 1.100 | 0.890 | 1.010 | 1.09 | 1.13 | 0.55 | under Rosetta |
+| `p_shift` | 0.893 | 0.680 | 0.705 | 1.27 | 1.04 | 0.45 | under Rosetta |
+| `p_rotate` | 4.403 | 3.060 | 3.282 | 1.34 | 1.07 | 2.20 | under Rosetta |
+| `p_if` | 1.873 | 0.997 | 1.353 | 1.38 | 1.36 | 0.94 | under Rosetta |
+| `p_ternary` | 0.807 | 0.473 | 0.523 | 1.54 | 1.11 | 0.40 | under Rosetta |
+| `p_sha` | 0.437 | 0.253 | 0.267 | 1.64 | 1.06 | 0.22 | under Rosetta |
+| `p_ldbl` | 24.520 | 58.557 | 22.392 | 1.10 | 0.38 | 12.26 | (Rosetta is slower) |
+| `p_bytes` | 1.373 | 0.573 | 1.083 | 1.27 | 1.89 | 0.69 | room |
+| `p_simd` | 2.060 | 0.357 | 1.543 | 1.34 | 4.32 | 1.03 | room |
+| `p_pointer` | 1.900 | 0.723 | 1.381 | 1.38 | 1.91 | 0.95 | room |
+| `p_index` | 1.723 | 0.420 | 1.158 | 1.49 | 2.76 | 0.86 | room |
+| `p_bignum` | 2.590 | 0.887 | 1.701 | 1.52 | 1.92 | 1.30 | room |
+
+At twice or more: `p_dbl_conv` 13.6, `p_muldiv` 4.7, `p_dbl_cmp` 4.2, `p_loop` 4.2,
+`p_recursion` 2.9, `p_funcptr` 2.8, `p_float` 2.2, `p_dbl_arith` 2.05, `p_fill` 2.01,
+`p_switch` 2.00.
+
+- **The hypothesis** held: the ratios are those of E182 within a tenth (it is the 30
+  rounds' ones that moved), and for `p_shift`, `p_sha`, `p_rotate`, `p_ternary` and
+  `p_bitfield` g64m is within 4 to 13% of Rosetta.
+- **What it means for the bar**: QEMU's own translator is good at these seven (it is
+  1.2 to 1.9 of Rosetta on them), and twice QEMU there is 1.1 to 1.6 times *faster than
+  Rosetta*, which has the whole program before it runs and the host's own way of
+  ordering memory. As KVM is not to be passed, neither is that. What can be asked of
+  them is Rosetta's time.
+- **Where there is room**: `p_simd` (4.3 of Rosetta), `p_index` (2.8), `p_bignum`,
+  `p_pointer` and `p_bytes` (1.9), and `p_ldbl` (22.4 s where twice QEMU is 12.3 s: the
+  x87 by a call, E161).
+
+**Next.** The owner's word on the bar for the seven. Then `p_ldbl` (the furthest in
+seconds), `p_simd`, `p_index`.
+## E184: an operand's address made once: base and index in one instruction, the same address and its neighbours not made and tested again (2026-11-24)
+
+The bar for the primitives (the owner, 2026-11-24): Rosetta's time for the seven where
+twice QEMU is under it; twice QEMU for the six with room. `p_ldbl` is the furthest in
+seconds and is not first: under the sampler 46% of it is the 80-bit arithmetic itself,
+27% the call's giving and taking and 18% the choosing of the operation, and twice QEMU
+wants 45% off. The four that are 3.5 to 4.7 host instructions for a guest instruction
+are (`p_index`, `p_bignum`, `p_pointer`, `p_bytes`), where the ones near Rosetta are 1.1
+to 1.8.
+
+`p_index`'s two loops read off the dump (a program without a kernel; 32 host
+instructions for the 9 guest instructions of the first):
+
+- `mov x1, x17`, `add x1, x1, x8, lsl #2` for `[r9 + rax*4]`: two where the host has one;
+- `mov eax, [rsi + rax*4]` ... `mov [rsi + rax*4], edx` with neither register changed
+  between: the address made again and tested again for being in memory (four
+  instructions), though x1 still holds it;
+- `[r8 + 507826h]`, `[r8 + 507824h]`, `[r8 + 507820h]`, `[r8 + 507828h]` one after
+  another (the fields of one record): `mov`, `movk`, `add` each time, where the last
+  address is two or four bytes away.
+
+- **Hypothesis**: **with the address of base and index made by one `add`, and x1 kept
+  known as the address of the operand last made (until x1, the base or the index is
+  written), so that the same operand is neither made nor tested again and one with
+  another constant is an `add` of the difference, `p_index` retires a fifth fewer host
+  instructions and is at 1.75 of QEMU or more by `tools/prim64_long.sh 200` (1.49 now);
+  `p_pointer`, `p_bytes` and `p_bignum` each gain a tenth; the three files' build does
+  not lose.**
+- **What changed since last time**: E164 kept which *registers* had been tested as
+  addresses; this keeps the address itself. A program without a kernel only: in a
+  machine x1 is made the physical address by the TLB's look-up.
+- **Next move for each result**:
+  - As guessed → the store's look for remembered instructions in three instructions
+    (six now), then the others' loops read the same way
+  - `p_index` gains and the others do not → their loops read, each
+- **Cut-off**: one form; a test traced on hal with the register changed between two
+  uses, the neighbours, a store behind a load; wrong translators; the gate; the
+  primitives at 200 rounds.
+
+**Result: `p_index` retires 14% fewer host instructions and takes 9% fewer cycles;
+`p_pointer` 7% fewer instructions and the same cycles; the other four and the build do
+not move.**
+
+| 200 rounds, by the host's counters | E181: instructions, cycles | E184 | cycles |
+|---|---:|---:|---:|
+| `p_index` | 25,305 M, 3,871 M | 21,797 M, 3,511 M | −9.3% |
+| `p_pointer` | 24,704 M, 4,566 M | 23,063 M, 4,593 M | +0.6% |
+| `p_bytes` | 24,921 M, 3,676 M | 24,903 M, 3,618 M | −1.6% |
+| `p_bignum` | 42,455 M, 5,484 M | 42,216 M, 5,475 M | |
+| `p_if`, `p_simd` | 17,666 M, 4,415 M; 14,982 M, 5,080 M | the same | |
+| The three files' build (four at once) | 258.6 G, 93.9 G | 258.4 G, 94.0 G | |
+
+- **The hypothesis** did not hold: a fifth fewer instructions for `p_index` was a
+  seventh, which puts it near 1.64 of QEMU where 1.75 was guessed (not measured again in
+  the container); "a tenth each" for the other three was nothing. Their loops are not
+  `p_index`'s.
+- **What `p_index`'s loop is now**: 28 host instructions for 9 guest, at six host
+  instructions a cycle: it is the count that holds it. Thirteen of the 28 are tests: is
+  the address in memory (two instructions, four times), does the store's page hold
+  remembered instructions (five). QEMU's user mode makes neither: its guest's memory is
+  the host's own at an offset, and a wild address is the host's fault to take. That is
+  the distance that is left to Rosetta on these four, and no instruction saved here and
+  there closes it.
+- **The form** (`--jit-off2 2048` leaves it out): `j_addr` keeps `ma_base`, `ma_index`,
+  `ma_scale`, `ma_disp` and what was tested (`ma_rd`, `ma_wn`); the emitter clears
+  `ma_ok` when an instruction's destination is x1 or the host register of the base or
+  the index, and at a call and at `ldp`; `j_chk_n` skips what was tested; `j_lea_into`
+  makes base and index with no constant one `add`. A program without a kernel only.
+- **The test** `j_addr` (1,474 instructions traced on hal): the same operand read then
+  written; its base changed between; its index changed between; the stack used
+  between; neighbours up and down and further than an `add` takes; another scale;
+  relative to RIP. Six wrong translators fail it (the base written and the address
+  kept; the index; x1; the difference taken the wrong way; the scale not looked at;
+  base and index without the scale). Two of the six passed its first form: the value
+  pushed between was the one just read, so the stack's address read the same; and no
+  two operands differed in scale alone.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 429 s (before the test was
+  added; `difftest64` with it: ok).
+
+**Next.** What the six with room would take, put to the owner before more is done: the
+tests of an address are the guest's memory being an array of the emulator's. With the
+guest's memory a mapping of its own and the host's protection round it, a program without
+a kernel needs neither test (QEMU's user mode and what M11's backend would be). That is
+M11's design, not a peephole.
 ## E185: the TLB emptied by what was put in it (2026-11-24)
 
 The owner's choice: the boot next (1.78 of QEMU at E182; twice is 1.33 s where it takes
