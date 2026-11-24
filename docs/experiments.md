@@ -13361,3 +13361,30 @@ else running):
 other two had 176 and 179 G. g64m's are 93.2 to 94.8 G in all three (they were 91 to 100 G
 at E177). The middle of three is the number: 1.89 by cycles, 1.80 by the clock. At E177
 it was 1.81 to 1.84 and 1.61 to 1.72.
+
+----
+
+## E181: the script looked at sixteen times less often (2026-11-24)
+
+`--jit-why` has had a line since E165 that was not read until now: a block is turned away
+for want of time 10.5 million times in the three files, once for 2,300 guest
+instructions. The run loop lets the CPU go on until the first thing that is due (the
+timer, the network's look, and `next_look`: the script's turn to see what the console
+has printed, every 16,384 instructions when no terminal is attached). A block is entered
+only if all of it fits before that, so the last instructions before each stop are the
+interpreter's: 1.46 million stops for the script, each with a block or several turned
+away and what is left of them interpreted one at a time. The timer's stops are some 75
+thousand.
+
+- **Hypothesis**: **with the script looked at every 262,144 instructions (3 ms of the
+  guest's time at this speed, where it was 0.2 ms), the blocks turned away for time fall
+  from 10.5 million to under 2 million, and the three files retire 1.5% fewer host
+  instructions and take 1% fewer cycles beside E180.**
+- **What changed since last time**: the line read. One constant. What the guest sees
+  does not change (the script types a little later after the text it waits for).
+- **Next move for each result**:
+  - As guessed → the other stops: the network's look every 40,000 instructions when a
+    card is attached, and what a stop costs when it is the timer's
+  - Refusals fall and cycles do not → the instructions before a stop were cheap; on to
+    the blocks left for a block on another page (7.5 million)
+- **Cut-off**: one constant; the gate (every script in it waits and types); the race.
