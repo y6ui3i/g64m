@@ -13254,3 +13254,34 @@ instructions, 1.25% fewer cycles beside E178.**
 **Next.** How much of a block's words are run when nothing leaves it, counted as blocks
 are made; if under two thirds, the ways out in a place of their own near by (a
 conditional branch reaches a megabyte), so that what is run lies together.
+
+----
+
+## E180: the decode cache's size, asked again now that no block lives in it (2026-11-24)
+
+(Counted for E179's next: of 102.6 MB of blocks, 81.8 MB lie before the first way out
+behind the block. A fifth is ways out; putting them elsewhere would bring the rest a
+fifth closer, 2% by E179's measure, for an emitter that writes to two places. Not begun.)
+
+E152 chose 2^20 entries (32 MB, and 14 MB of arrays beside it) because a block died with
+its first instruction's entry, and the cache held four blocks' entries in five: each
+doubling took a seventh off the time. Since E166 a block is kept in a table of its own
+and comes back to a new entry, and since E167 an address that keeps coming with no entry
+gets a block. What the cache holds now is what the interpreter runs: 76 million entries
+into blocks and some 110 million interpreted instructions in the three files, each a
+look at a place chosen by a hash in 32 MB, and then at the same place in seven arrays.
+The sampler has `exec64` and `exec64_rest` at 13% of the time by themselves.
+
+- **Hypothesis**: **with 2^16 entries (2 MB and under 1 MB of arrays, which this host
+  keeps in its second cache) the three files take 2% fewer cycles beside E179, though
+  more instructions are decoded again (the instructions interpreted with no entry rise
+  from 21 million to under 40 million); 2^18 lies between.**
+- **What changed since last time**: E166 and E167, which took out what E152's doubling
+  bought.
+- **Next move for each result**:
+  - As guessed → the size that is best of 2^14, 2^16, 2^18; the seven arrays beside the
+    cache made one, so that an entry's facts lie in one line
+  - Slower at every smaller size → the entries are still worth their room (which ones:
+    by what the instruction with no entry is); the arrays made one all the same
+- **Cut-off**: three sizes built from one tree and raced with 2^20 at the same time, the
+  counts beside; the gate at the size kept.
