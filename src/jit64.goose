@@ -921,6 +921,7 @@ fn j_len() -> u64 {
         if op >= 0xD8 && op <= 0xDF { return m; }                // the x87 (E161): ModRM and nothing behind it
         // CLI, CLD, STD and LEAVE (E176): the opcode is all of them.
         if op == 0xFA || op == 0xFC || op == 0xFD || op == 0xC9 { return p; }
+        if op == 0x87 { return m; }                          // XCHG (E177)
         if op != 0x0F { return 0; }
         let op2 = mem_rd(j_at + p, 8) as! u8;
         // RDTSC; LFENCE, MFENCE and SFENCE; SWAPGS (E176).
@@ -929,7 +930,7 @@ fn j_len() -> u64 {
         if op2 == 0x01 && mem_rd(j_at + p + 1, 8) == 0xF8 { return p + 2; }
         if op2 >= 0xC8 && op2 <= 0xCF { return p + 1; }      // BSWAP (E147): no operand's bytes
         if m == 0 { return 0; }
-        if op2 == 0xBC || op2 == 0xBD || op2 == 0xB1 { return m; }       // BSF, BSR, CMPXCHG
+        if op2 == 0xBC || op2 == 0xBD || op2 == 0xB1 || op2 == 0xC1 { return m; }        // BSF, BSR, CMPXCHG, XADD
         // BT, BTS, BTR, BTC and the double shifts (E138), a constant behind some.
         if op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB || op2 == 0xA5 || op2 == 0xAD { return m; }
         if op2 == 0xBA || op2 == 0xA4 || op2 == 0xAC { return m + 1; }
@@ -1187,17 +1188,23 @@ fn a_tst_bit(sf: u32, rn: u32, n: u32) {
 // serves a jump right behind), else only as the block's first to set flags, on RFLAGS in
 // memory. The record (50h) is the value and the bit's number.
 fn j_bt(q: u64, len: u64, which: u8) -> bool {
-    if jit_no >> 54 & 1 != 0 || je.mod != 3 { return false; }
+    let imm = (mem_rd(q + je.plen, 8) as! u8) == 0xBA;
+    // Of memory (E177): by a constant only, where the bit is in the operand named (a
+    // register's number reaches outside it); the operand is loaded into S4, and stored
+    // from there.
+    let inmem = je.mod != 3;
+    if jit_no >> 54 & 1 != 0 { return false; }
+    if inmem && (!imm || jit_no2 & 128 != 0 || je.asz32 || machine && jit_no >> 56 & 1 != 0) { return false; }
     let w: u32 = je.osz;
     let sf: u32 = if w == 64 { 1 } else { 0 };
-    let m = hg(je.rm);
-    let imm = (mem_rd(q + je.plen, 8) as! u8) == 0xBA;
+    if !j_dead && j_set { return false; }
+    var m = hg(je.rm);
+    if inmem { j_addr(); j_chk(which != 0); j_load(je.osz, S4); m = S4; }
     let n: u32 = if imm { (mem_rd(q + len - 1, 8) & ((w as u64) - 1)) as! u32 } else { 0 };
     let r = hg(je.reg);
     if !j_dead {
-        if j_set { return false; }
         j_needs = true;
-        if imm { a_imm(S1, n); j_rec_w(0x50, w, m, S1); } else { j_rec_w(0x50, w, m, r); }
+        if imm { a_imm(29, n); j_rec_w(0x50, w, m, 29); } else { j_rec_w(0x50, w, m, r); }
     } else { j_stale = true; j_dyn = false; }
     // The bit, as one in S2 for BTS, BTR and BTC; and the host's flags from it.
     if imm {
@@ -1212,8 +1219,29 @@ fn j_bt(q: u64, len: u64, which: u8) -> bool {
     }
     if which == 0 { return true; }
     let op: u32 = if which == 1 { A_ORR } else if which == 2 { 0x0A200000 } else { A_EOR };     // orr, bic, eor
-    if w == 16 { a_rrr(op, 0, S4, m, S2); a_bfi_low(m, S4, 16); }
+    if inmem { a_rrr(op, sf, S4, S4, S2); j_store(je.osz, S4); }
+    else if w == 16 { a_rrr(op, 0, S4, m, S2); a_bfi_low(m, S4, 16); }
     else { a_rrr(op, sf, m, m, S2); }
+    return true;
+}
+
+// XADD of 32 or 64 bits (E177): the operand and the register added into the operand, and
+// the register given what the operand was. The flags are ADD's, recorded at once.
+fn j_xadd() -> bool {
+    if jit_no2 & 128 != 0 || je.osz == 16 { return false; }
+    let sf: u32 = if je.osz == 64 { 1 } else { 0 };
+    let r = hg(je.reg);
+    let regs = je.mod == 3;
+    if regs { a_mov(sf, S3, hg(je.rm)); }
+    else {
+        if machine && jit_no >> 56 & 1 != 0 { return false; }
+        j_addr(); j_chk(true); j_load(je.osz, S3);
+    }
+    j_rec_w(1, je.osz, S3, r);
+    a_rrr(A_ADDS, sf, S4, S3, r);
+    j_hf = HF_ADD;
+    a_mov(sf, r, S3);
+    if regs { a_mov(sf, hg(je.rm), S4); } else { j_store(je.osz, S4); }
     return true;
 }
 
@@ -2385,6 +2413,23 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 return len;
             }
         }
+        if op == 0x87 {
+            // XCHG of a register with a register or memory, 32 or 64 bits (E177).
+            if !plain || jit_no2 & 128 != 0 { return 0; }
+            let sf: u32 = if je.osz == 64 { 1 } else { 0 };
+            let r = hg(je.reg);
+            if je.mod == 3 {
+                a_mov(sf, S3, hg(je.rm));
+                a_mov(sf, hg(je.rm), r);
+                a_mov(sf, r, S3);
+            } else {
+                if machine && jit_no >> 56 & 1 != 0 { return 0; }
+                j_addr(); j_chk(true); j_load(je.osz, S3);
+                j_store(je.osz, r);
+                a_mov(sf, r, S3);
+            }
+            return len;
+        }
         if op == 0xFA || op == 0xC9 { return 0; }
         if op == 0x0F {
             let o2 = mem_rd(q + je.plen, 8) as! u8;
@@ -2397,6 +2442,7 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
             if bt != 255 { return if j_bt(q, len, bt) { len } else { 0 }; }
             if op2 == 0xA4 || op2 == 0xAC || op2 == 0xA5 || op2 == 0xAD { return if j_shd(q, len, op2) { len } else { 0 }; }
             if op2 == 0xB1 { return if j_cmpxchg() { len } else { 0 }; }
+            if op2 == 0xC1 { return if j_xadd() { len } else { 0 }; }
             if op2 >= 0xC8 && op2 <= 0xCF {
                 // BSWAP of 32 or 64 bits: REV.
                 if je.p66 || jit_no >> 49 & 1 != 0 { return 0; }
@@ -2450,9 +2496,17 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
     let wb: u8 = if wide { je.osz } else { 8 };
 
     if k >= K_SETCC {
-        if !regs || !j_byte_ok(je.rm) { return 0; }
+        if regs && !j_byte_ok(je.rm) { return 0; }
+        if !regs && (!inmem || jit_no2 & 128 != 0) { return 0; }
         let c = j_cond(k & 15);
         if c == C_NONE { return 0; }
+        if !regs {
+            // Into memory (E177): the address and its checks change no host flag.
+            j_addr(); j_chk_n(true, 1);
+            e(0x1A9F07E0 | (c ^ 1) << 12 | S4);              // cset w4, c
+            j_store(8, S4);
+            return len;
+        }
         e(0x1A9F07E0 | (c ^ 1) << 12 | S1);                  // cset w1, c
         e(0xB3401C00 | S1 << 5 | m);                         // bfi xm, x1, #0, #8
         return len;
@@ -2901,6 +2955,13 @@ fn j_one(q: u64, off: u64, room: u64, cnt: u64) -> u64 {
                 j_exit_to(S4, cnt + 1);
                 j_end = true;
                 j_stop = field == 4;
+                return len;
+            }
+            if field == 6 {
+                // PUSH of memory (E177): the operand is read before the stack is touched.
+                if op != 0xFF || !stack || regs || !inmem || jit_no2 & 128 != 0 { return 0; }
+                j_addr(); j_chk(false); j_load(64, S4);
+                j_push(S4);
                 return len;
             }
             if !wide || field > 1 { return 0; }

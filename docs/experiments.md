@@ -13041,3 +13041,41 @@ interpreter moves a page's stretch at once (E113).
     behind each
 - **Cut-off**: one form; a test traced on hal, each in a loop, compared instruction by
   instruction under `--jit` and `--jit-check`; wrong translators; the gate; the race.
+
+**Result: 2.5% fewer host instructions and 2.2% fewer cycles beside E176; 8.5 million fewer
+entries into blocks.**
+
+| The three files, four at once (two of each) | E176 | E177 | |
+|---|---:|---:|---:|
+| Host instructions | 294.79 G, 294.69 G | 287.47 G, 287.47 G | −2.5% |
+| Cycles | 117.83 G, 117.60 G | 114.96 G, 115.31 G | −2.2% |
+| Entries into blocks | 90.5 million | 82.0 million | |
+
+- **The hypothesis** held, by more than guessed (6 million entries, 1.5% and 1%).
+- **The guest's count of instructions** was 23,868,286,048 in the old build's run and
+  23,859,377,403 in the new one's. It is not the same from run to run of one binary
+  either (23,857,067,687 for E176 an hour before; the guest's clock is the host's): that
+  the two were alike to the last instruction in E176's race said less than its entry
+  took it to say. What holds RDTSC to the interpreter is the wrong translator that fails
+  the boot.
+- **The form** (`--jit-off2 128` leaves all five to the interpreter):
+  - BT, BTS, BTR, BTC of memory by a constant: the operand loaded, the record and the
+    host's test as for a register, stored back for the three that change it (`j_bt`);
+    not by a register, whose number reaches outside the operand;
+  - XADD at 32 and 64 bits (`j_xadd`): the record ADD's, made before the register is
+    given the operand's old value;
+  - SETcc into memory: the address and its checks change no host flag, so the
+    condition is still the instruction's before;
+  - PUSH of memory: read before the stack is touched;
+  - XCHG of a register with a register or memory (87h), 32 and 64 bits.
+- **The test** `j_more` (1,882 instructions traced on hal; the sum compared in the
+  program under `--jit`). Seven wrong translators fail it: XADD leaves the register as
+  it was; XADD without the host's flags; BTS of memory stores nothing; BT's record names
+  the bit beside; SETcc into memory the other way round; PUSH of memory pushes half;
+  XCHG of memory stores nothing.
+- **The gate**: 121 ok, the layout aligned, `make-rc=0`, in 460 s.
+
+**Next.** The build against QEMU again, whole. Then the entries that are left (82
+million): STI, PUSHFQ and POPFQ, OUT and IN, IRET, MOV to CR3, REP STOS and REP MOVS are
+the kernel's own and the interpreter's to do; what can still be taken off is what each
+costs (`exec64`'s 128 instructions, the way in and out).
