@@ -154,7 +154,8 @@ fn jt_idx() {
 }
 
 // No pair holds an address: each tag is one its own place is not chosen by.
-var jt_clears: i64[4] = [0; 4];       // --jit-why: emptied with something in it; and the cells put back, in all
+var jt_clears: i64[4] = [0; 4];
+var jh_bytes: i64[2] = [0; 2];        // --jit-why: bytes of blocks made, and of them before the first way out behind the block       // --jit-why: emptied with something in it; and the cells put back, in all
 fn jt_clear() {
     if jit_why && (jx[39] != 0 || jx[32] != 0) { jt_clears[0] += 1; jt_clears[1] += jx[39] as! i64; }
     // The cells filled since the last time (E178) ask again.
@@ -3307,6 +3308,7 @@ fn jit_translate_in(ph: u64) {
                 e_at(tp_pos[i] + 4, dc_wait[ws]);
                 dc_wait[ws] = (j_used + tp_pos[i] + 1) as! u32;
             }
+            if jit_why { jh_bytes[0] += jc.len; jh_bytes[1] += if so_n > 0 { so_at[0] } else { jc.len }; }
             jit_write(j_mem + j_used, jc[..]);
             // The ones that waited for this are made branches to it; the ones in the same
             // chain that wait for another address are chained again.
